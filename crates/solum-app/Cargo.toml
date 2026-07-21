@@ -1,0 +1,31 @@
+[package]
+name = "solum-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Solum — Personal Agent shell (Tauri 2, static vanilla frontend; desktop + Android)"
+
+# The mobile runners (gen/android) link the crate as a library; the desktop
+# binary keeps working via main.rs. `_lib` suffix avoids the bin/lib artifact
+# name clash on Windows.
+[lib]
+name = "solum_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+solum-core = { path = "../solum-core" }
+solum-notif-access = { path = "../solum-notif-access" }
+solum-health-connect = { path = "../solum-health-connect" }
+solum-alarm = { path = "../solum-alarm" }
+tauri = { version = "2", features = [] }
+tauri-plugin-notification = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tiny_http = { workspace = true }
+url = { workspace = true }

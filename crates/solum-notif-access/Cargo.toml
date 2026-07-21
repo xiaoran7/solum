@@ -1,0 +1,17 @@
+[package]
+name = "solum-notif-access"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+description = "Tauri plugin (Android-only): jump to the notification-listener settings page and check whether Solum's own listener is enabled. No-op stub on desktop — Android has no runtime-request API for this permission, only a Settings deep link."
+links = "solum-notif-access"
+build = "build.rs"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+thiserror = { workspace = true }

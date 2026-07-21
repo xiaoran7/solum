@@ -1,0 +1,24 @@
+[package]
+name = "solum-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+description = "Solum (Personal Agent) core: intent routing, event extraction, importance classification, scheduling, HITL guard, and local memory store."
+
+[dependencies]
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+rusqlite = { workspace = true }
+getrandom = { workspace = true }
+regex = { workspace = true }
+ureq = { workspace = true }
+chacha20poly1305 = { workspace = true }
+base64 = { workspace = true }
+imap = { workspace = true }
+lettre = { workspace = true }
+mailparse = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }

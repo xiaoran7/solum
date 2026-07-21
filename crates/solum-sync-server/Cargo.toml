@@ -1,0 +1,17 @@
+[package]
+name = "solum-sync-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+description = "Solum sync relay: stores and forwards end-to-end-encrypted oplog blobs. Never decrypts, never inspects, keeps no plaintext (ARCHITECTURE.md §3.8)."
+
+[dependencies]
+rusqlite = { workspace = true }
+tiny_http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+
+[dev-dependencies]
+ureq = { workspace = true }

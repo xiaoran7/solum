@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Exact reminder delivery. Solum is a reminder/agenda app, squarely the
+         intended audience for USE_EXACT_ALARM (auto-granted, API 33+);
+         SCHEDULE_EXACT_ALARM covers API 31–32 (user-revocable special
+         access). If neither holds at runtime we degrade to inexact alarms —
+         late is better than never (F16). -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <!-- Alarms don't survive reboot; BootReceiver re-arms them from the
+         persisted schedule file. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application>
+        <!-- Fired only by our own PendingIntents — never exported. -->
+        <receiver
+            android:name="dev.solum.alarm.AlarmReceiver"
+            android:exported="false" />
+        <!-- BOOT_COMPLETED is a protected broadcast (only the system can
+             send it), so exporting is safe. -->
+        <receiver
+            android:name="dev.solum.alarm.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

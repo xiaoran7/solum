@@ -1,0 +1,17 @@
+[package]
+name = "solum-alarm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+description = "Tauri plugin (Android-only): mirror Solum's pending reminders into AlarmManager exact alarms so they fire even when the app process is dead (F2/F16). No-op stub on desktop — the resident ticker already delivers there."
+links = "solum-alarm"
+build = "build.rs"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+thiserror = { workspace = true }

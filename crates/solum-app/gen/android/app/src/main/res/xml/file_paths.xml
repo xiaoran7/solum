@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Scope for content:// URIs this app may grant to others.
+
+  `path="."` on external-path exposed the *whole* external files directory as
+  grantable. Nothing shares a URI today, so there is no live exploit, but the
+  next feature that does would be one typo away from handing out far more than
+  it meant to. Keep the grantable surface to a dedicated export directory.
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+  <external-files-path name="shared_exports" path="shared/" />
+  <cache-path name="shared_cache" path="shared/" />
+</paths>

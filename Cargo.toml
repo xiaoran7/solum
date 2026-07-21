@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = ["crates/solum-core", "crates/solum-cli", "crates/solum-app", "crates/solum-sync-server", "crates/solum-notif-access", "crates/solum-health-connect", "crates/solum-alarm"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Solum project"]
+repository = "https://github.com/xiaoran7/solum"
+
+[workspace.dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+getrandom = "0.2"
+regex = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+ureq = { version = "2", features = ["json"] }
+chacha20poly1305 = "0.10"
+base64 = "0.22"
+tiny_http = "0.12"
+# TLS 一律走 rustls（纯 Rust）：native-tls 会拖进 openssl-sys，而 Android 没有系统
+# OpenSSL，交叉编译要从源码编整个 OpenSSL（2026-07-21 打包时卡死在这里）。
+# imap 3.x 才支持 rustls，2.4.1 只有 native-tls，故一并升级。
+imap = { version = "3.0.0-alpha.15", default-features = false, features = ["rustls-tls"] }
+lettre = { version = "0.11.22", default-features = false, features = ["builder", "smtp-transport", "rustls-tls", "rustls-native-certs", "ring"] }
+mailparse = "0.16.1"
+sha2 = "0.10"
+url = "2"
+
+# Faster, smaller test/dev builds where the SQLite C compile dominates.
+[profile.dev]
+opt-level = 0

@@ -1,0 +1,17 @@
+[package]
+name = "solum-health-connect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+description = "Tauri plugin (Android-only): read-only heart rate / steps / sleep from Android's Health Connect (F5, Phase 4, ARCHITECTURE.md §3.7). No-op stub on desktop — Health Connect doesn't exist there."
+links = "solum-health-connect"
+build = "build.rs"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+thiserror = { workspace = true }
