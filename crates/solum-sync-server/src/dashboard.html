@@ -13,6 +13,7 @@
     --accent-soft: #faf0dc; --accent-line: #ecd9ae;
     --ok: #15803d; --ok-soft: #e0f2e7;
     --danger: #b91c1c; --danger-soft: #fbe9e9;
+    --shadow: 0 1px 2px rgba(20, 20, 25, 0.04), 0 6px 20px rgba(20, 20, 25, 0.05);
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -23,88 +24,193 @@
       --accent-soft: #33280f; --accent-line: #4d3c14;
       --ok: #57c98a; --ok-soft: #14301f;
       --danger: #f28b7d; --danger-soft: #3a1f1b;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
     }
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
     font: 14px/1.5 "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
-  main { max-width: 880px; margin: 0 auto; padding: 32px 20px 64px; }
-  h1 { font-size: 18px; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
-  .sub { color: var(--muted); margin: 0 0 24px; font-size: 13px; }
+  main { max-width: 920px; margin: 0 auto; padding: 48px 20px 72px; }
+
+  .hero { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 28px; }
+  .lamp {
+    flex: none; width: 44px; height: 44px; border-radius: 12px;
+    display: flex; align-items: center; justify-content: center; font-size: 22px;
+    background: radial-gradient(circle at 35% 30%, var(--accent-soft), var(--side) 70%);
+    border: 1px solid var(--accent-line);
+    box-shadow: 0 0 0 1px rgba(240, 168, 36, 0.08), 0 4px 14px rgba(240, 168, 36, 0.18);
+  }
+  h1 { font-size: 20px; margin: 2px 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0; font-size: 13px; max-width: 56ch; }
+
   .card {
-    background: var(--side); border: 1px solid var(--line); border-radius: 10px;
-    padding: 16px 18px; margin-bottom: 16px;
+    background: var(--side); border: 1px solid var(--line); border-radius: 14px;
+    padding: 18px 20px; margin-bottom: 18px; box-shadow: var(--shadow);
   }
-  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  label { font-size: 12px; color: var(--ink-2); }
+  .card h2 {
+    font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 14px;
+  }
+
+  .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  label { font-size: 12px; color: var(--ink-2); display: flex; align-items: center; gap: 5px; }
+  .hint-btn {
+    width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--line-strong);
+    background: var(--inset); color: var(--muted); font-size: 10px; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0;
+  }
+  .hint-btn:hover { border-color: var(--accent-fill); color: var(--accent); }
+
+  .token-wrap { position: relative; display: flex; }
   input[type="text"], input[type="password"] {
-    background: var(--inset); border: 1px solid var(--line-strong); border-radius: 6px;
-    color: var(--ink); padding: 7px 10px; font: inherit; min-width: 220px;
+    background: var(--inset); border: 1px solid var(--line-strong); border-radius: 8px;
+    color: var(--ink); padding: 9px 12px; font: inherit; min-width: 260px;
+    transition: border-color 0.15s;
   }
-  input:focus { outline: 2px solid var(--accent-fill); outline-offset: 1px; }
+  #token { padding-right: 34px; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  input:focus { outline: none; border-color: var(--accent-fill); box-shadow: 0 0 0 3px rgba(240, 168, 36, 0.16); }
+  .eye {
+    position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; color: var(--muted); cursor: pointer; padding: 4px 6px; font-size: 13px;
+  }
+  .eye:hover { color: var(--ink); }
+
   button {
     background: var(--accent-fill); color: var(--on-accent-fill); border: none;
-    border-radius: 6px; padding: 8px 14px; font: inherit; font-weight: 600; cursor: pointer;
+    border-radius: 8px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer;
+    transition: filter 0.15s, transform 0.05s;
   }
+  button:hover { filter: brightness(1.05); }
   button:active { transform: translateY(1px); }
   button.ghost {
-    background: transparent; color: var(--ink); border: 1px solid var(--line-strong);
-    font-weight: 400;
+    background: transparent; color: var(--ink); border: 1px solid var(--line-strong); font-weight: 400;
   }
-  .statusline { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
-  .dot.ok { background: var(--ok); }
+  button.ghost:hover { border-color: var(--faint); filter: none; background: var(--inset); }
+  button.icon-btn {
+    background: var(--inset); color: var(--ink-2); border: 1px solid var(--line-strong);
+    font-weight: 400; padding: 9px 12px; font-size: 15px;
+  }
+  button.icon-btn:hover { color: var(--accent); border-color: var(--accent-line); filter: none; }
+
+  .toggle-row {
+    margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px;
+  }
+  .toggle-row input { width: auto; min-width: 0; accent-color: var(--accent-fill); }
+
+  .hint-box {
+    margin-top: 12px; padding: 10px 12px; border-radius: 8px; font-size: 12.5px;
+    background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--ink-2); line-height: 1.6;
+  }
+  .hint-box code {
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; background: var(--inset);
+    padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line);
+  }
+
+  .statusline { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--muted); margin-top: 14px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; position: relative; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 0 0 rgba(21, 128, 61, 0.4); animation: pulse 2s infinite; }
   .dot.bad { background: var(--danger); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 4px; }
-  .stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
-  .stat span { color: var(--muted); font-size: 12px; }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(21, 128, 61, 0.35); }
+    70% { box-shadow: 0 0 0 6px rgba(21, 128, 61, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(21, 128, 61, 0); }
+  }
+  .as-of { color: var(--faint); font-size: 12px; margin-left: auto; }
+
+  .banner {
+    margin-top: 10px; padding: 10px 12px; border-radius: 8px; font-size: 13px;
+    background: var(--danger-soft); border: 1px solid var(--danger); color: var(--danger);
+  }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 4px; }
+  .stat {
+    padding: 12px 14px; border-radius: 10px; transition: background 0.15s;
+  }
+  .stat:hover { background: var(--inset); }
+  .stat .ico { font-size: 13px; opacity: 0.7; }
+  .stat b {
+    display: block; font-size: 24px; font-variant-numeric: tabular-nums; margin-top: 6px;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; letter-spacing: -0.02em;
+  }
+  .stat span.lbl { color: var(--muted); font-size: 12px; }
+
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
-  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  th, td { text-align: left; padding: 10px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.03em; }
+  tbody tr { transition: background 0.15s; }
+  tbody tr:hover { background: var(--inset); }
+  tbody tr:last-child td { border-bottom: none; }
   td.num, th.num { text-align: right; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
-  .empty { color: var(--muted); padding: 20px; text-align: center; }
-  .err { color: var(--danger); font-size: 13px; margin-top: 8px; }
-  footer { color: var(--faint); font-size: 12px; margin-top: 24px; }
+  td.dev { font-weight: 600; }
+  td.ago { color: var(--muted); }
+  td.ago.stale { color: var(--faint); }
+
+  .empty { color: var(--muted); padding: 28px 10px; text-align: center; font-size: 13px; }
+  .empty .ico { font-size: 22px; display: block; margin-bottom: 8px; opacity: 0.5; }
+
+  footer { color: var(--faint); font-size: 12px; margin-top: 28px; text-align: center; }
 </style>
 </head>
 <body>
 <main>
-  <h1>🔆 Solum Sync</h1>
-  <p class="sub">加密中转运维仪表盘 —— 服务端只存转密文，此处不会显示、也拿不到任何 blob 内容。</p>
+  <div class="hero">
+    <div class="lamp">🔆</div>
+    <div>
+      <h1>Solum Sync 运维</h1>
+      <p class="sub">加密中转仪表盘 —— 服务端只存转密文，不解密、不推理，这里也一样看不到任何 blob 内容，只有聚合计数。</p>
+    </div>
+  </div>
 
   <div class="card">
+    <h2>连接</h2>
     <div class="row">
-      <div>
-        <label for="token">Bearer token</label><br />
-        <input type="password" id="token" placeholder="SOLUM_SYNC_SERVER_TOKEN" />
+      <div class="field">
+        <label for="token">Bearer token
+          <button type="button" class="hint-btn" id="hint-toggle" aria-label="token 在哪">?</button>
+        </label>
+        <div class="token-wrap">
+          <input type="password" id="token" placeholder="SOLUM_SYNC_SERVER_TOKEN" autocomplete="off" />
+          <button type="button" class="eye" id="eye">👁</button>
+        </div>
       </div>
       <button id="connect">连接</button>
+      <button id="refresh-now" class="icon-btn" title="立即刷新">↻</button>
       <button id="forget" class="ghost">忘记 token</button>
-      <label style="margin-left: auto; display: flex; align-items: center; gap: 6px;">
-        <input type="checkbox" id="auto" checked style="width: auto; min-width: 0;" /> 每 10s 自动刷新
+      <label class="toggle-row">
+        <input type="checkbox" id="auto" checked /> 每 10s 自动刷新
       </label>
     </div>
-    <div class="statusline" style="margin-top: 12px;">
+    <div class="hint-box" id="hint-box" hidden>
+      token 是部署时设的 <code>SOLUM_SYNC_SERVER_TOKEN</code>，和设备同步用的是同一把。
+      忘了的话去部署这台服务的 1Panel → 容器 → 编排 → <code>solum-sync</code> → 编辑，「环境变量」框里就是。
+      这里只用它做 API 鉴权，不会把它发到别处，只存在你自己浏览器的 localStorage 里。
+    </div>
+    <div class="statusline">
       <span class="dot" id="health-dot"></span>
       <span id="health-text">未连接</span>
+      <span class="as-of" id="as-of"></span>
     </div>
-    <div class="err" id="err" hidden></div>
+    <div class="banner" id="err" hidden></div>
   </div>
 
   <div class="card">
+    <h2>总量</h2>
     <div class="grid" id="totals">
-      <div class="stat"><b id="s-blobs">—</b><span>总 blob 数</span></div>
-      <div class="stat"><b id="s-bytes">—</b><span>密文总量</span></div>
-      <div class="stat"><b id="s-db">—</b><span>DB 文件大小</span></div>
-      <div class="stat"><b id="s-seq">—</b><span>seq 区间</span></div>
-      <div class="stat"><b id="s-retention">—</b><span>留存天数</span></div>
-      <div class="stat"><b id="s-devices">—</b><span>设备数</span></div>
+      <div class="stat"><span class="lbl"><span class="ico">📦</span> 总 blob 数</span><b id="s-blobs">—</b></div>
+      <div class="stat"><span class="lbl"><span class="ico">🔒</span> 密文总量</span><b id="s-bytes">—</b></div>
+      <div class="stat"><span class="lbl"><span class="ico">💾</span> DB 文件大小</span><b id="s-db">—</b></div>
+      <div class="stat"><span class="lbl"><span class="ico">🔢</span> seq 区间</span><b id="s-seq">—</b></div>
+      <div class="stat"><span class="lbl"><span class="ico">🗑️</span> 留存天数</span><b id="s-retention">—</b></div>
+      <div class="stat"><span class="lbl"><span class="ico">📱</span> 设备数</span><b id="s-devices">—</b></div>
     </div>
   </div>
 
   <div class="card">
+    <h2>按设备</h2>
     <table>
       <thead>
         <tr>
@@ -117,10 +223,12 @@
       </thead>
       <tbody id="device-rows"></tbody>
     </table>
-    <div class="empty" id="device-empty" hidden>还没有设备推送过数据</div>
+    <div class="empty" id="device-empty" hidden>
+      <span class="ico">📭</span>还没有设备推送过数据
+    </div>
   </div>
 
-  <footer>只读。所有请求走既有 Bearer 鉴权，与设备同步用的是同一把 token。</footer>
+  <footer>只读仪表盘。所有请求走既有 Bearer 鉴权，token 只存在这台浏览器里。</footer>
 </main>
 
 <script>
@@ -130,10 +238,19 @@
   var errBox = document.getElementById("err");
   var healthDot = document.getElementById("health-dot");
   var healthText = document.getElementById("health-text");
+  var asOf = document.getElementById("as-of");
   var timer = null;
 
   var saved = localStorage.getItem(TOKEN_KEY);
   if (saved) tokenInput.value = saved;
+
+  document.getElementById("hint-toggle").addEventListener("click", function () {
+    var box = document.getElementById("hint-box");
+    box.hidden = !box.hidden;
+  });
+  document.getElementById("eye").addEventListener("click", function () {
+    tokenInput.type = tokenInput.type === "password" ? "text" : "password";
+  });
 
   function fmtBytes(n) {
     if (!n || n <= 0) return "0 B";
@@ -143,17 +260,22 @@
   }
 
   function fmtAgo(iso) {
-    if (!iso) return "—";
+    if (!iso) return { text: "—", staleMs: 0 };
     var ms = Date.now() - new Date(iso + (iso.endsWith("Z") ? "" : "Z")).getTime();
-    if (isNaN(ms)) return iso;
+    if (isNaN(ms)) return { text: iso, staleMs: 0 };
     if (ms < 0) ms = 0;
     var s = Math.floor(ms / 1000);
-    if (s < 60) return s + "s 前";
-    var m = Math.floor(s / 60);
-    if (m < 60) return m + "m 前";
-    var h = Math.floor(m / 60);
-    if (h < 24) return h + "h 前";
-    return Math.floor(h / 24) + "d 前";
+    var text;
+    if (s < 60) text = s + "s 前";
+    else {
+      var m = Math.floor(s / 60);
+      if (m < 60) text = m + "m 前";
+      else {
+        var h = Math.floor(m / 60);
+        text = h < 24 ? h + "h 前" : Math.floor(h / 24) + "d 前";
+      }
+    }
+    return { text: text, staleMs: ms };
   }
 
   function setHealth(ok, msg) {
@@ -181,15 +303,18 @@
     rows.innerHTML = "";
     empty.hidden = s.devices.length > 0;
     s.devices.forEach(function (d) {
+      var ago = fmtAgo(d.last_received_at);
+      var stale = ago.staleMs > 24 * 3600 * 1000;
       var tr = document.createElement("tr");
       tr.innerHTML =
-        "<td>" + escapeHtml(d.device) + "</td>" +
+        "<td class=\"dev\">" + escapeHtml(d.device) + "</td>" +
         "<td class=\"num\">" + d.blob_count + "</td>" +
         "<td class=\"num\">" + fmtBytes(d.bytes) + "</td>" +
         "<td class=\"num\">" + d.last_seq + "</td>" +
-        "<td title=\"" + escapeHtml(d.last_received_at) + "\">" + fmtAgo(d.last_received_at) + "</td>";
+        "<td class=\"ago" + (stale ? " stale" : "") + "\" title=\"" + escapeHtml(d.last_received_at) + "\">" + ago.text + "</td>";
       rows.appendChild(tr);
     });
+    asOf.textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
   }
 
   function escapeHtml(s) {
@@ -239,10 +364,12 @@
     refresh();
     scheduleAuto();
   });
+  document.getElementById("refresh-now").addEventListener("click", refresh);
   document.getElementById("forget").addEventListener("click", function () {
     localStorage.removeItem(TOKEN_KEY);
     tokenInput.value = "";
     setHealth(null, "未连接");
+    asOf.textContent = "";
   });
   document.getElementById("auto").addEventListener("change", scheduleAuto);
   tokenInput.addEventListener("keydown", function (e) {
