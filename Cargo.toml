@@ -31,6 +31,10 @@ lettre = { version = "0.11.22", default-features = false, features = ["builder",
 mailparse = "0.16.1"
 sha2 = "0.10"
 url = "2"
+# Pure-Rust (no C/asm needed by default), same portability requirement as the
+# rustls choice above — must cross-compile to Android without a toolchain.
+argon2 = "0.5"
+hkdf = "0.12"
 
 # Faster, smaller test/dev builds where the SQLite C compile dominates.
 [profile.dev]

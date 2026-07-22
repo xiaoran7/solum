@@ -1256,6 +1256,32 @@
       </details>
     </div></section>
 
+    <!-- 多设备同步（F17 §3.8） -->
+    <section class="view" id="view-sync"><div class="vwrap">
+      <div class="vhead"><div class="vt">
+        <h2>同步 <button class="qmark" type="button" aria-expanded="false" aria-controls="descSync" aria-label="说明"></button></h2>
+        <p class="desc" id="descSync" hidden>只中转端到端加密的数据，服务器看不到明文（§3.8）。每台要同步的设备都在这里填同一个用户名+密码；换密码等于吊销所有旧设备，需要在每台设备上重新填一次。</p>
+      </div></div>
+      <div id="syncConfigStatus" style="margin-bottom:18px;"></div>
+      <div class="block">
+        <h3>账户</h3>
+        <div class="formcol">
+          <div class="field"><label for="syncUrl">同步服务器</label>
+            <input type="text" id="syncUrl" placeholder="https://your-relay.example" autocomplete="off" spellcheck="false" /></div>
+          <div class="fieldrow">
+            <div class="field"><label for="syncUsername">用户名</label>
+              <input type="text" id="syncUsername" autocomplete="off" spellcheck="false" /></div>
+            <div class="field"><label for="syncPassword">密码</label>
+              <input type="password" id="syncPassword" placeholder="首次保存必填" autocomplete="off" /></div>
+          </div>
+          <div class="btnrow">
+            <button class="btn primary" id="syncSaveBtn">保存</button>
+          </div>
+          <div id="syncConfigOut"></div>
+        </div>
+      </div>
+    </div></section>
+
     <!-- 邮箱连接器（F21） -->
     <section class="view" id="view-email"><div class="vwrap">
       <div class="vhead"><div class="vt">
@@ -1762,6 +1788,67 @@ async function doSync(btn) {
 
 $("syncBtn").addEventListener("click", () => doSync($("syncBtn")));
 $("syncBtnM").addEventListener("click", () => doSync($("syncBtnM")));
+
+/* ============================== 同步账户（设置 → 同步） ============================== */
+// 2026-07-22：把「复制一把 64 位十六进制主密钥到每台设备」换成「每台设备登录同一个
+// 用户名+密码」——推导逻辑在 Rust 侧（Argon2id 拉伸 + HKDF domain-separate），这里
+// 只管表单。密码不回显、不预填，留空保存＝沿用已存的那份（本机文件里才有，这里拿不到）。
+let syncFormSeeded = false;
+
+function renderSyncConfigStatus(s) {
+  const box = $("syncConfigStatus");
+  box.textContent = "";
+  if (s.format === "credentials") {
+    box.appendChild(el("div", { class: "statusline", title: `配置文件：${s.path}（本地、gitignore，不进同步）` }, [
+      el("span", { class: "sdot ok" }),
+      el("span", { class: "t", text: `已登录：${s.username} @ ${s.url}（设备 ${s.device_id}）` }),
+    ]));
+  } else if (s.format === "raw") {
+    box.appendChild(el("div", { class: "statusline", title: `配置文件：${s.path}` }, [
+      el("span", { class: "sdot amber" }),
+      el("span", { class: "t", text: `已用旧版密钥文件配置（设备 ${s.device_id}）——保存下方表单可换成用户名+密码。` }),
+    ]));
+  } else {
+    box.appendChild(el("div", { class: "banner" }, [
+      icon("alert", 18),
+      el("div", { class: "grow" }, [
+        el("div", { text: "同步未配置——这台设备的数据不会同步到其他设备。" }),
+        el("div", { class: "hint", text: `保存后写入：${s.path}` }),
+      ]),
+    ]));
+  }
+}
+
+async function refreshSyncConfig() {
+  let s;
+  try { s = await invoke("sync_config_get"); } catch (_) { return; }
+  renderSyncConfigStatus(s);
+  $("syncPassword").placeholder = s.format === "credentials" ? "已保存，留空则沿用" : "首次保存必填";
+  if (syncFormSeeded) return;
+  syncFormSeeded = true;
+  $("syncUrl").value = s.url;
+  $("syncUsername").value = s.username;
+}
+
+$("syncSaveBtn").addEventListener("click", async () => {
+  const cfg = {
+    url: $("syncUrl").value.trim(),
+    username: $("syncUsername").value.trim(),
+    password: $("syncPassword").value,
+  };
+  if (!/^https?:\/\//.test(cfg.url)) return toast("同步服务器地址需要以 http(s):// 开头", "danger");
+  if (!cfg.username) return toast("请填写用户名", "danger");
+  $("syncSaveBtn").disabled = true;
+  try {
+    const summary = await invoke("sync_config_save", { cfg });
+    $("syncPassword").value = "";
+    toast(summary, "ok");
+    syncFormSeeded = false;
+    await refreshSyncConfig();
+    await refreshSyncStatus();
+  } catch (e) { toast(String(e), "danger"); }
+  finally { $("syncSaveBtn").disabled = false; }
+});
 
 /* ============================== 说明问号 ============================== */
 // 静态 HTML 里的 .qmark 只留一个空按钮，图标统一在这里补上。
@@ -5056,6 +5143,7 @@ const GROUPS = [
       ["persona",     "数字人格",   "user",   "风格设定影响闲聊与复盘措辞；版本化，可回滚"],
       ["proactivity", "主动度",     "gauge",  "每个能力域独立调档；高危确认不受档位影响"],
       ["privacy",     "隐私",       "lock",   "通知上云开关与通知智能管线"],
+      ["sync",        "同步",       "refresh", "多设备账户与同步状态"],
       ["cloud",       "云端接入",   "cloud",  "LLM 端点配置与 Soulous 互通"],
       ["rules",       "重要度规则", "rules",  "按事件类型设置提前提醒与通知渠道"],
       ["guard",       "高危护栏",   "shield", "可用工具、审计日志与确认流程演示"],
@@ -5173,6 +5261,7 @@ function refreshAll() {
   refreshGuard();
   refreshCloud();
   refreshSoulous();
+  refreshSyncConfig();
   refreshEmail();
   refreshToday();
   refreshWidgets();
