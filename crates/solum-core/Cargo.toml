@@ -22,3 +22,5 @@ lettre = { workspace = true }
 mailparse = { workspace = true }
 sha2 = { workspace = true }
 url = { workspace = true }
+argon2 = { workspace = true }
+hkdf = { workspace = true }

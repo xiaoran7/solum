@@ -83,7 +83,11 @@ pub struct SyncOutcome {
 /// Client-side sync settings. Loaded from env (`SOLUM_SYNC_URL` / `SOLUM_SYNC_TOKEN`
 /// / `SOLUM_SYNC_KEY`) first, then a `solum-sync.json` file — path from
 /// `SOLUM_SYNC_CONFIG` if set, else next to the executable's cwd (adopted into
-/// app-data on desktop). Absent config means sync is off.
+/// app-data on desktop). The file may hold either the raw `{url,token,key}`
+/// shape or `{url,username,password}` (2026-07-22, see `derive_credentials`) —
+/// the latter is derived into the former at load time, so everything past
+/// this function still only ever sees `token`/`key`. Absent config means sync
+/// is off.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SyncConfig {
     /// Relay base URL, e.g. `http://127.0.0.1:8787`.
@@ -92,6 +96,24 @@ pub struct SyncConfig {
     pub token: String,
     /// 64 hex chars — the 32-byte pre-shared master key (§3.8).
     pub key: String,
+}
+
+/// The two shapes `solum-sync.json` may take. Untagged so existing raw
+/// `{url,token,key}` files (already deployed, gitignored on every device)
+/// keep parsing unchanged.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum SyncConfigFile {
+    Credentials {
+        url: String,
+        username: String,
+        password: String,
+    },
+    Direct {
+        url: String,
+        token: String,
+        key: String,
+    },
 }
 
 impl SyncConfig {
@@ -108,7 +130,17 @@ impl SyncConfig {
             Err(_) => crate::paths::resolve_with_adoption("solum-sync.json"),
         };
         let raw = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&raw).ok()
+        match serde_json::from_str::<SyncConfigFile>(&raw).ok()? {
+            SyncConfigFile::Direct { url, token, key } => Some(SyncConfig { url, token, key }),
+            SyncConfigFile::Credentials {
+                url,
+                username,
+                password,
+            } => {
+                let (token, key) = derive_credentials(&username, &password).ok()?;
+                Some(SyncConfig { url, token, key })
+            }
+        }
     }
 
     /// Redacted one-liner for status displays.
@@ -134,6 +166,51 @@ impl SyncConfig {
         }
         Ok(out)
     }
+}
+
+/// Derives `(relay_token_hex, e2e_key_hex)` from a username+password pair
+/// (2026-07-22, user-requested — copying a raw 64-hex key to every new device
+/// was the friction point; a memorable credential replaces it everywhere the
+/// old `{url,token,key}` file still works, see `SyncConfigFile`).
+///
+/// The relay server is completely unaware of this: it still only ever
+/// compares a static Bearer token (`SOLUM_SYNC_SERVER_TOKEN`), and this
+/// function's `token` output is nothing more than *the value a human picked
+/// as that token, computed the same way on every device* instead of typed in
+/// by hand. Same story for the encryption key (§3.8) — the relay never had
+/// access to it before this change and still doesn't.
+///
+/// Two-stage KDF: Argon2id (deliberately slow, password-hardened — resists
+/// offline brute force if the relay token ever leaks, which matters more the
+/// weaker the chosen password is) stretches the password into one 32-byte
+/// intermediate key, salted with a hash of the username so two different
+/// usernames sharing a password still diverge; the username is not treated as
+/// secret. HKDF-SHA256 (fast) then expands that single intermediate key into
+/// two independent 32-byte outputs — domain-separated by the `info` label —
+/// so recovering the token reveals nothing about the encryption key or
+/// vice versa, even though both trace back to one password.
+pub fn derive_credentials(username: &str, password: &str) -> Result<(String, String)> {
+    use sha2::{Digest, Sha256};
+
+    let salt = Sha256::digest(username.as_bytes());
+    let mut ikm = [0u8; 32];
+    argon2::Argon2::default()
+        .hash_password_into(password.as_bytes(), &salt, &mut ikm)
+        .map_err(|e| CoreError::Invalid(format!("密码派生失败：{e}")))?;
+
+    let hk = hkdf::Hkdf::<Sha256>::new(None, &ikm);
+    let mut token_bytes = [0u8; 32];
+    hk.expand(b"solum-sync-v1:token", &mut token_bytes)
+        .map_err(|e| CoreError::Invalid(format!("token 派生失败：{e}")))?;
+    let mut key_bytes = [0u8; 32];
+    hk.expand(b"solum-sync-v1:key", &mut key_bytes)
+        .map_err(|e| CoreError::Invalid(format!("key 派生失败：{e}")))?;
+
+    Ok((to_hex(&token_bytes), to_hex(&key_bytes)))
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ---- crypto (end-to-end; the relay never sees plaintext) ------------------------
@@ -465,6 +542,66 @@ pub(crate) mod tests {
             url: "mem://".into(),
             token: "t".into(),
             key: "11".repeat(32),
+        }
+    }
+
+    #[test]
+    fn derive_credentials_is_deterministic() {
+        let a = derive_credentials("solum", "514000").unwrap();
+        let b = derive_credentials("solum", "514000").unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn derive_credentials_diverges_on_username_or_password() {
+        let base = derive_credentials("solum", "514000").unwrap();
+        let other_user = derive_credentials("xiaoran", "514000").unwrap();
+        let other_pass = derive_credentials("solum", "999999").unwrap();
+        assert_ne!(base, other_user);
+        assert_ne!(base, other_pass);
+    }
+
+    #[test]
+    fn derive_credentials_token_and_key_are_independent_looking() {
+        let (token, key) = derive_credentials("solum", "514000").unwrap();
+        assert_eq!(token.len(), 64);
+        assert_eq!(key.len(), 64);
+        assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(token, key);
+    }
+
+    #[test]
+    fn sync_config_file_parses_both_shapes() {
+        let creds: SyncConfigFile = serde_json::from_str(
+            r#"{"url":"https://relay.example","username":"solum","password":"514000"}"#,
+        )
+        .unwrap();
+        match creds {
+            SyncConfigFile::Credentials {
+                url,
+                username,
+                password,
+            } => {
+                assert_eq!(url, "https://relay.example");
+                assert_eq!(username, "solum");
+                assert_eq!(password, "514000");
+            }
+            SyncConfigFile::Direct { .. } => panic!("expected Credentials shape"),
+        }
+
+        let direct: SyncConfigFile = serde_json::from_str(
+            &serde_json::json!({"url": "https://relay.example", "token": "t", "key": "11".repeat(32)})
+                .to_string(),
+        )
+        .unwrap();
+        match direct {
+            SyncConfigFile::Direct { url, token, key } => {
+                assert_eq!(url, "https://relay.example");
+                assert_eq!(token, "t");
+                assert_eq!(key, "11".repeat(32));
+            }
+            SyncConfigFile::Credentials { .. } => panic!("expected Direct shape"),
         }
     }
 

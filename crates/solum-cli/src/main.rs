@@ -154,6 +154,13 @@ enum Cmd {
     Sync,
     /// Show sync config and this device's sync identity.
     SyncStatus,
+    /// Derive the relay token + e2e key from a username+password pair
+    /// (2026-07-22) without writing anything — for one-time relay setup
+    /// (paste the printed token into SOLUM_SYNC_SERVER_TOKEN) or to hand-build
+    /// a `{url,token,key}` solum-sync.json. Every device just needs the same
+    /// username+password from here on; this command exists so you never have
+    /// to retype the derived hex by hand more than once.
+    SyncDerive { username: String, password: String },
     /// Show the active persona and full version history (F9 v1).
     Persona,
     /// Save manual style settings as a new persona version. Omitted fields
@@ -784,6 +791,13 @@ fn main() -> Result<()> {
             if dropped > 0 {
                 println!("   ⚠ 暂存区已满，累计丢弃 {dropped} 条（当前暂存 {held} 条）。请升级本机版本。");
             }
+        }
+        Cmd::SyncDerive { username, password } => {
+            let (token, key) =
+                solum_core::sync::derive_credentials(&username, &password).map_err(to_err)?;
+            println!("relay token（写进 solum-sync-server 的 SOLUM_SYNC_SERVER_TOKEN）：{token}");
+            println!("e2e key（solum-sync.json 的 key 字段，64 位十六进制）：{key}");
+            println!("（密码进了这条命令的 shell 历史，用完记得清一下）");
         }
         Cmd::SyncStatus => {
             match solum_core::sync::SyncConfig::load() {

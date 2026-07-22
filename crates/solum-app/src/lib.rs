@@ -2206,6 +2206,143 @@ fn convert_raw_sample(r: solum_health_connect::RawSample) -> Option<HealthSample
 
 // ---- sync (F17 §3.8) ---------------------------------------------------------------
 
+/// The JSON file the settings UI reads/writes. Matches `SyncConfig::load`'s
+/// fallback: `SOLUM_SYNC_CONFIG` if set (mobile setup points it at app-data),
+/// else `./solum-sync.json` (desktop cwd, adopted into app-data).
+fn sync_config_file() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("SOLUM_SYNC_CONFIG") {
+        return p.into();
+    }
+    solum_core::paths::resolve_with_adoption("solum-sync.json")
+}
+
+/// Everything the settings form needs — never the password, and not the
+/// derived token/key either (those are recomputed from username+password at
+/// load time, the UI has no business holding them).
+#[derive(Serialize)]
+struct SyncConfigSettings {
+    configured: bool,
+    /// "credentials" (username+password, current recommended shape) |
+    /// "raw" (legacy `{url,token,key}` file — still works, not shown as
+    /// editable fields here since there's no username/password to show) |
+    /// "none".
+    format: &'static str,
+    path: String,
+    url: String,
+    username: String,
+    device_id: String,
+}
+
+#[tauri::command]
+fn sync_config_get(state: State<AppState>) -> CmdResult<SyncConfigSettings> {
+    let path = sync_config_file();
+    let path_str = path.to_string_lossy().into_owned();
+    let device_id = lock!(state).sync_device_id().map_err(core_err)?;
+    let raw = std::fs::read_to_string(&path).ok();
+    let parsed = raw
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+    let Some(v) = parsed else {
+        return Ok(SyncConfigSettings {
+            configured: false,
+            format: "none",
+            path: path_str,
+            url: String::new(),
+            username: String::new(),
+            device_id,
+        });
+    };
+    let url = v
+        .get("url")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if let Some(username) = v.get("username").and_then(|x| x.as_str()) {
+        Ok(SyncConfigSettings {
+            configured: true,
+            format: "credentials",
+            path: path_str,
+            url,
+            username: username.to_string(),
+            device_id,
+        })
+    } else if v.get("token").is_some() && v.get("key").is_some() {
+        Ok(SyncConfigSettings {
+            configured: true,
+            format: "raw",
+            path: path_str,
+            url,
+            username: String::new(),
+            device_id,
+        })
+    } else {
+        Ok(SyncConfigSettings {
+            configured: false,
+            format: "none",
+            path: path_str,
+            url: String::new(),
+            username: String::new(),
+            device_id,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+struct SyncSaveArgs {
+    url: String,
+    username: String,
+    /// Empty → reuse the password already in the stored file (if that file
+    /// is itself the credentials shape) — same convenience as `LlmSaveArgs`'s
+    /// `api_key`, so editing the URL doesn't force retyping the password.
+    #[serde(default)]
+    password: String,
+}
+
+/// Persist `{url,username,password}` and return a status line for a toast.
+/// The relay is untouched by this — it still only ever compares whatever
+/// static token it was configured with; this just has to derive the *same*
+/// token/key on every device via `derive_credentials`, which happens at
+/// `SyncConfig::load()` time, not here.
+#[tauri::command]
+fn sync_config_save(state: State<AppState>, cfg: SyncSaveArgs) -> CmdResult<String> {
+    let url = solum_core::net::validate_endpoint(&cfg.url, "同步服务器 url").map_err(core_err)?;
+    let username = cfg.username.trim().to_string();
+    if username.is_empty() {
+        return Err("请填写用户名".into());
+    }
+    let password = cfg.password.trim().to_string();
+    let password = if password.is_empty() {
+        // Only a file already in the credentials shape has a password to
+        // reuse — a legacy raw `{token,key}` file has none, so this stays
+        // empty and the check below asks the user to type one.
+        std::fs::read_to_string(sync_config_file())
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("password").and_then(|p| p.as_str()).map(String::from))
+            .unwrap_or_default()
+    } else {
+        password
+    };
+    if password.is_empty() {
+        return Err("请填写密码（没有已保存的密码可沿用）".into());
+    }
+
+    let json = serde_json::to_string_pretty(&serde_json::json!({
+        "url": url,
+        "username": username,
+        "password": password,
+    }))
+    .map_err(|e| e.to_string())?;
+    let path = sync_config_file();
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    solum_core::fsatomic::write_atomic(&path, &json).map_err(|e| e.to_string())?;
+
+    let device_id = lock!(state).sync_device_id().map_err(core_err)?;
+    Ok(format!("已保存（本机设备标识：{device_id}）"))
+}
+
 #[derive(Serialize)]
 struct SyncStatusDto {
     configured: bool,
@@ -3156,6 +3293,8 @@ pub fn run() {
             sync_status,
             sync_gap_acknowledge,
             sync_now,
+            sync_config_get,
+            sync_config_save,
             notif_access_status,
             notif_access_open_settings,
             persona_rollback,
