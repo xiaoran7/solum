@@ -3004,6 +3004,18 @@ pub fn run() {
                     std::env::set_var("SOLUM_EMAIL_CONFIG", dir.join("solum-email.json"));
                 }
             }
+            // Same gap as the three above until this fix (2026-07-22): sync's
+            // config had no mobile-aware path, only `SOLUM_SYNC_URL/TOKEN/KEY`
+            // or a cwd-relative `solum-sync.json` — neither resolvable on
+            // Android, so multi-device sync could not be configured there at
+            // all. `adb push`/`run-as cp` a `solum-sync.json` into this same
+            // app-data dir to bind a phone, same as the LLM config above.
+            #[cfg(mobile)]
+            if std::env::var("SOLUM_SYNC_CONFIG").is_err() {
+                if let Some(dir) = std::path::Path::new(&db_path).parent() {
+                    std::env::set_var("SOLUM_SYNC_CONFIG", dir.join("solum-sync.json"));
+                }
+            }
             let mut orch = Orchestrator::open(&db_path)?;
             // Cloud reasoner is optional by design (F16): no config → stay offline.
             let llm_summary = solum_core::llm::LlmConfig::load().map(|cfg| {

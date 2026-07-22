@@ -8,6 +8,9 @@
 //! ciphertext: key management is the pre-shared master key decided 2026-07-07
 //! — one symmetric key manually configured on every device via `solum-sync.json`
 //! (gitignored, same pattern as `solum-llm.json`) or `SOLUM_SYNC_*` env vars.
+//! The file's path can be overridden with `SOLUM_SYNC_CONFIG`, same as
+//! `SOLUM_LLM_CONFIG` — mobile has no meaningful cwd, so `solum-app` points it
+//! at the platform app-data dir (see `resolve_db_path`'s siblings).
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -78,8 +81,9 @@ pub struct SyncOutcome {
 // ---- config -------------------------------------------------------------------
 
 /// Client-side sync settings. Loaded from env (`SOLUM_SYNC_URL` / `SOLUM_SYNC_TOKEN`
-/// / `SOLUM_SYNC_KEY`) first, then `solum-sync.json` next to the executable's cwd —
-/// the same lookup pattern as `LlmConfig`. Absent config means sync is off.
+/// / `SOLUM_SYNC_KEY`) first, then a `solum-sync.json` file — path from
+/// `SOLUM_SYNC_CONFIG` if set, else next to the executable's cwd (adopted into
+/// app-data on desktop). Absent config means sync is off.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SyncConfig {
     /// Relay base URL, e.g. `http://127.0.0.1:8787`.
@@ -99,8 +103,11 @@ impl SyncConfig {
         ) {
             return Some(SyncConfig { url, token, key });
         }
-        let raw =
-            std::fs::read_to_string(crate::paths::resolve_with_adoption("solum-sync.json")).ok()?;
+        let path: std::path::PathBuf = match std::env::var("SOLUM_SYNC_CONFIG") {
+            Ok(p) => p.into(),
+            Err(_) => crate::paths::resolve_with_adoption("solum-sync.json"),
+        };
+        let raw = std::fs::read_to_string(path).ok()?;
         serde_json::from_str(&raw).ok()
     }
 
