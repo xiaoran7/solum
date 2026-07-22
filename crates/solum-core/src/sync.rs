@@ -180,25 +180,45 @@ impl SyncConfig {
 /// by hand. Same story for the encryption key (§3.8) — the relay never had
 /// access to it before this change and still doesn't.
 ///
-/// Two-stage KDF: Argon2id (deliberately slow, password-hardened — resists
-/// offline brute force if the relay token ever leaks, which matters more the
-/// weaker the chosen password is) stretches the password into one 32-byte
-/// intermediate key, salted with a hash of the username so two different
-/// usernames sharing a password still diverge; the username is not treated as
-/// secret. HKDF-SHA256 (fast) then expands that single intermediate key into
-/// two independent 32-byte outputs — domain-separated by the `info` label —
-/// so recovering the token reveals nothing about the encryption key or
-/// vice versa, even though both trace back to one password.
+/// Two-stage KDF: PBKDF2-HMAC-SHA256 (deliberately slow, password-hardened —
+/// resists offline brute force if the relay token ever leaks, which matters
+/// more the weaker the chosen password is) stretches the password into one
+/// 32-byte intermediate key, salted with a hash of the username so two
+/// different usernames sharing a password still diverge; the username is not
+/// treated as secret. HKDF-SHA256 (fast) then expands that single
+/// intermediate key into two independent 32-byte outputs — domain-separated
+/// by the `info` label — so recovering the token reveals nothing about the
+/// encryption key or vice versa, even though both trace back to one
+/// password.
+///
+/// **PBKDF2, not Argon2id (2026-07-22 revision)**: this exact algorithm also
+/// needs to run in the ops dashboard's vanilla-JS frontend so a browser can
+/// derive the same token from a typed username+password (matching the app's
+/// login UX everywhere) — and the dashboard's own "no vendored dependencies"
+/// rule rules out shipping a JS Argon2 implementation, while hand-rolling
+/// Argon2id in JS is not something to risk for security-critical code.
+/// PBKDF2 and HKDF are both natively available via every browser's
+/// `SubtleCrypto`, so the browser and this function derive bit-identical
+/// output with zero added JS dependencies. Trade-off accepted: PBKDF2 is not
+/// memory-hard, so it resists GPU/ASIC-parallel brute force less than
+/// Argon2id would for the same wall-clock cost — acceptable here because
+/// this secures a single-user self-hosted relay, not a high-value target,
+/// and the KDF was never going to save a weak password from being weak.
+const PBKDF2_ROUNDS: u32 = 600_000;
+/// Fixed, explicit HKDF-Extract salt (not the `None` default) so this exactly
+/// matches what the browser passes to `SubtleCrypto.deriveBits({name:"HKDF"})`
+/// — that API has no "omit the salt" option, so Rust must not rely on
+/// `hkdf`'s implicit zero-salt convention either; both sides state it.
+const HKDF_SALT: [u8; 32] = [0u8; 32];
+
 pub fn derive_credentials(username: &str, password: &str) -> Result<(String, String)> {
     use sha2::{Digest, Sha256};
 
     let salt = Sha256::digest(username.as_bytes());
     let mut ikm = [0u8; 32];
-    argon2::Argon2::default()
-        .hash_password_into(password.as_bytes(), &salt, &mut ikm)
-        .map_err(|e| CoreError::Invalid(format!("密码派生失败：{e}")))?;
+    pbkdf2::pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ROUNDS, &mut ikm);
 
-    let hk = hkdf::Hkdf::<Sha256>::new(None, &ikm);
+    let hk = hkdf::Hkdf::<Sha256>::new(Some(&HKDF_SALT), &ikm);
     let mut token_bytes = [0u8; 32];
     hk.expand(b"solum-sync-v1:token", &mut token_bytes)
         .map_err(|e| CoreError::Invalid(format!("token 派生失败：{e}")))?;
