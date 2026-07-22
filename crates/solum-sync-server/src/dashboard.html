@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Solum Sync · 运维</title>
+<style>
+  :root {
+    --bg: #ffffff; --side: #f4f4f5; --inset: #f7f7f8;
+    --ink: #18181b; --ink-2: #494950; --muted: #6d6d76; --faint: #a1a1aa;
+    --line: #e7e7ea; --line-strong: #d6d6db;
+    --accent: #854d0e; --accent-fill: #f0a824; --on-accent-fill: #241a05;
+    --accent-soft: #faf0dc; --accent-line: #ecd9ae;
+    --ok: #15803d; --ok-soft: #e0f2e7;
+    --danger: #b91c1c; --danger-soft: #fbe9e9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131316; --side: #1a1a1e; --inset: #202024;
+      --ink: #ededf0; --ink-2: #c3c3cc; --muted: #9a9aa6; --faint: #64646e;
+      --line: #29292f; --line-strong: #3a3a42;
+      --accent: #e6ac4a; --accent-fill: #f0a824; --on-accent-fill: #241a05;
+      --accent-soft: #33280f; --accent-line: #4d3c14;
+      --ok: #57c98a; --ok-soft: #14301f;
+      --danger: #f28b7d; --danger-soft: #3a1f1b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif;
+  }
+  main { max-width: 880px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 18px; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
+  .sub { color: var(--muted); margin: 0 0 24px; font-size: 13px; }
+  .card {
+    background: var(--side); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 18px; margin-bottom: 16px;
+  }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  label { font-size: 12px; color: var(--ink-2); }
+  input[type="text"], input[type="password"] {
+    background: var(--inset); border: 1px solid var(--line-strong); border-radius: 6px;
+    color: var(--ink); padding: 7px 10px; font: inherit; min-width: 220px;
+  }
+  input:focus { outline: 2px solid var(--accent-fill); outline-offset: 1px; }
+  button {
+    background: var(--accent-fill); color: var(--on-accent-fill); border: none;
+    border-radius: 6px; padding: 8px 14px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button:active { transform: translateY(1px); }
+  button.ghost {
+    background: transparent; color: var(--ink); border: 1px solid var(--line-strong);
+    font-weight: 400;
+  }
+  .statusline { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+  .dot.ok { background: var(--ok); }
+  .dot.bad { background: var(--danger); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 4px; }
+  .stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.num, th.num { text-align: right; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  .empty { color: var(--muted); padding: 20px; text-align: center; }
+  .err { color: var(--danger); font-size: 13px; margin-top: 8px; }
+  footer { color: var(--faint); font-size: 12px; margin-top: 24px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🔆 Solum Sync</h1>
+  <p class="sub">加密中转运维仪表盘 —— 服务端只存转密文，此处不会显示、也拿不到任何 blob 内容。</p>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label for="token">Bearer token</label><br />
+        <input type="password" id="token" placeholder="SOLUM_SYNC_SERVER_TOKEN" />
+      </div>
+      <button id="connect">连接</button>
+      <button id="forget" class="ghost">忘记 token</button>
+      <label style="margin-left: auto; display: flex; align-items: center; gap: 6px;">
+        <input type="checkbox" id="auto" checked style="width: auto; min-width: 0;" /> 每 10s 自动刷新
+      </label>
+    </div>
+    <div class="statusline" style="margin-top: 12px;">
+      <span class="dot" id="health-dot"></span>
+      <span id="health-text">未连接</span>
+    </div>
+    <div class="err" id="err" hidden></div>
+  </div>
+
+  <div class="card">
+    <div class="grid" id="totals">
+      <div class="stat"><b id="s-blobs">—</b><span>总 blob 数</span></div>
+      <div class="stat"><b id="s-bytes">—</b><span>密文总量</span></div>
+      <div class="stat"><b id="s-db">—</b><span>DB 文件大小</span></div>
+      <div class="stat"><b id="s-seq">—</b><span>seq 区间</span></div>
+      <div class="stat"><b id="s-retention">—</b><span>留存天数</span></div>
+      <div class="stat"><b id="s-devices">—</b><span>设备数</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>设备</th>
+          <th class="num">blob 数</th>
+          <th class="num">字节数</th>
+          <th class="num">last seq</th>
+          <th>最近推送</th>
+        </tr>
+      </thead>
+      <tbody id="device-rows"></tbody>
+    </table>
+    <div class="empty" id="device-empty" hidden>还没有设备推送过数据</div>
+  </div>
+
+  <footer>只读。所有请求走既有 Bearer 鉴权，与设备同步用的是同一把 token。</footer>
+</main>
+
+<script>
+(function () {
+  var TOKEN_KEY = "solum_sync_dashboard_token";
+  var tokenInput = document.getElementById("token");
+  var errBox = document.getElementById("err");
+  var healthDot = document.getElementById("health-dot");
+  var healthText = document.getElementById("health-text");
+  var timer = null;
+
+  var saved = localStorage.getItem(TOKEN_KEY);
+  if (saved) tokenInput.value = saved;
+
+  function fmtBytes(n) {
+    if (!n || n <= 0) return "0 B";
+    var units = ["B", "KB", "MB", "GB", "TB"];
+    var i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+    return (n / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1) + " " + units[i];
+  }
+
+  function fmtAgo(iso) {
+    if (!iso) return "—";
+    var ms = Date.now() - new Date(iso + (iso.endsWith("Z") ? "" : "Z")).getTime();
+    if (isNaN(ms)) return iso;
+    if (ms < 0) ms = 0;
+    var s = Math.floor(ms / 1000);
+    if (s < 60) return s + "s 前";
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + "m 前";
+    var h = Math.floor(m / 60);
+    if (h < 24) return h + "h 前";
+    return Math.floor(h / 24) + "d 前";
+  }
+
+  function setHealth(ok, msg) {
+    healthDot.className = "dot " + (ok === null ? "" : ok ? "ok" : "bad");
+    healthText.textContent = msg;
+  }
+
+  function authedFetch(path) {
+    var token = tokenInput.value.trim();
+    return fetch(path, { headers: { Authorization: "Bearer " + token } });
+  }
+
+  function renderStats(s) {
+    document.getElementById("s-blobs").textContent = s.total_blobs;
+    document.getElementById("s-bytes").textContent = fmtBytes(s.total_bytes);
+    document.getElementById("s-db").textContent = fmtBytes(s.db_bytes);
+    document.getElementById("s-seq").textContent =
+      s.total_blobs > 0 ? s.oldest_seq + " – " + s.newest_seq : "—";
+    document.getElementById("s-retention").textContent =
+      s.retention_days > 0 ? s.retention_days + " 天" : "不清理";
+    document.getElementById("s-devices").textContent = s.devices.length;
+
+    var rows = document.getElementById("device-rows");
+    var empty = document.getElementById("device-empty");
+    rows.innerHTML = "";
+    empty.hidden = s.devices.length > 0;
+    s.devices.forEach(function (d) {
+      var tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td>" + escapeHtml(d.device) + "</td>" +
+        "<td class=\"num\">" + d.blob_count + "</td>" +
+        "<td class=\"num\">" + fmtBytes(d.bytes) + "</td>" +
+        "<td class=\"num\">" + d.last_seq + "</td>" +
+        "<td title=\"" + escapeHtml(d.last_received_at) + "\">" + fmtAgo(d.last_received_at) + "</td>";
+      rows.appendChild(tr);
+    });
+  }
+
+  function escapeHtml(s) {
+    var d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function refresh() {
+    var token = tokenInput.value.trim();
+    if (!token) {
+      setHealth(null, "未连接");
+      return;
+    }
+    errBox.hidden = true;
+    authedFetch("/v1/health")
+      .then(function (r) {
+        if (r.status === 401) throw new Error("token 不对（401）");
+        if (!r.ok) throw new Error("health 请求失败：" + r.status);
+        return r.json();
+      })
+      .then(function () {
+        setHealth(true, "在线");
+        return authedFetch("/v1/stats");
+      })
+      .then(function (r) {
+        if (!r.ok) throw new Error("stats 请求失败：" + r.status);
+        return r.json();
+      })
+      .then(renderStats)
+      .catch(function (e) {
+        setHealth(false, "连接失败");
+        errBox.hidden = false;
+        errBox.textContent = e.message;
+      });
+  }
+
+  function scheduleAuto() {
+    if (timer) clearInterval(timer);
+    if (document.getElementById("auto").checked) {
+      timer = setInterval(refresh, 10000);
+    }
+  }
+
+  document.getElementById("connect").addEventListener("click", function () {
+    localStorage.setItem(TOKEN_KEY, tokenInput.value.trim());
+    refresh();
+    scheduleAuto();
+  });
+  document.getElementById("forget").addEventListener("click", function () {
+    localStorage.removeItem(TOKEN_KEY);
+    tokenInput.value = "";
+    setHealth(null, "未连接");
+  });
+  document.getElementById("auto").addEventListener("change", scheduleAuto);
+  tokenInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") document.getElementById("connect").click();
+  });
+
+  if (saved) {
+    refresh();
+    scheduleAuto();
+  }
+})();
+</script>
+</body>
+</html>
