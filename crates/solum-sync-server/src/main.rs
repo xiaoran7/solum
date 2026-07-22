@@ -10,6 +10,15 @@
 //!   → `{"seq": N}`
 //! - `GET  /v1/pull?since=N&device=<id>`
 //!   → `{"blobs": [{"seq": N, "device": "...", "blob": "<base64>"}]}`
+//! - `GET  /v1/stats` — aggregate counts only (never blob content), for the
+//!   ops dashboard below: `{"total_blobs", "total_bytes", "oldest_seq",
+//!   "newest_seq", "retention_days", "db_bytes", "devices": [{"device",
+//!   "blob_count", "bytes", "last_seq", "last_received_at"}]}`
+//!
+//! `GET /` serves a static, unauthenticated ops dashboard (`dashboard.html`,
+//! embedded in the binary) that itself calls `/v1/health` and `/v1/stats`
+//! with a Bearer token entered client-side — the page has no data of its
+//! own, so it needs no auth to load.
 //!
 //! Config via env: `SOLUM_SYNC_SERVER_TOKEN` (required), `SOLUM_SYNC_SERVER_ADDR`
 //! (default `127.0.0.1:8787`), `SOLUM_SYNC_SERVER_DB` (default `pa-sync.sqlite`).
@@ -45,6 +54,10 @@ const MAX_PULL_ROWS: usize = 500;
 /// compares it against its own cursor and refuses to advance silently across a
 /// gap (see `sync::sync_once`). Never add retention without that half.
 const DEFAULT_RETENTION_DAYS: i64 = 30;
+
+/// Ops dashboard, embedded so the deployed artifact stays a single binary —
+/// no separate static file to ship alongside it.
+const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 
 fn main() {
     let token = match std::env::var("SOLUM_SYNC_SERVER_TOKEN") {
@@ -104,6 +117,20 @@ fn main() {
     println!("solum-sync-server 监听 http://{addr}（db: {db_path}）——只中转密文，不解密");
 
     for mut req in server.incoming_requests() {
+        let url = req.url().to_string();
+        let method = req.method().clone();
+
+        // Static dashboard has no data of its own — it fetches /v1/* itself
+        // with a Bearer token entered client-side — so it needs no auth to
+        // load, unlike every /v1/* route below.
+        if method == Method::Get && (url == "/" || url == "/index.html") {
+            let resp = Response::from_string(DASHBOARD_HTML).with_header(
+                Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
+            );
+            let _ = req.respond(resp);
+            continue;
+        }
+
         let authed = req
             .headers()
             .iter()
@@ -115,8 +142,6 @@ fn main() {
             continue;
         }
 
-        let url = req.url().to_string();
-        let method = req.method().clone();
         match (method, url.as_str()) {
             (Method::Post, u) if u.starts_with("/v1/push") => {
                 let device = header(&req, "X-Device");
@@ -205,6 +230,67 @@ fn main() {
                     }
                     Err(e) => {
                         eprintln!("pull 读取失败: {e}");
+                        respond(req, 500, r#"{"error":"read failed"}"#);
+                    }
+                }
+            }
+            (Method::Get, u) if u.starts_with("/v1/stats") => {
+                type Totals = (i64, i64, i64, i64);
+                type Devices = Result<Vec<serde_json::Value>, rusqlite::Error>;
+                let (totals, devices): (Totals, Devices) = {
+                    let c = conn.lock().unwrap();
+                    let totals = c
+                        .query_row(
+                            "SELECT COUNT(*), COALESCE(SUM(LENGTH(blob)),0),
+                                    COALESCE(MIN(seq),0), COALESCE(MAX(seq),0) FROM blobs",
+                            [],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                        )
+                        .unwrap_or((0, 0, 0, 0));
+                    let devices = c
+                        .prepare(
+                            "SELECT device, COUNT(*), COALESCE(SUM(LENGTH(blob)),0), MAX(seq), MAX(received_at)
+                             FROM blobs GROUP BY device ORDER BY MAX(seq) DESC",
+                        )
+                        .and_then(|mut stmt| {
+                            stmt.query_map([], |r| {
+                                let device: String = r.get(0)?;
+                                let count: i64 = r.get(1)?;
+                                let bytes: i64 = r.get(2)?;
+                                let last_seq: i64 = r.get(3)?;
+                                let last_received_at: String = r.get(4)?;
+                                Ok(serde_json::json!({
+                                    "device": device,
+                                    "blob_count": count,
+                                    "bytes": bytes,
+                                    "last_seq": last_seq,
+                                    "last_received_at": last_received_at,
+                                }))
+                            })?
+                            .collect()
+                        });
+                    (totals, devices)
+                };
+                match devices {
+                    Ok(devices) => {
+                        let db_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+                        respond(
+                            req,
+                            200,
+                            &serde_json::json!({
+                                "total_blobs": totals.0,
+                                "total_bytes": totals.1,
+                                "oldest_seq": totals.2,
+                                "newest_seq": totals.3,
+                                "retention_days": retention_days,
+                                "db_bytes": db_bytes,
+                                "devices": devices,
+                            })
+                            .to_string(),
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("stats 读取失败: {e}");
                         respond(req, 500, r#"{"error":"read failed"}"#);
                     }
                 }
