@@ -189,6 +189,21 @@
       忘了的话去部署这台服务的 1Panel → 容器 → 编排 → <code>solum-sync</code> → 编辑，「环境变量」框里就是。
       这里只用它做 API 鉴权，不会把它发到别处，只存在你自己浏览器的 localStorage 里。
     </div>
+    <div class="row" style="margin-top:10px;">
+      <button type="button" class="ghost" id="toggle-login" style="font-size:12px;">或用用户名+密码登录 ▾</button>
+    </div>
+    <div id="login-box" hidden style="margin-top:10px;">
+      <div class="row">
+        <div class="field"><label for="login-user">用户名</label>
+          <input type="text" id="login-user" autocomplete="off" /></div>
+        <div class="field"><label for="login-pass">密码</label>
+          <input type="password" id="login-pass" autocomplete="off" /></div>
+        <button type="button" id="login-btn">登录</button>
+      </div>
+      <p class="hint-box" style="margin-top:10px;">
+        在浏览器本地按跟设备端一样的方式（PBKDF2 + HKDF）算出 token，只存派生结果，密码本身不会保存、不会发出去。
+      </p>
+    </div>
     <div class="statusline">
       <span class="dot" id="health-dot"></span>
       <span id="health-text">未连接</span>
@@ -250,6 +265,63 @@
   });
   document.getElementById("eye").addEventListener("click", function () {
     tokenInput.type = tokenInput.type === "password" ? "text" : "password";
+  });
+  document.getElementById("toggle-login").addEventListener("click", function () {
+    var box = document.getElementById("login-box");
+    box.hidden = !box.hidden;
+  });
+
+  // Mirrors solum-core::sync::derive_credentials bit-for-bit: PBKDF2-HMAC-SHA256
+  // (600,000 rounds, salt = SHA-256(username)) stretches the password into an
+  // intermediate key, then HKDF-SHA256 (zero salt, "solum-sync-v1:token" info)
+  // expands it into the relay token. Chosen specifically because both PBKDF2
+  // and HKDF are native SubtleCrypto algorithms — no vendored JS crypto lib,
+  // no hand-rolled Argon2 in JS (see sync.rs for the full trade-off writeup).
+  function toHex(buf) {
+    var bytes = new Uint8Array(buf), out = "";
+    for (var i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, "0");
+    return out;
+  }
+  async function deriveToken(username, password) {
+    var enc = new TextEncoder();
+    var saltBuf = await crypto.subtle.digest("SHA-256", enc.encode(username));
+    var passKey = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
+    var ikm = await crypto.subtle.deriveBits(
+      { name: "PBKDF2", salt: saltBuf, iterations: 600000, hash: "SHA-256" },
+      passKey, 256);
+    var hkdfKey = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+    var tokenBits = await crypto.subtle.deriveBits(
+      { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(32), info: enc.encode("solum-sync-v1:token") },
+      hkdfKey, 256);
+    return toHex(tokenBits);
+  }
+  document.getElementById("login-btn").addEventListener("click", async function () {
+    var btn = this;
+    var user = document.getElementById("login-user").value.trim();
+    var pass = document.getElementById("login-pass").value;
+    if (!user || !pass) { errBox.hidden = false; errBox.textContent = "请填写用户名和密码"; return; }
+    if (!(window.crypto && crypto.subtle)) {
+      errBox.hidden = false;
+      errBox.textContent = "这个浏览器/连接不支持 SubtleCrypto（需要 HTTPS 或 localhost）";
+      return;
+    }
+    btn.disabled = true;
+    var original = btn.textContent;
+    btn.textContent = "推导中…";
+    try {
+      var token = await deriveToken(user, pass);
+      tokenInput.value = token;
+      document.getElementById("login-pass").value = "";
+      localStorage.setItem(TOKEN_KEY, token);
+      refresh();
+      scheduleAuto();
+    } catch (e) {
+      errBox.hidden = false;
+      errBox.textContent = "推导失败：" + e.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
   });
 
   function fmtBytes(n) {

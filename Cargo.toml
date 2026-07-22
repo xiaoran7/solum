@@ -33,7 +33,11 @@ sha2 = "0.10"
 url = "2"
 # Pure-Rust (no C/asm needed by default), same portability requirement as the
 # rustls choice above — must cross-compile to Android without a toolchain.
-argon2 = "0.5"
+# PBKDF2 (not Argon2id) specifically so the ops dashboard's vanilla-JS frontend
+# can derive the identical token/key via the browser's native SubtleCrypto —
+# no vendored JS crypto library, no hand-rolled Argon2 in JS (sync.rs docs the
+# trade-off this KDF choice accepts).
+pbkdf2 = "0.12"
 hkdf = "0.12"
 
 # Faster, smaller test/dev builds where the SQLite C compile dominates.
