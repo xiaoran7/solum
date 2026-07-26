@@ -4,6 +4,7 @@
 //! event extraction, importance classification, notification scheduling, the
 //! HITL safety guard, and the local memory store. See ../../docs/ARCHITECTURE.md.
 
+pub mod account;
 pub mod brief;
 pub mod classify;
 pub mod email;

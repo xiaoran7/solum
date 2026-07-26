@@ -368,6 +368,13 @@ fn llm_config_save(state: State<AppState>, cfg: LlmSaveArgs) -> CmdResult<String
     }
     solum_core::fsatomic::write_atomic(&path, &json).map_err(|e| e.to_string())?;
     let summary = c.masked_summary();
+    // 账号登录时账号代理优先（对齐鸿蒙 0.2.0 的模式）：直连配置照常保存，
+    // 但不抢走正在运行的账号 reasoner——退出登录后自动回落到这份配置。
+    if solum_core::account::AccountSession::load().is_some() {
+        return Ok(format!(
+            "{summary}（已保存；当前账号登录优先，退出登录后生效）"
+        ));
+    }
     lock!(state).set_reasoner(Box::new(solum_core::llm::LlmReasoner::new(c)));
     if let Ok(mut g) = state.llm_summary.lock() {
         *g = Some(summary.clone());
@@ -400,6 +407,118 @@ async fn llm_config_test(cfg: LlmSaveArgs) -> CmdResult<LlmTestResult> {
     })
     .await
     .map_err(|e| format!("测试线程失败: {e}"))?
+}
+
+// ---- Solum account (cloud proxy) — ported from the harmony 0.2.0 client ----
+
+/// Everything the account settings block needs — never the tokens.
+#[derive(Serialize)]
+struct AccountStatus {
+    logged_in: bool,
+    username: String,
+    server_url: String,
+    model: String,
+    model_options: Vec<&'static str>,
+    /// Where the session file lives.
+    path: String,
+}
+
+#[tauri::command]
+fn account_status_get() -> CmdResult<AccountStatus> {
+    let path = solum_core::account::AccountSession::path()
+        .to_string_lossy()
+        .into_owned();
+    match solum_core::account::AccountSession::load() {
+        Some(s) => Ok(AccountStatus {
+            logged_in: true,
+            username: s.username,
+            server_url: s.server_url,
+            model: s.model,
+            model_options: solum_core::account::CLOUD_MODEL_OPTIONS.to_vec(),
+            path,
+        }),
+        None => Ok(AccountStatus {
+            logged_in: false,
+            username: String::new(),
+            server_url: String::new(),
+            model: solum_core::account::DEFAULT_CLOUD_MODEL.to_string(),
+            model_options: solum_core::account::CLOUD_MODEL_OPTIONS.to_vec(),
+            path,
+        }),
+    }
+}
+
+/// Log in against a self-hosted solum-cloud (`server/`) and hot-swap the
+/// running reasoner to the account proxy. The password exists only inside
+/// this call. Async so the network round-trip never freezes the UI thread.
+#[tauri::command]
+async fn account_login(
+    state: State<'_, AppState>,
+    server_url: String,
+    username: String,
+    password: String,
+    model: String,
+) -> CmdResult<String> {
+    let session = tauri::async_runtime::spawn_blocking(move || {
+        solum_core::account::login(&server_url, &username, &password, &model)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("登录线程失败: {e}"))??;
+    let summary = format!("账号 · {}", session.masked_summary());
+    lock!(state).set_reasoner(Box::new(solum_core::account::AccountReasoner::new(session)));
+    if let Ok(mut g) = state.llm_summary.lock() {
+        *g = Some(summary.clone());
+    }
+    Ok(summary)
+}
+
+/// Local sign-out first-class: best-effort server-side revocation, then the
+/// reasoner falls back to the direct-key config (if any) or fully offline.
+#[tauri::command]
+async fn account_logout(state: State<'_, AppState>) -> CmdResult<String> {
+    if let Some(session) = solum_core::account::AccountSession::load() {
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            solum_core::account::logout(&session);
+        })
+        .await;
+    } else {
+        solum_core::account::AccountSession::delete_file();
+    }
+    match solum_core::llm::LlmConfig::load() {
+        Some(cfg) => {
+            let summary = cfg.masked_summary();
+            lock!(state).set_reasoner(Box::new(solum_core::llm::LlmReasoner::new(cfg)));
+            if let Ok(mut g) = state.llm_summary.lock() {
+                *g = Some(summary.clone());
+            }
+            Ok(format!("已退出登录；云端改走直连配置（{summary}）"))
+        }
+        None => {
+            lock!(state).clear_reasoner();
+            if let Ok(mut g) = state.llm_summary.lock() {
+                *g = None;
+            }
+            Ok("已退出登录；云端对话已关闭，本机功能不受影响".to_string())
+        }
+    }
+}
+
+/// Change which model the proxy asks upstream for (login stays untouched).
+#[tauri::command]
+fn account_model_save(state: State<AppState>, model: String) -> CmdResult<String> {
+    let Some(mut session) = solum_core::account::AccountSession::load() else {
+        return Err("请先登录账号".into());
+    };
+    session.model =
+        solum_core::account::normalize_cloud_model(&model).map_err(|e| e.to_string())?;
+    session.save().map_err(|e| e.to_string())?;
+    let summary = format!("账号 · {}", session.masked_summary());
+    lock!(state).set_reasoner(Box::new(solum_core::account::AccountReasoner::new(session)));
+    if let Ok(mut g) = state.llm_summary.lock() {
+        *g = Some(summary.clone());
+    }
+    Ok(summary)
 }
 
 // ---- Soulous read-only source settings (Phase 8.1) -------------------------
@@ -3153,13 +3272,29 @@ pub fn run() {
                     std::env::set_var("SOLUM_SYNC_CONFIG", dir.join("solum-sync.json"));
                 }
             }
+            // Account session file follows the same mobile-aware convention as
+            // the other credential files above.
+            #[cfg(mobile)]
+            if std::env::var("SOLUM_ACCOUNT_CONFIG").is_err() {
+                if let Some(dir) = std::path::Path::new(&db_path).parent() {
+                    std::env::set_var("SOLUM_ACCOUNT_CONFIG", dir.join("solum-account.json"));
+                }
+            }
             let mut orch = Orchestrator::open(&db_path)?;
             // Cloud reasoner is optional by design (F16): no config → stay offline.
-            let llm_summary = solum_core::llm::LlmConfig::load().map(|cfg| {
-                let summary = cfg.masked_summary();
-                orch.set_reasoner(Box::new(solum_core::llm::LlmReasoner::new(cfg)));
-                summary
-            });
+            // Account proxy (harmony-0.2.0 model) outranks the direct-key config
+            // while a session exists; logging out falls back automatically.
+            let llm_summary = if let Some(session) = solum_core::account::AccountSession::load() {
+                let summary = format!("账号 · {}", session.masked_summary());
+                orch.set_reasoner(Box::new(solum_core::account::AccountReasoner::new(session)));
+                Some(summary)
+            } else {
+                solum_core::llm::LlmConfig::load().map(|cfg| {
+                    let summary = cfg.masked_summary();
+                    orch.set_reasoner(Box::new(solum_core::llm::LlmReasoner::new(cfg)));
+                    summary
+                })
+            };
             app.manage(AppState {
                 orch: Arc::new(Mutex::new(orch)),
                 db_path: db_path.clone(),
@@ -3304,6 +3439,10 @@ pub fn run() {
             llm_config_get,
             llm_config_save,
             llm_config_test,
+            account_status_get,
+            account_login,
+            account_logout,
+            account_model_save,
             soulous_config_get,
             soulous_config_save,
             soulous_pull,
