@@ -265,7 +265,7 @@ impl Reasoner for LlmReasoner {
 /// Some thinking-model gateways inline the chain of thought as a leading
 /// `<think>…</think>` block instead of a separate `reasoning_content` field —
 /// strip it so callers only ever see the final answer.
-fn parse_chat_content(json: &serde_json::Value) -> Result<String> {
+pub(crate) fn parse_chat_content(json: &serde_json::Value) -> Result<String> {
     json["choices"][0]["message"]["content"]
         .as_str()
         .map(|s| strip_think_block(s).trim().to_string())
@@ -273,7 +273,7 @@ fn parse_chat_content(json: &serde_json::Value) -> Result<String> {
         .ok_or_else(|| CoreError::Llm(format!("响应缺少 choices[0].message.content: {json}")))
 }
 
-fn strip_think_block(s: &str) -> &str {
+pub(crate) fn strip_think_block(s: &str) -> &str {
     let t = s.trim_start();
     if let Some(rest) = t.strip_prefix("<think>") {
         if let Some(end) = rest.find("</think>") {
@@ -286,7 +286,7 @@ fn strip_think_block(s: &str) -> &str {
 // ---- SSE streaming helpers --------------------------------------------------
 
 /// One classified line of an OpenAI-compatible `stream:true` SSE body.
-enum SseLine {
+pub(crate) enum SseLine {
     /// A `data: [DONE]` terminator.
     Done,
     /// A content delta (`choices[0].delta.content`).
@@ -299,7 +299,7 @@ enum SseLine {
 /// Classify one raw SSE line. Pure so it can be unit-tested without a socket.
 /// `reasoning_content` is deliberately never read — chain-of-thought stays out
 /// of the process, same guarantee as [`parse_chat_content`].
-fn sse_line(line: &str) -> SseLine {
+pub(crate) fn sse_line(line: &str) -> SseLine {
     let Some(data) = line.strip_prefix("data:") else {
         return SseLine::Ignore;
     };
@@ -325,7 +325,7 @@ fn sse_line(line: &str) -> SseLine {
 /// but incrementally (that fn still runs on the full accumulation for the
 /// returned value; this only shapes what the caller *sees* live).
 #[derive(Default)]
-struct ThinkFilter {
+pub(crate) struct ThinkFilter {
     /// Content buffered while we can't yet decide think-vs-content.
     buf: String,
     /// Once true, everything is forwarded verbatim.
@@ -334,7 +334,7 @@ struct ThinkFilter {
 
 impl ThinkFilter {
     /// Feed one content piece; return the portion to emit now (may be empty).
-    fn push(&mut self, piece: &str) -> String {
+    pub(crate) fn push(&mut self, piece: &str) -> String {
         if self.passthrough {
             return piece.to_string();
         }

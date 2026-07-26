@@ -1390,6 +1390,36 @@
           <div id="llmTestOut"></div>
         </div>
       </div>
+      <details class="fold" id="accountFold">
+        <summary>账号登录 <span class="bnote">自建 solum-cloud 代理 · 登录期间优先于直连</span></summary>
+        <div class="fold-body">
+        <p class="hint" style="margin:0 0 14px;max-width:66ch;">
+          登录你自建的 solum-cloud（仓库 <code>server/</code>，与鸿蒙版共用）后，云端请求改经代理转发，
+          第三方 API Key 只存在服务端。密码仅用于本次登录请求、不落盘，本机只保存访问/刷新令牌
+          （<code>solum-account.json</code>）；登录只鉴权云端 AI，不上传本机数据库。</p>
+        <div id="accountStatus" style="margin-bottom:14px;"></div>
+        <div class="formcol">
+          <div id="accountLoginForm">
+            <div class="field"><label for="accountServer">服务器地址</label>
+              <input type="text" id="accountServer" placeholder="https://your-solum-cloud.example" autocomplete="off" spellcheck="false" /></div>
+            <div class="fieldrow">
+              <div class="field"><label for="accountUser">账号</label>
+                <input type="text" id="accountUser" autocomplete="off" spellcheck="false" /></div>
+              <div class="field"><label for="accountPass">密码</label>
+                <input type="password" id="accountPass" autocomplete="off" /></div>
+            </div>
+          </div>
+          <div class="field"><label for="accountModel">模型</label>
+            <input type="text" id="accountModel" list="accountModels" placeholder="mimo-v2.5" autocomplete="off" spellcheck="false" />
+            <datalist id="accountModels"></datalist></div>
+          <div class="btnrow">
+            <button class="btn primary" id="accountLoginBtn">登录</button>
+            <button class="btn" id="accountModelBtn" hidden>保存模型</button>
+            <button class="btn" id="accountLogoutBtn" hidden>退出登录</button>
+          </div>
+        </div>
+        </div>
+      </details>
       <details class="fold">
         <summary>Soulous 互通 <span class="bnote">入站只读 · 出站默认关闭</span></summary>
         <div class="fold-body">
@@ -4687,6 +4717,95 @@ $("llmTestBtn").addEventListener("click", async () => {
   } finally { $("llmTestBtn").disabled = false; }
 });
 
+/* ============================== 账号登录（设置 → 云端，solum-cloud 代理） ============================== */
+let accountLoggedIn = false;
+let accountFormSeeded = false; // 同 llm 表单：只首次 seed，refreshAll 不覆盖正在编辑的值
+
+function renderAccountStatus(s) {
+  const box = $("accountStatus");
+  box.textContent = "";
+  if (s.logged_in) {
+    box.appendChild(el("div", { class: "statusline", title: `会话文件：${s.path}（已 gitignore，不入库、不进同步）` }, [
+      el("span", { class: "sdot ok" }),
+      el("span", { class: "t", text: `已登录：${s.username} @ ${s.server_url} · ${s.model}` }),
+    ]));
+    box.appendChild(el("div", { class: "hint", style: "margin:4px 0 0 16px;",
+      text: "登录期间云端走账号代理，上方直连配置暂不生效；退出登录后自动回落。" }));
+  }
+}
+
+async function refreshAccount() {
+  let s;
+  try { s = await invoke("account_status_get"); } catch (_) { return; }
+  accountLoggedIn = !!s.logged_in;
+  renderAccountStatus(s);
+  $("accountLoginForm").hidden = accountLoggedIn;
+  $("accountLoginBtn").hidden = accountLoggedIn;
+  $("accountLogoutBtn").hidden = !accountLoggedIn;
+  $("accountModelBtn").hidden = !accountLoggedIn;
+  if (accountLoggedIn) $("accountFold").open = true;
+  const dl = $("accountModels");
+  dl.textContent = "";
+  for (const m of s.model_options || []) dl.appendChild(el("option", { value: m }));
+  if (accountFormSeeded) return;
+  accountFormSeeded = true;
+  if (s.logged_in) {
+    $("accountServer").value = s.server_url;
+    $("accountUser").value = s.username;
+  }
+  $("accountModel").value = s.model || "mimo-v2.5";
+}
+
+$("accountLoginBtn").addEventListener("click", async () => {
+  const serverUrl = $("accountServer").value.trim();
+  const username = $("accountUser").value.trim();
+  const password = $("accountPass").value;
+  if (!serverUrl) return toast("请填写服务器地址", "danger");
+  if (!username || !password) return toast("请填写账号和密码", "danger");
+  $("accountLoginBtn").disabled = true;
+  try {
+    const summary = await invoke("account_login", {
+      serverUrl, username, password, model: $("accountModel").value.trim(),
+    });
+    $("accountPass").value = ""; // 密码只用于这一次请求，界面也不留
+    toast("已登录，云端改走账号代理", "ok");
+    $("llmDot").className = "sdot ok";
+    $("llmText").textContent = "云端在线";
+    $("llmRow").title = summary;
+    accountFormSeeded = false;
+    refreshAccount(); refreshCloud();
+  } catch (e) { toast(String(e), "danger"); }
+  finally { $("accountLoginBtn").disabled = false; }
+});
+
+$("accountLogoutBtn").addEventListener("click", async () => {
+  $("accountLogoutBtn").disabled = true;
+  try {
+    const message = await invoke("account_logout");
+    toast(message, "ok");
+    // 退出后云端状态取决于是否还有直连配置，页脚交给 refresh 按真实状态刷。
+    accountFormSeeded = false;
+    llmFormSeeded = false;
+    await refreshAccount(); await refreshCloud();
+    const on = !accountLoggedIn && !!llmKeyTail;
+    $("llmDot").className = "sdot" + (on ? " ok" : "");
+    $("llmText").textContent = on ? "云端在线" : "离线模式";
+  } catch (e) { toast(String(e), "danger"); }
+  finally { $("accountLogoutBtn").disabled = false; }
+});
+
+$("accountModelBtn").addEventListener("click", async () => {
+  $("accountModelBtn").disabled = true;
+  try {
+    const summary = await invoke("account_model_save", { model: $("accountModel").value.trim() });
+    toast("已保存模型", "ok");
+    $("llmRow").title = summary;
+    accountFormSeeded = false;
+    refreshAccount();
+  } catch (e) { toast(String(e), "danger"); }
+  finally { $("accountModelBtn").disabled = false; }
+});
+
 /* ============================== Soulous（设置 → 云端） ============================== */
 let soulousAccessTail = "";
 let soulousRefreshTail = "";
@@ -5260,6 +5379,7 @@ function refreshAll() {
   refreshPrivacy();
   refreshGuard();
   refreshCloud();
+  refreshAccount();
   refreshSoulous();
   refreshSyncConfig();
   refreshEmail();

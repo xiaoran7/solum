@@ -152,6 +152,12 @@ impl Orchestrator {
         self.reasoner = Some(r);
     }
 
+    /// Detach the cloud reasoner — back to fully offline (F16 floor). Used
+    /// when the account session ends and no direct-key config exists.
+    pub fn clear_reasoner(&mut self) {
+        self.reasoner = None;
+    }
+
     /// One sync round against the relay (F17, §3.8): push local changes,
     /// pull + merge everyone else's. Merged rows may replace the cached
     /// persona / rule table / proactivity, so the caches are reloaded.
