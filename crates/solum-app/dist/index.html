@@ -537,6 +537,23 @@
   }
   .msg .intent { margin: 0 0 5px; }
   .msg .evmeta { margin-top: 6px; font-size: .8125rem; color: var(--muted); }
+
+  /* ---- 对话 Markdown（自研渲染，语义对齐鸿蒙 markdown.ets）---- */
+  .mdbody { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+  .mdbody .md-p { margin: 0; }
+  .mdbody .md-h { font-weight: 700; line-height: 1.35; margin: 3px 0 0; }
+  .mdbody .md-h1 { font-size: 1.125rem; }
+  .mdbody .md-h2 { font-size: 1.0625rem; }
+  .mdbody .md-h3, .mdbody .md-h4 { font-size: 1rem; }
+  .mdbody .md-li { display: flex; gap: 8px; align-items: baseline; }
+  .mdbody .md-li .md-marker { flex: 0 0 auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .mdbody .md-quote { border-left: 3px solid var(--line); padding: 2px 0 2px 10px; color: var(--muted); }
+  .mdbody .md-code { margin: 0; padding: 10px 12px; background: var(--inset); border: 1px solid var(--line);
+    border-radius: var(--r-md); overflow-x: auto; font-size: .8125rem; line-height: 1.55; }
+  .mdbody .md-code code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: pre; }
+  .mdbody .md-lang { font-size: .6875rem; color: var(--muted); margin-bottom: -3px; }
+  .mdbody .md-rule { border-top: 1px solid var(--line); margin: 4px 0; }
+  .mdbody .tscroll { max-width: 100%; }
   .msg.typing { display: inline-flex; gap: 5px; align-items: center; padding: 14px 16px; }
   .msg.typing i {
     width: 6px; height: 6px; border-radius: 50%; background: var(--faint);
@@ -2111,7 +2128,7 @@ function renderActiveChatSession() {
     else {
       const nodes = [];
       if (message.intent) nodes.push(el("div", { class: "intent" }, tag(INTENT[message.intent] || message.intent, message.intent === "dangerous_command" ? "danger" : "accent")));
-      nodes.push(el("span", { text: message.content }));
+      nodes.push(renderMarkdown(message.content));
       addMsg("agent", nodes, { restore: true });
     }
   }
@@ -2187,6 +2204,127 @@ function addMsg(cls, nodes, options) {
   if (!options || !options.restore) requestAnimationFrame(() => { $("chatScroll").scrollTop = $("chatScroll").scrollHeight; });
   return div;
 }
+/* ============================== 对话 Markdown（自研无依赖；块级语义逐条对齐鸿蒙 core/markdown.ets） ==============================
+   HTML 永远只按普通文字处理（全走 textContent，绝不 innerHTML）；链接/图片语法
+   只显示安全文本（`文字（URL）` / `图片：alt`），不在回复区打开外部地址或加载远程资源。 */
+function mdReplacePaired(input, marker) {
+  let out = input;
+  let start = out.indexOf(marker);
+  while (start >= 0) {
+    const end = out.indexOf(marker, start + marker.length);
+    if (end < 0) break;
+    out = out.substring(0, start) + out.substring(start + marker.length, end) + out.substring(end + marker.length);
+    start = out.indexOf(marker, start);
+  }
+  return out;
+}
+// 去掉行内标记，保留人真正要读的文字与链接目标。
+function mdPlainText(input) {
+  let out = String(input);
+  out = out.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, "图片：$1");
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1（$2）");
+  out = mdReplacePaired(out, "**");
+  out = mdReplacePaired(out, "__");
+  out = mdReplacePaired(out, "~~");
+  out = mdReplacePaired(out, "`");
+  out = out.replace(/\\([\\`*_[\]{}()#+\-.!>])/g, "$1");
+  return out.trim();
+}
+function mdIsRule(line) { return /^\s*(?:---+|\*\*\*+|___+)\s*$/.test(line); }
+function mdTableCells(line) {
+  let t = line.trim();
+  if (t.startsWith("|")) t = t.substring(1);
+  if (t.endsWith("|")) t = t.substring(0, t.length - 1);
+  if (t.indexOf("|") < 0) return [];
+  return t.split("|").map((cell) => mdPlainText(cell));
+}
+function mdIsTableSeparator(line) {
+  const cells = mdTableCells(line);
+  return cells.length > 0 && cells.every((c) => /^:?-{3,}:?$/.test(c.trim()));
+}
+function mdStartsBlock(lines, i) {
+  const line = lines[i];
+  if (line.trim().length === 0 || line.trim().startsWith("```") ||
+    /^(#{1,4})\s+/.test(line) || /^\s*>\s?/.test(line) ||
+    /^\s*[-*+]\s+/.test(line) || /^\s*\d+[.)]\s+/.test(line) || mdIsRule(line)) return true;
+  return i + 1 < lines.length && mdTableCells(line).length > 0 && mdIsTableSeparator(lines[i + 1]);
+}
+// 常用 GFM 块级语法 → 展示模型；格式损坏时退回段落，绝不吞正文。
+function mdParse(input) {
+  const lines = String(input).replace(/\r\n?/g, "\n").split("\n");
+  const blocks = [];
+  let i = 0;
+  while (i < lines.length) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) { i += 1; continue; }
+    if (trimmed.startsWith("```")) {
+      const language = mdPlainText(trimmed.substring(3));
+      const code = [];
+      i += 1;
+      while (i < lines.length && !lines[i].trim().startsWith("```")) { code.push(lines[i]); i += 1; }
+      if (i < lines.length) i += 1;
+      blocks.push({ kind: "code", text: code.join("\n"), language });
+      continue;
+    }
+    const heading = raw.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) { blocks.push({ kind: "heading", text: mdPlainText(heading[2]), level: heading[1].length }); i += 1; continue; }
+    if (i + 1 < lines.length && mdTableCells(raw).length > 0 && mdIsTableSeparator(lines[i + 1])) {
+      const rows = [{ cells: mdTableCells(raw), header: true }];
+      i += 2;
+      while (i < lines.length) {
+        const cells = mdTableCells(lines[i]);
+        if (cells.length === 0) break;
+        rows.push({ cells, header: false });
+        i += 1;
+      }
+      blocks.push({ kind: "table", rows });
+      continue;
+    }
+    if (mdIsRule(raw)) { blocks.push({ kind: "rule" }); i += 1; continue; }
+    const quote = raw.match(/^\s*>\s?(.*)$/);
+    if (quote) { blocks.push({ kind: "quote", text: mdPlainText(quote[1]) }); i += 1; continue; }
+    const bullet = raw.match(/^\s*[-*+]\s+(.*)$/);
+    if (bullet) {
+      let text = bullet[1];
+      const task = text.match(/^\[([ xX])\]\s+(.*)$/);
+      if (task) text = `${task[1].toLowerCase() === "x" ? "☑" : "☐"} ${task[2]}`;
+      blocks.push({ kind: "bullet", text: mdPlainText(text) });
+      i += 1;
+      continue;
+    }
+    const ordered = raw.match(/^\s*(\d+)[.)]\s+(.*)$/);
+    if (ordered) { blocks.push({ kind: "ordered", text: mdPlainText(ordered[2]), level: parseInt(ordered[1], 10) }); i += 1; continue; }
+    const paragraph = [trimmed];
+    i += 1;
+    while (i < lines.length && !mdStartsBlock(lines, i)) { paragraph.push(lines[i].trim()); i += 1; }
+    blocks.push({ kind: "paragraph", text: mdPlainText(paragraph.join(" ")) });
+  }
+  return blocks;
+}
+// 助手散文 → DOM。纯段落沿用轻量 span（与旧渲染同形），出现结构才升级为块容器。
+function renderMarkdown(text) {
+  const raw = String(text || "");
+  const blocks = mdParse(raw);
+  if (blocks.length === 0) return el("span", { text: raw });
+  if (blocks.length === 1 && blocks[0].kind === "paragraph") return el("span", { text: blocks[0].text });
+  const box = el("div", { class: "mdbody" });
+  for (const b of blocks) {
+    if (b.kind === "heading") box.appendChild(el("div", { class: "md-h md-h" + b.level, text: b.text }));
+    else if (b.kind === "paragraph") box.appendChild(el("p", { class: "md-p", text: b.text }));
+    else if (b.kind === "bullet") box.appendChild(el("div", { class: "md-li" }, [el("span", { class: "md-marker", text: "•" }), el("span", { text: b.text })]));
+    else if (b.kind === "ordered") box.appendChild(el("div", { class: "md-li" }, [el("span", { class: "md-marker", text: b.level + "." }), el("span", { text: b.text })]));
+    else if (b.kind === "quote") box.appendChild(el("div", { class: "md-quote", text: b.text }));
+    else if (b.kind === "code") {
+      if (b.language) box.appendChild(el("div", { class: "md-lang", text: b.language }));
+      box.appendChild(el("pre", { class: "md-code" }, el("code", { text: b.text })));
+    } else if (b.kind === "rule") box.appendChild(el("div", { class: "md-rule" }));
+    else if (b.kind === "table") box.appendChild(el("div", { class: "tscroll" },
+      dataTable(b.rows[0].cells, b.rows.slice(1).map((r) => r.cells))));
+  }
+  return box;
+}
+
 /* 流式（§3.6 第 7 条）：闲聊纯文本回复边到边渲染。每次发送生成 streamId，
    后端把可见 token 通过 solum-chat-delta 事件按 streamId 推回；信封仍整包（后端
    sniff-router 抑制其可见流式），非闲聊意图无 delta，走原整包路径不变。 */
@@ -2233,8 +2371,11 @@ async function sendChat(text) {
     delete activeChatStreams[streamId];
     if (stream.bubble) {
       // 已流式的闲聊：用权威终值定稿已在增长的气泡（信封路径不会走到这里，
-      // 因为其输出以 { 开头被后端抑制，不产生可见 delta）。
-      stream.textSpan.textContent = r.message;
+      // 因为其输出以 { 开头被后端抑制，不产生可见 delta）。流式期间是纯文本，
+      // 定稿时才换成 Markdown 渲染（与鸿蒙 B4 相同的分工）。
+      const finalized = renderMarkdown(r.message);
+      stream.textSpan.replaceWith(finalized);
+      stream.textSpan = finalized;
       if (r.ui) stream.bubble.appendChild(renderEnvelope(r.ui, { skipLeadingText: true }));
       if (r.intent === "status_answer") $("checkinBar").classList.remove("show");
       recordChatMessage("assistant", r.message, r.intent);
@@ -2247,7 +2388,7 @@ async function sendChat(text) {
     const parts = [];
     parts.push(el("div", { class: "intent" },
       tag(INTENT[r.intent] || r.intent, r.intent === "dangerous_command" ? "danger" : "accent")));
-    parts.push(el("span", { text: r.message }));
+    parts.push(renderMarkdown(r.message));
     if (r.event) {
       parts.push(el("div", { class: "evmeta" }, [
         `事件 #${r.event.id} · ${KIND[r.event.kind] || r.event.kind} · `, fmtDT(r.event.start),
