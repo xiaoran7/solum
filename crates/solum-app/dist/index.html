@@ -54,6 +54,8 @@
 
     /* z 语义层级：下拉 < 粘性 < 抽屉 < 遮罩 < 模态 < toast（模态必须能盖住抽屉里的高危确认） */
     --z-sticky: 10; --z-drawer-mask: 29; --z-drawer: 30; --z-backdrop: 40; --z-modal: 41; --z-toast: 50;
+    /* 首启隐私门盖住一切，含 toast：没同意之前不该有任何别的东西可交互 */
+    --z-privacy-gate: 60;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -837,6 +839,36 @@
   #modal .fine { margin-top: 10px; font-size: .8125rem; color: var(--muted); }
   #modal .btns { display: flex; justify-content: flex-end; gap: 10px; }
 
+  /* ---- 首启隐私门（自 PA-harmony 回移）----
+     不是 modal 的一种皮肤：它没有遮罩点击关闭、没有 Esc、没有取消路径。
+     未同意时应用不该被使用，所以它铺满视口并盖过所有层级。 */
+  #privacyGate {
+    position: fixed; inset: 0; background: var(--bg);
+    display: none; flex-direction: column;
+    z-index: var(--z-privacy-gate);
+    padding: max(28px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom));
+  }
+  #privacyGate.open { display: flex; }
+  #privacyGate .pg-inner {
+    width: 640px; max-width: 100%; margin: 0 auto;
+    display: flex; flex-direction: column; min-height: 0; flex: 1; gap: 16px;
+  }
+  #privacyGate h2 { margin: 0; font-size: 1.1875rem; display: flex; align-items: center; gap: 10px; }
+  #privacyGate .pg-ver { font-size: .8125rem; color: var(--muted); font-weight: 400; }
+  /* 正文可滚动，按钮永远在视口内——否则长文案会把「同意」推到折叠线以下，
+     用户会以为应用卡死（同鸿蒙 B4 走查踩过的「渲染了但在视口外」那条）。 */
+  #privacyGate .pg-body {
+    flex: 1; min-height: 0; overflow-y: auto;
+    line-height: 1.75; font-size: .9375rem; white-space: pre-wrap;
+    border: 1px solid var(--line); border-radius: var(--r-lg);
+    padding: 16px 18px; background: var(--card);
+  }
+  #privacyGate .pg-btns { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+  #privacyGate .pg-btns .grow { flex: 1; }
+  @media (max-width: 520px) {
+    #privacyGate .pg-btns .btn { flex: 1 1 auto; justify-content: center; }
+  }
+
   /* ---- toast ---- */
   #toast {
     /* 悬在对话输入区之上，任何视图下都不压住可交互内容 */
@@ -1271,6 +1303,37 @@
         </div>
         </div>
       </details>
+      <details class="fold" id="privacyPolicyFold">
+        <summary>完整隐私政策 <span class="bnote" id="privacyPolicyMeta"></span></summary>
+        <div class="fold-body">
+          <p class="hint" style="margin:0 0 12px;max-width:66ch;">与仓库 <code>docs/PRIVACY.md</code> 描述同一套数据实践。首启同意记录保存在本机文件，不进数据库、不进设备间同步——「这台设备上有人点过同意」是设备级事实。</p>
+          <div id="privacyPolicyBody" style="line-height:1.75;font-size:.9375rem;white-space:pre-wrap;"></div>
+          <p class="hint" id="privacyConsentState" style="margin:12px 0 0;"></p>
+        </div>
+      </details>
+    </div></section>
+
+    <!-- 数据入口（多入口采集，自 PA-harmony 回移） -->
+    <section class="view" id="view-capture"><div class="vwrap">
+      <div class="vhead"><div class="vt">
+        <h2>数据入口 <button class="qmark" type="button" aria-expanded="false" aria-controls="descCapture" aria-label="说明"></button></h2>
+        <p class="desc" id="descCapture" hidden>息壤能从哪些地方接到信息，以及每条通道当前的真实状态。外部输入一律先进「待确认」区，只有你确认后才走正式抽取管道写入数据库——收到不等于保存。</p>
+      </div></div>
+      <div class="block">
+        <h3>待确认 <span class="bnote">仅存内存，关闭应用即清空</span></h3>
+        <p class="hint" style="margin:0 0 12px;max-width:66ch;">这里的内容还没有进入数据库。确认后会填进对话输入框，由你再发送一次——这一步是刻意保留的，不做自动落库。</p>
+        <div class="formcol">
+          <div class="field"><label for="captureText">粘贴要采集的文字</label>
+            <textarea id="captureText" rows="3" placeholder="把短信、订单、群通知的文字粘到这里"></textarea>
+            <span class="hint">桌面端暂无系统分享目标，这个输入框是手动等价入口。</span></div>
+          <div class="btnrow"><button class="btn" type="button" id="captureAddBtn">放入待确认</button></div>
+        </div>
+        <div id="captureInbox"></div>
+      </div>
+      <div class="block">
+        <h3>入口清单</h3>
+        <div id="captureConnectors"></div>
+      </div>
     </div></section>
 
     <!-- 多设备同步（F17 §3.8） -->
@@ -1571,6 +1634,20 @@
   </div>
 </div>
 
+<!-- 首启隐私门：needs_consent 时才 .open（自 PA-harmony 回移） -->
+<div id="privacyGate" role="dialog" aria-modal="true" aria-labelledby="privacyGateTitle">
+  <div class="pg-inner">
+    <h2 id="privacyGateTitle"></h2>
+    <div class="pg-body" id="privacyGateBody" tabindex="0"></div>
+    <div class="pg-btns">
+      <button class="btn sm" type="button" id="privacyGateFullBtn">查看完整隐私政策</button>
+      <span class="grow"></span>
+      <button class="btn" type="button" id="privacyGateDeclineBtn">不同意并退出</button>
+      <button class="btn primary" type="button" id="privacyGateAcceptBtn">同意并开始使用</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" role="status"></div>
 
 <script>
@@ -1640,6 +1717,7 @@ const ICONS = {
   back:     '<path d="M19 12H5M11.5 5.5 5 12l6.5 6.5"/>',
   chev:     '<path d="m9 5 7 7-7 7"/>',
   lock:     '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3"/>',
+  inbox:    '<path d="M3.5 13.5h4l1.5 3h6l1.5-3h4"/><path d="M5.8 4.5h12.4l2.3 9v4a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2v-4z"/>',
 };
 function icon(name, size) {
   // SVG 必须走 SVG 命名空间：借 innerHTML 的 HTML 解析器切换 foreign content。
@@ -4484,7 +4562,195 @@ async function refreshPrivacy() {
     state.textContent = String(e);
   }
   refreshNotificationIntelligence();
+  refreshPrivacyPolicy();
 }
+
+/* ---------------- 首启隐私门 + 应用内隐私政策（自 PA-harmony 回移） ----------------
+   门与政策页共用同一份 Rust 常量，不在前端另写一份文案——两处措辞漂移过一次就
+   再也说不清「用户当时同意的是哪一版」。 */
+let privacyDoc = null;
+
+// 政策全文折叠区（设置 → 隐私）。同意状态一并显示，让用户能自查同意时间与记录位置。
+async function refreshPrivacyPolicy() {
+  const body = $("privacyPolicyBody");
+  if (!body) return;
+  let s;
+  try { s = await invoke("privacy_consent_status"); } catch (_) { return; }
+  privacyDoc = s.document;
+  body.textContent = s.document.full_body;
+  $("privacyPolicyMeta").textContent =
+    `v${s.document.version} · 更新于 ${s.document.updated_on}`;
+  $("privacyConsentState").textContent = s.needs_consent
+    ? `本机尚未对 v${s.document.version} 表示同意。记录文件：${s.path}`
+    : `已于 ${formatConsentTime(s.accepted_at)} 在本机同意 v${s.document.version}。记录文件：${s.path}`;
+}
+
+function formatConsentTime(iso) {
+  if (!iso) return "未知时间";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
+
+// 启动时的拦截。needs_consent 为真才显示；显示期间应用其余部分不可交互。
+async function initPrivacyGate() {
+  let s;
+  try {
+    s = await invoke("privacy_consent_status");
+  } catch (_) {
+    // 静态预览（无 IPC）下不该凭空弹一道过不去的门。
+    return;
+  }
+  privacyDoc = s.document;
+  if (!s.needs_consent) return;
+
+  const gate = $("privacyGate");
+  $("privacyGateTitle").textContent = "";
+  $("privacyGateTitle").appendChild(icon("lock", 20));
+  $("privacyGateTitle").appendChild(el("span", { text: s.document.gate_title }));
+  $("privacyGateTitle").appendChild(
+    el("span", { class: "pg-ver", text: `v${s.document.version} · ${s.document.updated_on}` }));
+  $("privacyGateBody").textContent = s.document.gate_body;
+  gate.classList.add("open");
+  // 门盖住视口后，背后的主界面仍能被滚动条拖动（用户看不见却在动）。锁住。
+  document.body.style.overflow = "hidden";
+  $("privacyGateAcceptBtn").focus();
+}
+
+// 「查看完整隐私政策」在门内就地展开，不跳视图——跳走等于让用户离开这道门。
+$("privacyGateFullBtn").addEventListener("click", (event) => {
+  if (!privacyDoc) return;
+  const btn = event.currentTarget;
+  const body = $("privacyGateBody");
+  const showingFull = btn.dataset.full === "1";
+  body.textContent = showingFull ? privacyDoc.gate_body : privacyDoc.full_body;
+  btn.dataset.full = showingFull ? "" : "1";
+  btn.textContent = showingFull ? "查看完整隐私政策" : "返回摘要";
+  body.scrollTop = 0;
+});
+
+$("privacyGateAcceptBtn").addEventListener("click", async (event) => {
+  const btn = event.currentTarget;
+  btn.disabled = true;
+  try {
+    await invoke("privacy_consent_accept");
+    $("privacyGate").classList.remove("open");
+    document.body.style.overflow = "";
+    refreshPrivacyPolicy();
+  } catch (e) {
+    // 写盘失败必须留在门里：放行等于产生一次没有记录的同意。
+    toast(`无法保存同意记录：${e}`, "danger");
+    btn.disabled = false;
+  }
+});
+
+$("privacyGateDeclineBtn").addEventListener("click", async () => {
+  toast(privacyDoc ? privacyDoc.decline_message : "应用即将退出", "danger");
+  // 关窗即退出。拿不到窗口 API（如浏览器预览）时只提示，不假装关掉了。
+  try {
+    const w = window.__TAURI__ && window.__TAURI__.window;
+    const cur = w && (w.getCurrentWindow ? w.getCurrentWindow() : w.getCurrent && w.getCurrent());
+    if (cur) { setTimeout(() => cur.close(), 600); }
+  } catch (_) { /* 提示已给出 */ }
+});
+
+/* ---------------- 数据入口（多入口采集，自 PA-harmony 回移） ---------------- */
+// 可用=绿；待接入/需配套端=中性描边；不支持=同样中性但文案写死"这个平台上没有"，
+// 不用 danger——入口不存在不是错误状态。
+const CAPTURE_AVAIL_KIND = {
+  ready: "ok", connector: "plain", companion: "plain", unsupported: "plain",
+};
+
+async function refreshCapture() {
+  const box = $("captureConnectors");
+  if (!box) return;
+  try {
+    const list = await invoke("capture_entry_points");
+    box.textContent = "";
+    for (const c of list) {
+      box.appendChild(el("div", { class: "row" }, [
+        tag(c.status, CAPTURE_AVAIL_KIND[c.availability] || "plain"),
+        el("div", { class: "grow" }, [
+          el("div", { text: c.label }),
+          el("div", { class: "meta", text: c.description }),
+        ]),
+      ]));
+    }
+  } catch (e) {
+    box.textContent = String(e);
+  }
+  refreshCaptureInbox();
+}
+
+async function refreshCaptureInbox() {
+  const box = $("captureInbox");
+  if (!box) return;
+  let drafts;
+  try { drafts = await invoke("capture_inbox_list"); } catch (_) { return; }
+  box.textContent = "";
+  if (!drafts.length) {
+    box.appendChild(el("p", { class: "hint", text: "待确认区是空的。" }));
+    return;
+  }
+  for (const d of drafts) {
+    box.appendChild(el("div", { class: "row" }, [
+      tag(d.source_label, "accent"),
+      el("div", { class: "grow" }, [
+        el("div", { text: d.title }),
+        el("div", { class: "meta", text: d.clue_summary }),
+      ]),
+      el("span", { style: "display:flex;gap:8px;" }, [
+        el("button", { class: "btn sm", type: "button", text: "放入输入框",
+          onclick: () => adoptCaptureDraft(d) }),
+        el("button", { class: "btn sm", type: "button", text: "丢弃",
+          onclick: () => discardCaptureDraft(d.id) }),
+      ]),
+    ]));
+  }
+}
+
+// 「采用」只把正文送进输入框，**不落库**：发送与否仍由用户决定，落库仍走
+// 既有 ingest 管道。这是这一层的核心约束，别为了省一步改成自动提交。
+function adoptCaptureDraft(draft) {
+  const input = $("chatInput");
+  if (input) {
+    // 输入框是单行 <input>，直接塞多行正文会把换行**静默吃掉**，
+    // 「缴纳体检费\n明天…」变成「缴纳体检费明天…」——词边界没了，抽取会解错。
+    // 所以换行显式折成空格，而不是交给浏览器去丢（走查发现，2026-07-27）。
+    input.value = draft.text.replace(/\s*[\r\n]+\s*/g, " ").trim();
+    input.focus();
+  }
+  discardCaptureDraft(draft.id, true);
+  showView("chat");
+  toast("已放入输入框，确认无误后再发送", "ok");
+}
+
+async function discardCaptureDraft(id, quiet) {
+  try {
+    await invoke("capture_inbox_discard", { id });
+    if (!quiet) toast("已丢弃（未写入数据库）", "ok");
+  } catch (e) {
+    toast(String(e), "danger");
+  }
+  refreshCaptureInbox();
+}
+
+$("captureAddBtn").addEventListener("click", async (event) => {
+  const area = $("captureText");
+  const text = area.value.trim();
+  if (!text) { toast("先粘贴要采集的文字", "danger"); return; }
+  const btn = event.currentTarget;
+  btn.disabled = true;
+  try {
+    await invoke("capture_inbox_add", { source: "system_share", title: "", text });
+    area.value = "";
+    toast("已放入待确认区（尚未写入数据库）", "ok");
+    refreshCaptureInbox();
+  } catch (e) {
+    toast(String(e), "danger");
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 $("notifCloud").addEventListener("change", async (event) => {
   const toggle = event.currentTarget;
@@ -5402,7 +5668,8 @@ const GROUPS = [
     sub: [
       ["persona",     "数字人格",   "user",   "风格设定影响闲聊与复盘措辞；版本化，可回滚"],
       ["proactivity", "主动度",     "gauge",  "每个能力域独立调档；高危确认不受档位影响"],
-      ["privacy",     "隐私",       "lock",   "通知上云开关与通知智能管线"],
+      ["privacy",     "隐私",       "lock",   "通知上云开关、通知智能管线与完整隐私政策"],
+      ["capture",     "数据入口",   "inbox",  "各采集通道的真实状态与待确认区"],
       ["sync",        "同步",       "refresh", "多设备账户与同步状态"],
       ["cloud",       "云端接入",   "cloud",  "LLM 端点配置与 Soulous 互通"],
       ["rules",       "重要度规则", "rules",  "按事件类型设置提前提醒与通知渠道"],
@@ -5518,6 +5785,7 @@ function refreshAll() {
   refreshRules();
   refreshProactivity();
   refreshPrivacy();
+  refreshCapture();
   refreshGuard();
   refreshCloud();
   refreshAccount();
@@ -5589,6 +5857,8 @@ syncChatContext().catch(() => { /* static preview has no IPC; sending stays guar
 showView("chat");
 initClock().then(refreshAll);
 refreshNotifAccess();
+// 隐私门最后挂：它盖在所有已渲染内容之上，不需要也不应该阻塞其余初始化。
+initPrivacyGate();
 setInterval(() => { refreshNotifs(); refreshToday(); }, 30000); // 到点角标定期刷新
 // 宽屏今日面板在窗口跨过 1200px 断点时才首次可见——不挂 resize 就会一直是
 // 空壳直到下一个 30s 周期（2026-07-17 走查发现 4）。
