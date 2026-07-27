@@ -6,6 +6,7 @@
 
 pub mod account;
 pub mod brief;
+pub mod capture;
 pub mod classify;
 pub mod email;
 pub mod error;
@@ -24,6 +25,7 @@ pub mod orchestrator;
 pub mod paths;
 pub mod persona;
 pub mod persona_import;
+pub mod privacy;
 pub mod proactivity;
 pub mod recall;
 pub mod review;

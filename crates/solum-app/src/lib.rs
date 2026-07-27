@@ -91,6 +91,9 @@ struct AppState {
     /// WAL mode is happy with concurrent connections, so sync gets its own and
     /// touches `orch` only for the brief cache reload afterwards.
     sync_store: Mutex<solum_core::store::Store>,
+    /// 多入口采集的待确认队列（进程内，不落盘——见 `solum_core::capture`）。
+    /// 放 `AppState` 而不是全局静态，是因为它的生命周期本来就该跟这个窗口一致。
+    capture_inbox: Mutex<solum_core::capture::CaptureInbox>,
 }
 
 struct EmailOAuthCallback {
@@ -519,6 +522,117 @@ fn account_model_save(state: State<AppState>, model: String) -> CmdResult<String
         *g = Some(summary.clone());
     }
     Ok(summary)
+}
+
+// ---- 首启隐私门 + 应用内隐私政策（自 PA-harmony 回移）----------------------
+
+#[derive(Serialize)]
+struct PrivacyConsentStatus {
+    needs_consent: bool,
+    accepted_at: Option<String>,
+    /// 同意记录落在哪——用户要能自己找到、自己删。
+    path: String,
+    document: solum_core::privacy::PolicyDocument,
+}
+
+/// 启动时问一次：这台设备对**当前版本**的政策同意过没有。
+///
+/// 只有 GUI 壳层过这道门；`solum-cli` 不受影响（见 `solum_core::privacy` 模块文档）。
+#[tauri::command]
+fn privacy_consent_status() -> CmdResult<PrivacyConsentStatus> {
+    let existing = solum_core::privacy::PrivacyConsent::load();
+    Ok(PrivacyConsentStatus {
+        needs_consent: !solum_core::privacy::has_current_consent(
+            existing.as_ref().map(|c| c.version),
+        ),
+        accepted_at: existing.map(|c| c.accepted_at),
+        path: solum_core::privacy::PrivacyConsent::path()
+            .to_string_lossy()
+            .into_owned(),
+        document: solum_core::privacy::policy_document(),
+    })
+}
+
+/// 记下同意。写盘失败必须报错**而不是**放行——放行等于产生一条没有记录的同意。
+#[tauri::command]
+fn privacy_consent_accept() -> CmdResult<String> {
+    let c = solum_core::privacy::PrivacyConsent::accept(Local::now()).map_err(|e| e.to_string())?;
+    Ok(c.accepted_at)
+}
+
+// ---- 多入口采集（capture 领域层，自 PA-harmony 回移）------------------------
+
+#[derive(Serialize)]
+struct CaptureDraftView {
+    #[serde(flatten)]
+    draft: solum_core::capture::CaptureDraft,
+    source_label: &'static str,
+    clues: solum_core::capture::CaptureClues,
+    clue_summary: String,
+}
+
+fn draft_view(draft: solum_core::capture::CaptureDraft) -> CaptureDraftView {
+    let clues = solum_core::capture::extract_capture_clues(&draft.text);
+    CaptureDraftView {
+        source_label: solum_core::capture::capture_source_label(draft.source),
+        clue_summary: clues.summary(),
+        clues,
+        draft,
+    }
+}
+
+/// 这台设备上的采集入口清单及其真实状态。
+#[tauri::command]
+fn capture_entry_points() -> CmdResult<Vec<solum_core::capture::CaptureConnector>> {
+    Ok(solum_core::capture::capture_connectors(cfg!(
+        target_os = "android"
+    )))
+}
+
+#[tauri::command]
+fn capture_inbox_list(state: State<AppState>) -> CmdResult<Vec<CaptureDraftView>> {
+    let inbox = state
+        .capture_inbox
+        .lock()
+        .map_err(|_| "采集队列状态异常（锁中毒）".to_string())?;
+    Ok(inbox.snapshot().into_iter().map(draft_view).collect())
+}
+
+/// 收下一条外部输入。**只进待确认区，不写数据库**——落库要用户在界面上确认后
+/// 走既有的 `ingest` 管道，这条边界是本模块存在的理由。
+#[tauri::command]
+fn capture_inbox_add(
+    state: State<AppState>,
+    source: String,
+    title: String,
+    text: String,
+) -> CmdResult<CaptureDraftView> {
+    if text.trim().is_empty() {
+        return Err("采集内容为空".into());
+    }
+    let source = solum_core::capture::CaptureSource::parse(&source)
+        .ok_or_else(|| format!("未知采集入口：{source}"))?;
+    let mut inbox = state
+        .capture_inbox
+        .lock()
+        .map_err(|_| "采集队列状态异常（锁中毒）".to_string())?;
+    Ok(draft_view(inbox.push(
+        source,
+        &title,
+        &text,
+        Local::now().timestamp_millis(),
+    )))
+}
+
+/// 丢弃一条待确认草稿。误点分享目标时这一步必须是干净的：内存里删掉即可，
+/// 本来就没有磁盘副本。
+#[tauri::command]
+fn capture_inbox_discard(state: State<AppState>, id: String) -> CmdResult<bool> {
+    let mut inbox = state
+        .capture_inbox
+        .lock()
+        .map_err(|_| "采集队列状态异常（锁中毒）".to_string())?;
+    Ok(inbox.remove(&id))
 }
 
 // ---- Soulous read-only source settings (Phase 8.1) -------------------------
@@ -3318,6 +3432,7 @@ pub fn run() {
                     solum_core::store::Store::open(&db_path)
                         .expect("sync store opens on the already-migrated db"),
                 ),
+                capture_inbox: Mutex::new(solum_core::capture::CaptureInbox::new()),
             });
             // The native listener consults this projection before it writes an
             // inbox line. A missing/corrupt file intentionally means capture
@@ -3443,6 +3558,12 @@ pub fn run() {
             account_login,
             account_logout,
             account_model_save,
+            privacy_consent_status,
+            privacy_consent_accept,
+            capture_entry_points,
+            capture_inbox_list,
+            capture_inbox_add,
+            capture_inbox_discard,
             soulous_config_get,
             soulous_config_save,
             soulous_pull,
