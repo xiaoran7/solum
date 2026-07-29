@@ -865,6 +865,7 @@
   }
   #privacyGate .pg-btns { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
   #privacyGate .pg-btns .grow { flex: 1; }
+  #privacyGate .pg-status { min-height: 1.3em; margin: -6px 0 0; color: var(--danger); font-size: .875rem; }
   @media (max-width: 520px) {
     #privacyGate .pg-btns .btn { flex: 1 1 auto; justify-content: center; }
   }
@@ -1639,6 +1640,7 @@
   <div class="pg-inner">
     <h2 id="privacyGateTitle"></h2>
     <div class="pg-body" id="privacyGateBody" tabindex="0"></div>
+    <p class="pg-status" id="privacyGateStatus" role="alert" aria-live="assertive"></p>
     <div class="pg-btns">
       <button class="btn sm" type="button" id="privacyGateFullBtn">查看完整隐私政策</button>
       <span class="grow"></span>
@@ -4610,6 +4612,7 @@ async function initPrivacyGate() {
   $("privacyGateTitle").appendChild(
     el("span", { class: "pg-ver", text: `v${s.document.version} · ${s.document.updated_on}` }));
   $("privacyGateBody").textContent = s.document.gate_body;
+  $("privacyGateStatus").textContent = "";
   gate.classList.add("open");
   // 门盖住视口后，背后的主界面仍能被滚动条拖动（用户看不见却在动）。锁住。
   document.body.style.overflow = "hidden";
@@ -4638,19 +4641,28 @@ $("privacyGateAcceptBtn").addEventListener("click", async (event) => {
     refreshPrivacyPolicy();
   } catch (e) {
     // 写盘失败必须留在门里：放行等于产生一次没有记录的同意。
-    toast(`无法保存同意记录：${e}`, "danger");
+    $("privacyGateStatus").textContent = `无法保存同意记录：${e}`;
     btn.disabled = false;
   }
 });
 
-$("privacyGateDeclineBtn").addEventListener("click", async () => {
-  toast(privacyDoc ? privacyDoc.decline_message : "应用即将退出", "danger");
-  // 关窗即退出。拿不到窗口 API（如浏览器预览）时只提示，不假装关掉了。
+$("privacyGateDeclineBtn").addEventListener("click", async (event) => {
+  const btn = event.currentTarget;
+  btn.disabled = true;
+  $("privacyGateStatus").textContent = privacyDoc ? privacyDoc.decline_message : "应用即将退出";
+  // Native command is the reliable Android exit path. Keep the window API as
+  // a compatibility fallback for older desktop shells.
   try {
-    const w = window.__TAURI__ && window.__TAURI__.window;
-    const cur = w && (w.getCurrentWindow ? w.getCurrentWindow() : w.getCurrent && w.getCurrent());
-    if (cur) { setTimeout(() => cur.close(), 600); }
-  } catch (_) { /* 提示已给出 */ }
+    await invoke("privacy_consent_decline");
+    return;
+  } catch (_) {
+    try {
+      const w = window.__TAURI__ && window.__TAURI__.window;
+      const cur = w && (w.getCurrentWindow ? w.getCurrentWindow() : w.getCurrent && w.getCurrent());
+      if (cur) { setTimeout(() => cur.close(), 600); }
+      else { btn.disabled = false; }
+    } catch (_) { btn.disabled = false; }
+  }
 });
 
 /* ---------------- 数据入口（多入口采集，自 PA-harmony 回移） ---------------- */

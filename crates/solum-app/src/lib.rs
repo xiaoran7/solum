@@ -560,6 +560,13 @@ fn privacy_consent_accept() -> CmdResult<String> {
     Ok(c.accepted_at)
 }
 
+/// Refusing the first-run policy must terminate the native app, including on
+/// Android where closing a WebView window is not a reliable process-exit path.
+#[tauri::command]
+fn privacy_consent_decline(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 // ---- 多入口采集（capture 领域层，自 PA-harmony 回移）------------------------
 
 #[derive(Serialize)]
@@ -3394,6 +3401,18 @@ pub fn run() {
                     std::env::set_var("SOLUM_ACCOUNT_CONFIG", dir.join("solum-account.json"));
                 }
             }
+            // Consent is device-local too. Android has no usable working
+            // directory, so it needs the same app-data injection as the
+            // database and credential files above.
+            #[cfg(mobile)]
+            if std::env::var("SOLUM_PRIVACY_CONSENT").is_err() {
+                if let Some(dir) = std::path::Path::new(&db_path).parent() {
+                    std::env::set_var(
+                        "SOLUM_PRIVACY_CONSENT",
+                        dir.join("solum-privacy-consent.json"),
+                    );
+                }
+            }
             let mut orch = Orchestrator::open(&db_path)?;
             // Cloud reasoner is optional by design (F16): no config → stay offline.
             // Account proxy (harmony-0.2.0 model) outranks the direct-key config
@@ -3560,6 +3579,7 @@ pub fn run() {
             account_model_save,
             privacy_consent_status,
             privacy_consent_accept,
+            privacy_consent_decline,
             capture_entry_points,
             capture_inbox_list,
             capture_inbox_add,
