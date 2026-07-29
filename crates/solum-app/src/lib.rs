@@ -562,9 +562,19 @@ fn privacy_consent_accept() -> CmdResult<String> {
 
 /// Refusing the first-run policy must terminate the native app, including on
 /// Android where closing a WebView window is not a reliable process-exit path.
+#[cfg(not(mobile))]
 #[tauri::command]
 fn privacy_consent_decline(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+#[cfg(mobile)]
+#[tauri::command]
+fn privacy_consent_decline(_app: tauri::AppHandle) {
+    // On Android a WebView window is not the application task. Exit the native
+    // process after the user explicitly declines so the button always has the
+    // promised outcome.
+    std::process::exit(0);
 }
 
 // ---- 多入口采集（capture 领域层，自 PA-harmony 回移）------------------------
