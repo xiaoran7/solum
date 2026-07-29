@@ -859,13 +859,16 @@
      用户会以为应用卡死（同鸿蒙 B4 走查踩过的「渲染了但在视口外」那条）。 */
   #privacyGate .pg-body {
     flex: 1; min-height: 0; overflow-y: auto;
-    line-height: 1.75; font-size: .9375rem; white-space: pre-wrap;
+    line-height: 1.75; font-size: .9375rem;
     border: 1px solid var(--line); border-radius: var(--r-lg);
     padding: 16px 18px; background: var(--card);
   }
+  #privacyGate .pg-body .mdbody, #privacyPolicyBody .mdbody { gap: 12px; }
+  #privacyGate .pg-body .md-h { margin-top: 8px; }
   #privacyGate .pg-btns { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
   #privacyGate .pg-btns .grow { flex: 1; }
   #privacyGate .pg-status { min-height: 1.3em; margin: -6px 0 0; color: var(--danger); font-size: .875rem; }
+  #privacyGate .pg-status.pending { color: var(--muted); }
   @media (max-width: 520px) {
     #privacyGate .pg-btns .btn { flex: 1 1 auto; justify-content: center; }
   }
@@ -1307,8 +1310,8 @@
       <details class="fold" id="privacyPolicyFold">
         <summary>完整隐私政策 <span class="bnote" id="privacyPolicyMeta"></span></summary>
         <div class="fold-body">
-          <p class="hint" style="margin:0 0 12px;max-width:66ch;">与仓库 <code>docs/PRIVACY.md</code> 描述同一套数据实践。首启同意记录保存在本机文件，不进数据库、不进设备间同步——「这台设备上有人点过同意」是设备级事实。</p>
-          <div id="privacyPolicyBody" style="line-height:1.75;font-size:.9375rem;white-space:pre-wrap;"></div>
+          <p class="hint" style="margin:0 0 12px;max-width:66ch;">这里展示与你首次打开息壤时相同的隐私说明。你可以随时回来查看。</p>
+          <div id="privacyPolicyBody" style="line-height:1.75;font-size:.9375rem;"></div>
           <p class="hint" id="privacyConsentState" style="margin:12px 0 0;"></p>
         </div>
       </details>
@@ -4579,12 +4582,12 @@ async function refreshPrivacyPolicy() {
   let s;
   try { s = await invoke("privacy_consent_status"); } catch (_) { return; }
   privacyDoc = s.document;
-  body.textContent = s.document.full_body;
+  body.replaceChildren(renderMarkdown(s.document.full_body));
   $("privacyPolicyMeta").textContent =
     `v${s.document.version} · 更新于 ${s.document.updated_on}`;
   $("privacyConsentState").textContent = s.needs_consent
-    ? `本机尚未对 v${s.document.version} 表示同意。记录文件：${s.path}`
-    : `已于 ${formatConsentTime(s.accepted_at)} 在本机同意 v${s.document.version}。记录文件：${s.path}`;
+    ? `本机尚未同意 v${s.document.version}。`
+    : `已于 ${formatConsentTime(s.accepted_at)} 在本机同意 v${s.document.version}。`;
 }
 
 function formatConsentTime(iso) {
@@ -4611,7 +4614,7 @@ async function initPrivacyGate() {
   $("privacyGateTitle").appendChild(el("span", { text: s.document.gate_title }));
   $("privacyGateTitle").appendChild(
     el("span", { class: "pg-ver", text: `v${s.document.version} · ${s.document.updated_on}` }));
-  $("privacyGateBody").textContent = s.document.gate_body;
+  $("privacyGateBody").replaceChildren(renderMarkdown(s.document.gate_body));
   $("privacyGateStatus").textContent = "";
   gate.classList.add("open");
   // 门盖住视口后，背后的主界面仍能被滚动条拖动（用户看不见却在动）。锁住。
@@ -4625,43 +4628,66 @@ $("privacyGateFullBtn").addEventListener("click", (event) => {
   const btn = event.currentTarget;
   const body = $("privacyGateBody");
   const showingFull = btn.dataset.full === "1";
-  body.textContent = showingFull ? privacyDoc.gate_body : privacyDoc.full_body;
+  body.replaceChildren(renderMarkdown(showingFull ? privacyDoc.gate_body : privacyDoc.full_body));
   btn.dataset.full = showingFull ? "" : "1";
   btn.textContent = showingFull ? "查看完整隐私政策" : "返回摘要";
   body.scrollTop = 0;
 });
 
+function setPrivacyGateStatus(message, pending) {
+  const status = $("privacyGateStatus");
+  status.textContent = message;
+  status.classList.toggle("pending", Boolean(pending));
+}
+
+function invokePrivacyCommand(command, timeoutMs) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error("操作超时，请重试")), timeoutMs);
+  });
+  return Promise.race([invoke(command), timeout]).finally(() => clearTimeout(timer));
+}
+
 $("privacyGateAcceptBtn").addEventListener("click", async (event) => {
   const btn = event.currentTarget;
   btn.disabled = true;
+  btn.textContent = "正在保存…";
+  setPrivacyGateStatus("正在保存你的选择…", true);
   try {
-    await invoke("privacy_consent_accept");
+    await invokePrivacyCommand("privacy_consent_accept", 8000);
     $("privacyGate").classList.remove("open");
     document.body.style.overflow = "";
     refreshPrivacyPolicy();
   } catch (e) {
     // 写盘失败必须留在门里：放行等于产生一次没有记录的同意。
-    $("privacyGateStatus").textContent = `无法保存同意记录：${e}`;
+    setPrivacyGateStatus(`无法保存：${String(e)}。请重试。`, false);
     btn.disabled = false;
+    btn.textContent = "同意并开始使用";
   }
 });
 
 $("privacyGateDeclineBtn").addEventListener("click", async (event) => {
   const btn = event.currentTarget;
   btn.disabled = true;
-  $("privacyGateStatus").textContent = privacyDoc ? privacyDoc.decline_message : "应用即将退出";
+  btn.textContent = "正在退出…";
+  setPrivacyGateStatus(privacyDoc ? privacyDoc.decline_message : "应用即将退出", true);
   // Native command is the reliable Android exit path. Keep the window API as
   // a compatibility fallback for older desktop shells.
   try {
-    await invoke("privacy_consent_decline");
-    return;
-  } catch (_) {
-    try {
-      const w = window.__TAURI__ && window.__TAURI__.window;
-      const cur = w && (w.getCurrentWindow ? w.getCurrentWindow() : w.getCurrent && w.getCurrent());
-      if (cur) { setTimeout(() => cur.close(), 600); }
-      else { btn.disabled = false; }
-    } catch (_) { btn.disabled = false; }
+    await invokePrivacyCommand("privacy_consent_decline", 1500);
+  } catch (_) { /* Android exits before it can return an IPC response. */ }
+  try {
+    const w = window.__TAURI__ && window.__TAURI__.window;
+    const cur = w && (w.getCurrentWindow ? w.getCurrentWindow() : w.getCurrent && w.getCurrent());
+    if (cur) {
+      await cur.close();
+      return;
+    }
+  } catch (_) { /* show an actionable error below */ }
+  if (document.visibilityState !== "hidden") {
+    setPrivacyGateStatus("无法自动退出，请使用系统返回键或关闭应用。", false);
+    btn.disabled = false;
+    btn.textContent = "不同意并退出";
   }
 });
 
