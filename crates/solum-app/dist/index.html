@@ -1121,8 +1121,54 @@
     background: var(--accent-fill);
   }
   .nav-btn.active .due-pill { color: #111; }
+  .side-tools {
+    margin-top: auto;
+    padding: 18px 4px 0;
+    border-top: 1px solid var(--line);
+  }
+  .side-tools-label {
+    display: block;
+    margin: 0 9px 8px;
+    color: var(--faint);
+    font-size: .625rem;
+    font-weight: 700;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+  }
+  .utility-btn {
+    width: 100%;
+    min-height: 38px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 12px;
+    color: var(--muted);
+    background: transparent;
+    font: inherit;
+    font-size: .8125rem;
+    cursor: pointer;
+    text-align: left;
+  }
+  .utility-btn:hover,
+  .utility-btn.active {
+    color: var(--ink);
+    background: var(--inset);
+  }
+  .utility-btn.active {
+    font-weight: 700;
+  }
+  .utility-btn.active::after {
+    content: "";
+    width: 6px;
+    height: 6px;
+    margin-left: auto;
+    border-radius: 50%;
+    background: var(--accent-fill);
+  }
   .side-foot {
-    margin: auto 4px 0;
+    margin: 0 4px;
     padding: 18px 7px 2px;
     gap: 11px;
   }
@@ -1452,6 +1498,170 @@
   #privacyGate h2 { font-size: 2rem; letter-spacing: -.04em; }
   #privacyGate .pg-body { border-radius: 24px; padding: 22px 24px; }
   #toast { border-radius: 999px; }
+  .signal-button {
+    width: 46px;
+    height: 46px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    cursor: pointer;
+  }
+  .signal-button:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 4px;
+  }
+  .signal-button.active {
+    background: var(--accent-soft);
+  }
+  #mobileToolsMask,
+  #mobileTools { display: none; }
+  .search-hero {
+    padding: clamp(24px, 5vw, 48px);
+    border: 1px solid var(--line);
+    border-radius: var(--r-xl);
+    background:
+      radial-gradient(circle at 88% 12%, color-mix(in srgb, var(--accent-soft) 72%, transparent), transparent 24%),
+      var(--bg);
+  }
+  .search-kicker {
+    margin-bottom: 30px;
+    color: var(--muted);
+    font-size: .75rem;
+    font-weight: 750;
+    letter-spacing: .18em;
+  }
+  .search-question {
+    max-width: 8em;
+    margin: 0 0 28px;
+    font-size: clamp(2.15rem, 4.4vw, 4rem);
+    line-height: .98;
+    letter-spacing: -.065em;
+  }
+  .search-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+  }
+  .search-field {
+    position: relative;
+  }
+  .search-field .ic {
+    position: absolute;
+    left: 18px;
+    top: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
+  }
+  #globalSearchInput {
+    width: 100%;
+    min-height: 58px;
+    padding-left: 52px;
+    border-radius: 20px;
+  }
+  #globalSearchBtn {
+    min-width: 112px;
+    border-radius: 20px;
+  }
+  .search-scope {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    margin-top: 18px;
+    color: var(--muted);
+    font-size: .8125rem;
+  }
+  .search-scope span::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 8px;
+    border-radius: 50%;
+    background: var(--ink);
+    vertical-align: middle;
+  }
+  .search-scope span:first-child::before { background: var(--accent-fill); }
+  .search-index-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    margin: 52px 0 18px;
+  }
+  .search-index-head h3 {
+    margin: 0;
+    font-size: 1.3rem;
+    letter-spacing: -.025em;
+  }
+  #globalSearchCount {
+    color: var(--muted);
+    font-size: .875rem;
+  }
+  .search-results {
+    display: grid;
+    gap: 12px;
+  }
+  .search-result,
+  .search-quick {
+    width: 100%;
+    min-height: 112px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 20px;
+    padding: 20px 22px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    color: var(--ink);
+    background: var(--bg);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .search-result:hover,
+  .search-quick:hover {
+    border-color: var(--ink);
+    transform: translateY(-2px);
+  }
+  .search-result-type {
+    display: inline-flex;
+    width: fit-content;
+    margin-bottom: 10px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    color: var(--muted);
+    background: var(--inset);
+    font-size: .6875rem;
+    font-weight: 700;
+  }
+  .search-result-title {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 1.05rem;
+    font-weight: 740;
+    line-height: 1.35;
+  }
+  .search-result-copy {
+    display: -webkit-box;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: .875rem;
+    line-height: 1.55;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .search-quick-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .search-quick {
+    min-height: 132px;
+  }
+  .search-quick .ic { align-self: start; }
 
   @media (max-width: 1239px) and (min-width: 1000px) {
     .chatgrid { grid-template-columns: 220px minmax(0, 1fr); }
@@ -1498,6 +1708,58 @@
       height: 7px;
       box-shadow: 0 0 0 3px var(--bg);
     }
+    .signal-button {
+      width: 38px;
+      height: 38px;
+      margin-left: 2px;
+    }
+    #mobileToolsMask {
+      position: fixed;
+      inset: 0;
+      z-index: calc(var(--z-modal) - 2);
+      display: block;
+      background: rgba(11, 11, 12, .22);
+      backdrop-filter: blur(6px);
+    }
+    #mobileTools {
+      position: fixed;
+      left: 14px;
+      right: 14px;
+      bottom: calc(88px + var(--sab));
+      z-index: calc(var(--z-modal) - 1);
+      display: block;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 26px;
+      background: color-mix(in srgb, var(--bg) 96%, transparent);
+      box-shadow: var(--shadow-xl);
+      backdrop-filter: blur(24px);
+    }
+    #mobileToolsMask[hidden],
+    #mobileTools[hidden] { display: none; }
+    .mobile-tools-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 12px 8px;
+    }
+    .mobile-tools-head strong {
+      font-size: .75rem;
+      letter-spacing: .14em;
+    }
+    .mobile-tools-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px;
+    }
+    #mobileTools .utility-btn {
+      min-height: 64px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      color: var(--ink);
+      background: var(--bg);
+    }
     #tabbar {
       position: relative;
       z-index: var(--z-sticky);
@@ -1517,7 +1779,7 @@
       gap: 2px;
       border-radius: 18px;
       color: var(--faint);
-      font-size: .625rem;
+      font-size: .75rem;
     }
     .tab-btn.active {
       color: var(--ink);
@@ -1571,9 +1833,16 @@
     .msg { max-width: 90%; }
     #drawer { border-radius: 0; }
     #modal { padding: 24px; border-radius: 26px; }
+    .search-hero { padding: 26px 22px; border-radius: 28px; }
+    .search-kicker { margin-bottom: 26px; }
+    .search-form { grid-template-columns: minmax(0, 1fr) 86px; gap: 8px; }
+    #globalSearchBtn { min-width: 0; }
+    .search-quick-grid { grid-template-columns: 1fr; }
+    .search-result,
+    .search-quick { padding: 18px; border-radius: 22px; }
   }
   @media (max-width: 420px) {
-    .tab-btn span:not(.due-pill) { font-size: .5625rem; }
+    .tab-btn span:not(.due-pill) { font-size: .6875rem; }
     .tab-btn .ic { width: 19px; height: 19px; }
     #chatEmpty h3 { font-size: 2.45rem; }
     .vhead { align-items: flex-start; }
@@ -1599,6 +1868,9 @@
       <span class="solum-signal" aria-hidden="true"></span>
     </div>
     <nav id="nav" aria-label="主导航"></nav>
+    <nav class="side-tools" id="utilityNav" aria-label="工具入口">
+      <span class="side-tools-label">Utilities</span>
+    </nav>
     <div class="side-foot">
       <div class="foot-row" id="llmRow" title="云端推理状态">
         <span class="sdot" id="llmDot"></span><span id="llmText">…</span>
@@ -1622,12 +1894,22 @@
   <header id="mHeader">
     <div class="brand">
       <span class="brand-mark" style="font-size:1.125rem;">Solum<span class="brand-dot" id="brandDotM"></span></span>
-      <span class="solum-signal" aria-hidden="true"></span>
     </div>
     <div class="grow"></div>
     <span class="due-pill" id="duePillM" title="到点未触发的提醒数"></span>
     <button class="btn icon" id="syncBtnM" style="display:none;" title="立即同步" aria-label="立即同步"></button>
+    <button class="signal-button" id="mobileToolsBtn" type="button" aria-label="打开工具入口" aria-haspopup="dialog" aria-expanded="false">
+      <span class="solum-signal" aria-hidden="true"></span>
+    </button>
   </header>
+  <div id="mobileToolsMask" hidden></div>
+  <aside id="mobileTools" role="dialog" aria-modal="true" aria-label="Solum 工具" hidden>
+    <div class="mobile-tools-head">
+      <strong>更多工具</strong>
+      <button class="btn icon" id="mobileToolsClose" type="button" aria-label="关闭工具入口"></button>
+    </div>
+    <div class="mobile-tools-grid" id="mobileToolsGrid"></div>
+  </aside>
 
   <!-- ================= 主区 ================= -->
   <main id="main">
@@ -1804,6 +2086,31 @@
         <p class="desc" id="descCaptures" hidden>每条已捕获通知都在这里留下去向：过滤、判重、待回看均可恢复处理或提升为日程；待确认的过滤规则与动作提议也在此裁决。</p>
       </div></div>
       <div id="notificationLedger"></div>
+    </div></section>
+
+    <!-- 搜索：检索当前已加载的本地日程、记忆与行为数据，不建立新的云端索引 -->
+    <section class="view" id="view-search"><div class="vwrap">
+      <div class="vhead"><div class="vt">
+        <h2>搜索</h2>
+        <p class="desc" style="display:block;position:static;box-shadow:none;border:0;padding:0;margin-top:12px;">从日程、记忆和行为记录中，重新找到仍然有用的上下文。</p>
+      </div></div>
+      <div class="search-hero">
+        <div class="search-kicker">SEARCH SOLUM</div>
+        <h3 class="search-question">想找什么？</h3>
+        <form class="search-form" id="globalSearchForm">
+          <div class="search-field">
+            <span id="globalSearchIcon"></span>
+            <input id="globalSearchInput" type="search" placeholder="输入记忆、计划或关键词" autocomplete="off" />
+          </div>
+          <button class="btn primary" id="globalSearchBtn" type="submit">搜索</button>
+        </form>
+        <div class="search-scope" aria-label="搜索范围"><span>记忆</span><span>计划</span><span>行为记录</span></div>
+      </div>
+      <div class="search-index-head">
+        <h3 id="globalSearchHeading">最近入口</h3>
+        <span id="globalSearchCount"></span>
+      </div>
+      <div class="search-results" id="globalSearchResults" aria-live="polite"></div>
     </div></section>
 
     <!-- 设置目录（多级导航一级页；二级页顶部有返回面包屑） -->
@@ -2326,6 +2633,8 @@ function el(tag, attrs, children) {
 
 /* 手绘 24 网格线条图标（stroke=currentColor），全站唯一图标词汇。 */
 const ICONS = {
+  home:     '<path d="m3.5 11 8.5-7 8.5 7"/><path d="M5.5 10v9.5h13V10M9.5 19.5v-6h5v6"/>',
+  search:   '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/>',
   chat:     '<path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.35 0-2.64-.31-3.78-.88L3 21l1.88-5.72A8.5 8.5 0 1 1 21 11.5z"/>',
   calendar: '<rect x="3.5" y="5" width="17" height="16" rx="2.5"/><path d="M8 3v4M16 3v4M3.5 11h17"/>',
   journal:  '<rect x="5" y="3" width="15" height="18" rx="2"/><path d="M9.5 3v18M13.5 8.5h3M13.5 12.5h3"/>',
@@ -6326,17 +6635,119 @@ $("emailSendBtn").addEventListener("click", async () => {
 });
 emailApplyProviderPreset(true);
 
+/* ============================== 本地统一搜索 ============================== */
+const SEARCH_SOURCES = [
+  { view: "agenda", label: "计划 · 日程", roots: ["agendaBox"] },
+  { view: "notifs", label: "计划 · 提醒", roots: ["dueBox", "notifBox"] },
+  { view: "suggest", label: "计划 · 建议", roots: ["suggestBox"] },
+  { view: "ledger", label: "记忆 · 台账", roots: ["ledgerBox"] },
+  { view: "journal", label: "记忆 · 行为", roots: ["journalBox"] },
+  { view: "wearable", label: "记忆 · 穿戴", roots: ["wearableBox", "wearableOut"] },
+  { view: "review", label: "记忆 · 复盘", roots: ["reviewOut"] },
+  { view: "captures", label: "记忆 · 通知", roots: ["notificationLedger"] },
+];
+const SEARCH_QUICK = [
+  { view: "ledger", label: "记忆台账", desc: "查看 Solum 已经记住的事实、事件与来源。", icon: "memory" },
+  { view: "agenda", label: "计划与日程", desc: "回到即将发生的安排和时间节点。", icon: "calendar" },
+  { view: "journal", label: "行为记录", desc: "按原始顺序回看最近的状态与活动。", icon: "journal" },
+  { view: "captures", label: "通知回看", desc: "找回过滤、判重或仍待处理的通知。", icon: "inbox" },
+];
+function searchText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+function collectSearchEntries() {
+  const entries = [];
+  const seen = new Set();
+  const selectors = ".ev-row,.notif-row,.row,.mail-row,.gc-card,.tp-item,tbody tr,.empty,.statusline";
+  for (const source of SEARCH_SOURCES) {
+    for (const rootId of source.roots) {
+      const root = $(rootId);
+      if (!root) continue;
+      const candidates = Array.from(root.querySelectorAll(selectors));
+      const nodes = candidates.length ? candidates : [root];
+      for (const node of nodes) {
+        const text = searchText(node.textContent);
+        if (!text || text.length < 2) continue;
+        const key = source.view + "\u0000" + text;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        entries.push({ view: source.view, label: source.label, text });
+        if (entries.length >= 240) return entries;
+      }
+    }
+  }
+  return entries;
+}
+function searchResultButton(entry) {
+  const title = entry.text.length > 76 ? entry.text.slice(0, 76) + "…" : entry.text;
+  return el("button", { class: "search-result", type: "button", onclick: () => showView(entry.view) }, [
+    el("span", null, [
+      el("span", { class: "search-result-type", text: entry.label }),
+      el("span", { class: "search-result-title", text: title }),
+      el("span", { class: "search-result-copy", text: entry.text }),
+    ]),
+    icon("chev", 20),
+  ]);
+}
+function renderSearchQuick() {
+  const box = $("globalSearchResults");
+  box.textContent = "";
+  const grid = el("div", { class: "search-quick-grid" });
+  for (const item of SEARCH_QUICK) {
+    grid.appendChild(el("button", { class: "search-quick", type: "button", onclick: () => showView(item.view) }, [
+      el("span", null, [
+        el("span", { class: "search-result-type", text: "LOCAL INDEX" }),
+        el("span", { class: "search-result-title", text: item.label }),
+        el("span", { class: "search-result-copy", text: item.desc }),
+      ]),
+      icon(item.icon, 24),
+    ]));
+  }
+  box.appendChild(grid);
+  $("globalSearchHeading").textContent = "最近入口";
+  $("globalSearchCount").textContent = "4 个入口";
+}
+function runGlobalSearch() {
+  const query = searchText($("globalSearchInput").value).toLocaleLowerCase();
+  if (!query) { renderSearchQuick(); return; }
+  const terms = query.split(" ").filter(Boolean);
+  const matches = collectSearchEntries().filter((entry) => {
+    const haystack = entry.text.toLocaleLowerCase();
+    return terms.every((term) => haystack.includes(term));
+  }).slice(0, 40);
+  const box = $("globalSearchResults");
+  box.textContent = "";
+  $("globalSearchHeading").textContent = "搜索结果";
+  $("globalSearchCount").textContent = `${matches.length} 条`;
+  if (!matches.length) {
+    box.appendChild(emptyBox("search", "没有找到匹配内容", "换个更短的关键词，或先在「今天」告诉 Solum 要记住什么。"));
+    return;
+  }
+  for (const entry of matches) box.appendChild(searchResultButton(entry));
+}
+$("globalSearchIcon").appendChild(icon("search", 22));
+$("globalSearchForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  runGlobalSearch();
+});
+let globalSearchTimer = 0;
+$("globalSearchInput").addEventListener("input", () => {
+  clearTimeout(globalSearchTimer);
+  globalSearchTimer = setTimeout(runGlobalSearch, 160);
+});
+renderSearchQuick();
+
 /* ============================== 导航 ============================== */
-// 两级：固定一级组（侧栏/底栏），组内多视图时顶部出分段控件；每组记住最后停留的视图。
-// 一级组（侧栏/底栏）→ 组内分段控件；设置组是真正的多级：目录页 → 二级详情页（顶部面包屑返回）。
-// 原「工作台」组已并入对话（输入框「+」→ 抽屉）。
-const GROUPS = [
-  { id: "chat",     label: "对话", icon: "chat",     views: [["chat", "对话"]] },
-  { id: "schedule", label: "日程", icon: "calendar", views: [["agenda", "日程"], ["notifs", "提醒"], ["suggest", "建议"]] },
-  { id: "records",  label: "记录", icon: "journal",  views: [["journal", "行为日志"], ["wearable", "穿戴"], ["review", "复盘"]] },
-  { id: "mail",     label: "邮箱", icon: "mail",     views: [["email", "邮箱"]] },
-  { id: "memory",   label: "记忆", icon: "memory",   views: [["ledger", "记忆台账"], ["captures", "通知回看"]] },
-  { id: "settings", label: "设置", icon: "settings", views: [["settings", "设置"]],
+// 四个一级入口表达长期稳定的产品心智：今天、记忆、计划、搜索。
+// 邮箱、设置和工作台属于低频工具，不与用户每天往返的四个根入口争夺位置。
+const PRIMARY_GROUPS = [
+  { id: "today",  label: "今天", icon: "home",     views: [["chat", "今天"]] },
+  { id: "memory", label: "记忆", icon: "memory",   views: [["ledger", "台账"], ["journal", "行为"], ["wearable", "穿戴"], ["review", "复盘"], ["captures", "通知"]] },
+  { id: "plan",   label: "计划", icon: "calendar", views: [["agenda", "日程"], ["notifs", "提醒"], ["suggest", "建议"]] },
+  { id: "search", label: "搜索", icon: "search",   views: [["search", "搜索"]] },
+];
+const SETTINGS_GROUP = {
+  id: "settings", label: "设置", icon: "settings", views: [["settings", "设置"]],
     sub: [
       ["persona",     "数字人格",   "user",   "风格设定影响闲聊与复盘措辞；版本化，可回滚"],
       ["proactivity", "主动度",     "gauge",  "每个能力域独立调档；高危确认不受档位影响"],
@@ -6346,8 +6757,13 @@ const GROUPS = [
       ["cloud",       "云端接入",   "cloud",  "LLM 端点配置与 Soulous 互通"],
       ["rules",       "重要度规则", "rules",  "按事件类型设置提前提醒与通知渠道"],
       ["guard",       "高危护栏",   "shield", "可用工具、审计日志与确认流程演示"],
-    ] },
+    ],
+};
+const UTILITY_GROUPS = [
+  { id: "mail", label: "邮箱", icon: "mail", views: [["email", "邮箱"]] },
+  SETTINGS_GROUP,
 ];
+const GROUPS = [...PRIMARY_GROUPS, ...UTILITY_GROUPS];
 const navLastView = {};
 function groupOfView(view) {
   for (const g of GROUPS) {
@@ -6357,26 +6773,67 @@ function groupOfView(view) {
   return GROUPS[0];
 }
 // 设置目录页（多级导航一级页）：图标 + 名称 + 一句说明 + 右箭头
-for (const [v, label, ic, desc] of GROUPS.find((g) => g.id === "settings").sub) {
+for (const [v, label, ic, desc] of SETTINGS_GROUP.sub) {
   $("settingsMenu").appendChild(el("button", { class: "nav-menu-item", type: "button", onclick: () => showView(v) }, [
     icon(ic, 20),
     el("div", null, [el("div", { class: "nm", text: label }), el("div", { class: "nd", text: desc })]),
     el("span", { class: "chev" }, icon("chev", 16)),
   ]));
 }
-for (const g of GROUPS) {
+for (const g of PRIMARY_GROUPS) {
   $("nav").appendChild(el("button", { class: "nav-btn", "data-group": g.id, onclick: () => gotoGroup(g) }, [
     icon(g.icon, 19),
     el("span", { text: g.label }),
     el("span", { class: "grow" }),
-    g.id === "schedule" ? el("span", { class: "due-pill", id: "dueNav" }) : null,
+    g.id === "plan" ? el("span", { class: "due-pill", id: "dueNav" }) : null,
   ]));
   $("tabbar").appendChild(el("button", { class: "tab-btn", "data-group": g.id, onclick: () => gotoGroup(g) }, [
     icon(g.icon, 21),
     el("span", { text: g.label }),
-    g.id === "schedule" ? el("span", { class: "due-pill", id: "dueTab" }) : null,
+    g.id === "plan" ? el("span", { class: "due-pill", id: "dueTab" }) : null,
   ]));
 }
+const TOOL_ENTRIES = [
+  { label: "邮箱", icon: "mail", group: "mail", action: () => showView("email") },
+  { label: "设置", icon: "settings", group: "settings", action: () => showView("settings") },
+  { label: "资料", icon: "doc", action: () => openDrawer("documents") },
+  { label: "组件", icon: "folder", action: () => openDrawer("widgets") },
+];
+function closeMobileTools() {
+  $("mobileTools").hidden = true;
+  $("mobileToolsMask").hidden = true;
+  $("mobileToolsBtn").setAttribute("aria-expanded", "false");
+}
+function openMobileTools() {
+  $("mobileTools").hidden = false;
+  $("mobileToolsMask").hidden = false;
+  $("mobileToolsBtn").setAttribute("aria-expanded", "true");
+  requestAnimationFrame(() => $("mobileTools").querySelector("button")?.focus());
+}
+function makeUtilityButton(entry) {
+  return el("button", {
+    class: "utility-btn",
+    type: "button",
+    "data-group": entry.group,
+    onclick: () => { closeMobileTools(); entry.action(); },
+  }, [icon(entry.icon, 18), el("span", { text: entry.label })]);
+}
+for (const entry of TOOL_ENTRIES) {
+  $("utilityNav").appendChild(makeUtilityButton(entry));
+  $("mobileToolsGrid").appendChild(makeUtilityButton(entry));
+}
+$("mobileToolsClose").appendChild(icon("x", 18));
+$("mobileToolsBtn").addEventListener("click", () => {
+  if ($("mobileTools").hidden) openMobileTools(); else closeMobileTools();
+});
+$("mobileToolsClose").addEventListener("click", closeMobileTools);
+$("mobileToolsMask").addEventListener("click", closeMobileTools);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("mobileTools").hidden) {
+    closeMobileTools();
+    $("mobileToolsBtn").focus();
+  }
+});
 function gotoGroup(g) {
   // 多级组（设置）：已在其二级页时再点组入口 = 返回目录页；否则回到最后停留的视图。
   const curSection = document.querySelector("section.view.active");
@@ -6439,7 +6896,7 @@ function playViewTimeline(view) {
   const actions = isChat ? panel.querySelector("#chatEmpty .sub") : panel.querySelector(".vactions");
   const content = isChat
     ? [panel.querySelector("#chatEmpty"), panel.querySelector(".composer")]
-    : Array.from(panel.querySelectorAll(".vwrap > .block, .vwrap > details.fold, .vwrap > .banner, .vwrap > .nav-menu, .vwrap > .mail-layout, .vwrap > [id$='Box'], .vwrap > [id$='Out']")).slice(0, 8);
+    : Array.from(panel.querySelectorAll(".vwrap > .block, .vwrap > details.fold, .vwrap > .banner, .vwrap > .nav-menu, .vwrap > .mail-layout, .vwrap > .search-hero, .vwrap > .search-index-head, .vwrap > .search-results, .vwrap > [id$='Box'], .vwrap > [id$='Out']")).slice(0, 8);
 
   motionTween(title, [
     { opacity: 0, transform: "translateY(18px)" },
@@ -6470,9 +6927,9 @@ const dataMotionObserver = new MutationObserver((records) => {
   for (const record of records) {
     for (const node of record.addedNodes) {
       if (!(node instanceof HTMLElement)) continue;
-      const candidates = node.matches(".row,.ev-row,.notif-row,.mail-row,.gc-card,.empty,.statusline")
+      const candidates = node.matches(".row,.ev-row,.notif-row,.mail-row,.gc-card,.search-result,.search-quick,.empty,.statusline")
         ? [node]
-        : Array.from(node.querySelectorAll(".row,.ev-row,.notif-row,.mail-row,.gc-card,.empty,.statusline"));
+        : Array.from(node.querySelectorAll(".row,.ev-row,.notif-row,.mail-row,.gc-card,.search-result,.search-quick,.empty,.statusline"));
       for (const candidate of candidates) {
         if (motionSeen.has(candidate) || !candidate.closest("section.view.active")) continue;
         motionSeen.add(candidate);
@@ -6500,11 +6957,18 @@ dataMotionObserver.observe($("main"), { childList: true, subtree: true });
 function showView(view) {
   const group = groupOfView(view);
   navLastView[group.id] = view;
+  closeMobileTools();
   document.querySelectorAll(".nav-btn, .tab-btn").forEach((b) => {
     const on = b.dataset.group === group.id;
     b.classList.toggle("active", on);
     if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
   });
+  document.querySelectorAll(".utility-btn[data-group]").forEach((button) => {
+    const on = button.dataset.group === group.id;
+    button.classList.toggle("active", on);
+    if (on) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
+  });
+  $("mobileToolsBtn").classList.toggle("active", UTILITY_GROUPS.includes(group));
   const sn = $("subnav");
   sn.textContent = "";
   const subEntry = group.sub && group.sub.find(([v]) => v === view);
@@ -6544,6 +7008,10 @@ function showView(view) {
   document.body.dataset.group = group.id;
   requestAnimationFrame(() => playViewTimeline(view));
   refreshAll();
+  if (view === "search") {
+    clearTimeout(globalSearchTimer);
+    globalSearchTimer = setTimeout(runGlobalSearch, 360);
+  }
 }
 
 function refreshAll() {
