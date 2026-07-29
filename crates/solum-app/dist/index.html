@@ -949,6 +949,636 @@
     .btn.sm::after { content: ""; position: absolute; inset: -7px; }
   }
 
+  /* =========================================================================
+     2026-07-29 全面视觉重构：黑白编辑部 + 微粉信号
+     参考图只提供视觉语言；信息结构仍由 Solum 的真实能力决定。
+     ========================================================================= */
+  :root {
+    --bg: #fff;
+    --side: #f7f7f6;
+    --card: #fff;
+    --inset: #f5f5f4;
+    --hover: #f1f1ef;
+    --ink: #0b0b0c;
+    --ink-2: #4d4d50;
+    --muted: #717176;
+    --faint: #aaa9ad;
+    --line: #e7e7e5;
+    --line-strong: #d7d7d4;
+    --accent: #df78a0;
+    --accent-fill: #df78a0;
+    --on-accent-fill: #201017;
+    --accent-soft: #fceff4;
+    --accent-line: #f4cedd;
+    --focus: rgba(223, 120, 160, .55);
+    --shadow-xs: 0 1px 2px rgba(11, 11, 12, .035);
+    --shadow-md: 0 18px 48px rgba(11, 11, 12, .08);
+    --shadow-xl: 0 32px 90px rgba(11, 11, 12, .2);
+    --r-sm: 10px;
+    --r-md: 16px;
+    --r-lg: 24px;
+    --r-xl: 32px;
+    --ease: cubic-bezier(.22, 1, .36, 1);
+    --t-fast: 170ms;
+    --t-med: 260ms;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111113;
+      --side: #19191b;
+      --card: #171719;
+      --inset: #202023;
+      --hover: #262629;
+      --ink: #f4f4f2;
+      --ink-2: #cacacd;
+      --muted: #a3a3aa;
+      --faint: #69696f;
+      --line: #2b2b2e;
+      --line-strong: #3b3b3f;
+      --accent: #f08eb4;
+      --accent-fill: #f08eb4;
+      --accent-soft: #3b252f;
+      --accent-line: #684052;
+      --toast-bg: #f4f4f2;
+      --toast-ink: #111113;
+      --shadow-xs: none;
+      --shadow-md: 0 20px 54px rgba(0, 0, 0, .36);
+      --shadow-xl: 0 32px 90px rgba(0, 0, 0, .58);
+    }
+  }
+  body {
+    background: color-mix(in srgb, var(--side) 88%, var(--bg));
+    letter-spacing: -.005em;
+  }
+  #app {
+    grid-template-columns: 248px minmax(0, 1fr);
+    gap: 14px;
+    padding: 14px;
+    overflow: hidden;
+  }
+  #sidebar,
+  #main {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--r-xl);
+    overflow: hidden;
+  }
+  #sidebar {
+    padding: 24px 16px 16px;
+    box-shadow: var(--shadow-xs);
+  }
+  .brand {
+    padding: 0 8px 28px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 4px 12px;
+  }
+  .brand-copy { min-width: 0; }
+  .brand-mark {
+    display: block;
+    font-size: 1.75rem;
+    line-height: .95;
+    font-weight: 800;
+    letter-spacing: -.055em;
+  }
+  .brand-sub {
+    display: block;
+    margin-top: 8px;
+    font-size: .6875rem;
+    line-height: 1;
+    color: var(--muted);
+    letter-spacing: .14em;
+    text-transform: uppercase;
+  }
+  .solum-signal {
+    position: relative;
+    width: 42px;
+    height: 42px;
+    border: 3px solid var(--ink);
+    border-right-color: transparent;
+    border-radius: 50%;
+    transform: rotate(18deg);
+    flex: 0 0 auto;
+  }
+  .solum-signal::before,
+  .solum-signal::after {
+    content: "";
+    position: absolute;
+    right: -1px;
+    border-radius: 50%;
+  }
+  .solum-signal::before {
+    width: 9px;
+    height: 9px;
+    top: 5px;
+    background: var(--accent-fill);
+    box-shadow: 0 0 0 4px var(--bg);
+  }
+  .solum-signal::after {
+    width: 5px;
+    height: 5px;
+    bottom: 5px;
+    background: var(--ink);
+  }
+  .brand:has(.brand-dot.on) .solum-signal::before {
+    animation: signalPulse 3.2s ease-in-out infinite;
+  }
+  @keyframes signalPulse {
+    0%, 100% { transform: scale(.82); opacity: .72; }
+    50% { transform: scale(1.16); opacity: 1; }
+  }
+  .brand-dot { display: none; }
+  #nav { gap: 7px; }
+  .nav-btn {
+    min-height: 48px;
+    padding: 11px 13px;
+    gap: 12px;
+    border: 1px solid transparent;
+    border-radius: 15px;
+    color: var(--muted);
+    font-size: .875rem;
+    font-weight: 560;
+    position: relative;
+  }
+  .nav-btn:hover {
+    background: var(--inset);
+    border-color: var(--line);
+  }
+  .nav-btn.active {
+    background: var(--ink);
+    color: var(--bg);
+    box-shadow: 0 8px 22px rgba(11, 11, 12, .12);
+  }
+  .nav-btn.active::after {
+    content: "";
+    position: absolute;
+    top: 9px;
+    right: 10px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-fill);
+  }
+  .nav-btn.active .due-pill { color: #111; }
+  .side-foot {
+    margin: auto 4px 0;
+    padding: 18px 7px 2px;
+    gap: 11px;
+  }
+  #main { min-width: 0; }
+  #banners { padding: 18px clamp(22px, 4vw, 58px) 0; }
+  #subnavWrap { padding: 22px clamp(22px, 4vw, 58px) 0; }
+  .seg {
+    gap: 5px;
+    padding: 4px;
+    border: 1px solid var(--line);
+    background: var(--inset);
+    border-radius: 18px;
+  }
+  .seg button {
+    min-height: 38px;
+    padding: 7px 18px;
+    border-radius: 13px;
+  }
+  .seg button.active {
+    color: var(--bg);
+    background: var(--ink);
+    box-shadow: none;
+  }
+  section.view {
+    padding: 0 clamp(22px, 4vw, 58px) 54px;
+    scrollbar-gutter: stable;
+  }
+  section.view.active { animation: none; }
+  .vwrap {
+    width: 100%;
+    max-width: 1120px;
+    margin-inline: auto;
+  }
+  .vhead {
+    align-items: center;
+    padding: 44px 0 24px;
+    margin: 0 0 28px;
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    backdrop-filter: blur(18px);
+  }
+  .vhead h2 {
+    width: fit-content;
+    position: relative;
+    font-size: clamp(2.35rem, 4vw, 3.25rem);
+    line-height: .98;
+    font-weight: 820;
+    letter-spacing: -.065em;
+  }
+  .vhead h2::after,
+  .block > h3::after {
+    content: "";
+    display: inline-block;
+    width: .2em;
+    height: .2em;
+    margin-left: .16em;
+    border-radius: 50%;
+    background: var(--accent-fill);
+    vertical-align: top;
+  }
+  .vhead .desc {
+    top: calc(100% + 12px);
+    padding: 13px 16px;
+    border-radius: 18px;
+  }
+  .vactions { gap: 12px; }
+  .block { margin-bottom: 52px; }
+  .block > h3 {
+    margin-bottom: 18px;
+    font-size: 1.25rem;
+    letter-spacing: -.025em;
+  }
+  .btn {
+    min-height: 44px;
+    padding: 9px 17px;
+    border-radius: 14px;
+    font-size: .875rem;
+  }
+  .btn:hover { transform: translateY(-1px); }
+  .btn:active { transform: translateY(1px) scale(.975); }
+  .btn.primary {
+    color: var(--bg);
+    background: var(--ink);
+    border-color: var(--ink);
+    box-shadow: 0 8px 22px rgba(11, 11, 12, .12);
+  }
+  .btn.primary:hover {
+    color: var(--bg);
+    background: color-mix(in srgb, var(--ink) 88%, var(--bg));
+    border-color: transparent;
+    filter: none;
+  }
+  .btn.sm { min-height: 36px; border-radius: 12px; }
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    min-height: 48px;
+    padding: 11px 14px;
+    border-radius: 14px;
+    background: var(--inset);
+    border-color: var(--line);
+  }
+  textarea { min-height: 104px; }
+  input:not([type="checkbox"]):not([type="radio"]):focus,
+  select:focus,
+  textarea:focus {
+    background: var(--bg);
+    border-color: var(--ink);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-soft) 82%, transparent);
+  }
+  .banner,
+  .digest,
+  .doc-drop,
+  .gc-card,
+  .nav-menu-item {
+    border-radius: var(--r-lg);
+  }
+  .banner {
+    padding: 14px 18px;
+    color: var(--ink-2);
+    background: var(--inset);
+    border-color: var(--line);
+  }
+  .banner::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent-fill);
+    flex: 0 0 auto;
+  }
+  .banner .ic { color: var(--ink); }
+  .tag.accent {
+    color: var(--ink);
+    background: var(--accent-soft);
+    border-color: var(--accent-line);
+  }
+  .row,
+  .ev-row,
+  .notif-row,
+  .mail-row {
+    padding-block: 15px;
+  }
+  .tscroll,
+  .digest,
+  .nav-menu,
+  .doc-drop,
+  details.fold {
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    background: var(--bg);
+  }
+  .tscroll { overflow: auto; }
+  .dt th { background: var(--inset); }
+  .dt th,
+  .dt td { padding: 13px 15px; }
+  details.fold {
+    margin-bottom: 16px;
+    overflow: clip;
+  }
+  details.fold > summary {
+    padding: 18px 20px;
+  }
+  details.fold[open] > summary {
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 16px;
+  }
+  details.fold > .fold-body { padding: 20px; }
+  .nav-menu { overflow: hidden; }
+  .nav-menu-item {
+    min-height: 80px;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    padding: 17px 20px;
+  }
+  .nav-menu-item:last-child { border-bottom: 0; }
+  .nav-menu-item .ic { color: var(--ink); }
+  .nav-menu-item:hover { background: var(--inset); }
+  .statusline .sdot.amber,
+  .sdot.amber { background: var(--accent-fill); }
+  .switch input:checked + .track { background: var(--ink); }
+  .switch input:checked + .track + .knob { background: var(--bg); }
+  #view-chat { border-radius: inherit; }
+  .chatgrid { background: var(--bg); }
+  #chatSessions {
+    background: var(--inset);
+    padding: 24px 14px;
+  }
+  .session-item { padding: 11px 10px; border-radius: 13px; }
+  #sessionList { overflow-x: hidden; }
+  .session-row { min-width: 0; }
+  .session-remove { flex: 0 0 auto; }
+  .session-item.active {
+    color: var(--bg);
+    background: var(--ink);
+  }
+  .session-item.active .session-meta { color: color-mix(in srgb, var(--bg) 68%, transparent); }
+  .chat-inner {
+    max-width: 850px;
+    padding: clamp(26px, 5vh, 62px) clamp(20px, 4vw, 42px) 16px;
+  }
+  #chatEmpty {
+    position: relative;
+    padding: clamp(26px, 5vh, 56px);
+    border: 1px solid var(--line);
+    border-radius: var(--r-xl);
+    background:
+      radial-gradient(circle at 78% 20%, color-mix(in srgb, var(--accent-soft) 72%, transparent), transparent 25%),
+      var(--bg);
+    overflow: hidden;
+  }
+  #chatEmpty::before {
+    content: "YOUR DAY / YOUR MEMORY";
+    display: block;
+    margin-bottom: 30px;
+    color: var(--muted);
+    font-size: .75rem;
+    font-weight: 700;
+    letter-spacing: .18em;
+  }
+  #chatEmpty .lamp {
+    position: absolute;
+    top: 42px;
+    right: 42px;
+    width: 72px;
+    height: 72px;
+    border: 3px solid var(--ink);
+    border-right-color: transparent;
+    transform: rotate(18deg);
+  }
+  #chatEmpty .lamp i {
+    position: absolute;
+    top: 4px;
+    right: -2px;
+    width: 12px;
+    height: 12px;
+    background: var(--accent-fill);
+    box-shadow: 0 0 0 5px var(--bg);
+  }
+  #chatEmpty h3 {
+    max-width: 8em;
+    margin: 0 0 16px;
+    font-size: clamp(2.2rem, 5vw, 4.5rem);
+    line-height: .98;
+    letter-spacing: -.07em;
+  }
+  #chatEmpty .sub {
+    max-width: 57ch;
+    margin-bottom: 34px;
+    font-size: 1rem;
+    line-height: 1.75;
+  }
+  .examples {
+    max-width: none;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .example {
+    min-height: 96px;
+    justify-content: space-between;
+    padding: 16px 18px;
+    border-radius: 20px;
+    color: var(--ink);
+  }
+  .example:hover {
+    color: var(--bg);
+    border-color: var(--ink);
+    background: var(--ink);
+    transform: translateY(-2px);
+  }
+  .msg {
+    padding: 13px 17px;
+    border-radius: 22px;
+  }
+  .msg.user {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--bg);
+  }
+  .msg.agent { border-color: var(--line); box-shadow: none; }
+  .composer {
+    border-top: 0;
+    padding: 12px 26px 20px;
+    background: linear-gradient(transparent, var(--bg) 24%);
+  }
+  .composer form {
+    max-width: 850px;
+    padding: 7px;
+    border: 1px solid var(--line);
+    border-radius: 22px;
+    background: var(--bg);
+    box-shadow: var(--shadow-md);
+  }
+  #chatInput {
+    min-height: 48px;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  #sendBtn { min-width: 50px; border-radius: 16px; }
+  #todayPanel {
+    background: var(--inset);
+    padding: 28px 24px 36px;
+  }
+  #todayPanel h4 {
+    color: var(--ink);
+    font-size: .8125rem;
+    letter-spacing: .12em;
+  }
+  .tp-item {
+    margin-bottom: 8px;
+    padding: 11px 12px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--bg);
+  }
+  #drawer {
+    width: min(520px, 100vw);
+    border-radius: 32px 0 0 32px;
+    box-shadow: var(--shadow-xl);
+  }
+  #modal {
+    padding: 28px;
+    border-radius: 28px;
+  }
+  #privacyGate .pg-inner { width: 760px; }
+  #privacyGate h2 { font-size: 2rem; letter-spacing: -.04em; }
+  #privacyGate .pg-body { border-radius: 24px; padding: 22px 24px; }
+  #toast { border-radius: 999px; }
+
+  @media (max-width: 1239px) and (min-width: 1000px) {
+    .chatgrid { grid-template-columns: 220px minmax(0, 1fr); }
+  }
+  @media (max-width: 999px) and (min-width: 900px) {
+    .chatgrid { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (max-width: 899px) {
+    body { background: var(--bg); }
+    #app {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      gap: 0;
+      padding: 0;
+    }
+    #main {
+      border: 0;
+      border-radius: 0;
+    }
+    #mHeader {
+      padding: calc(17px + var(--sat)) 20px 15px;
+      background: color-mix(in srgb, var(--bg) 94%, transparent);
+      border-bottom: 0;
+      backdrop-filter: blur(18px);
+    }
+    #mHeader .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0;
+    }
+    #mHeader .brand-mark {
+      font-size: 1.4rem !important;
+      letter-spacing: -.05em;
+    }
+    #mHeader .solum-signal {
+      width: 32px;
+      height: 32px;
+      border-width: 2.5px;
+    }
+    #mHeader .solum-signal::before {
+      width: 7px;
+      height: 7px;
+      box-shadow: 0 0 0 3px var(--bg);
+    }
+    #tabbar {
+      position: relative;
+      z-index: var(--z-sticky);
+      gap: 2px;
+      margin: 8px 14px calc(10px + var(--sab));
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: 26px;
+      background: color-mix(in srgb, var(--bg) 94%, transparent);
+      box-shadow: 0 18px 52px rgba(11, 11, 12, .14);
+      backdrop-filter: blur(20px);
+    }
+    .tab-btn {
+      min-width: 0;
+      min-height: 54px;
+      padding: 7px 2px 6px;
+      gap: 2px;
+      border-radius: 18px;
+      color: var(--faint);
+      font-size: .625rem;
+    }
+    .tab-btn.active {
+      color: var(--ink);
+      background: var(--inset);
+      font-weight: 700;
+    }
+    .tab-btn.active::after {
+      content: "";
+      position: absolute;
+      top: 6px;
+      right: calc(50% - 15px);
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--accent-fill);
+    }
+    .tab-btn .due-pill { top: 1px; }
+    #banners { padding: 10px 18px 0; }
+    #subnavWrap { padding: 10px 18px 0; }
+    .seg { width: 100%; }
+    .seg button { flex: 1; min-width: fit-content; }
+    section.view { padding: 0 18px 34px; }
+    .vhead {
+      padding: 34px 0 20px;
+      margin-bottom: 18px;
+    }
+    .vhead h2 { font-size: clamp(2.2rem, 11vw, 3rem); }
+    .vactions { width: 100%; }
+    .vactions .btn.primary { flex: 1; }
+    .block { margin-bottom: 38px; }
+    #view-chat { padding: 0; }
+    .chat-session-mobile {
+      margin: 2px 16px 0;
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--inset);
+    }
+    .chat-inner { padding: 18px 18px 10px; }
+    #chatEmpty {
+      padding: 30px 24px 24px;
+      border-radius: 28px;
+    }
+    #chatEmpty::before { margin-bottom: 56px; }
+    #chatEmpty .lamp { top: 58px; right: 26px; width: 56px; height: 56px; }
+    #chatEmpty h3 { max-width: 7em; }
+    .examples { grid-template-columns: 1fr; }
+    .example { min-height: 76px; }
+    .composer { padding: 9px 14px 8px; }
+    .composer form { border-radius: 20px; }
+    .msg { max-width: 90%; }
+    #drawer { border-radius: 0; }
+    #modal { padding: 24px; border-radius: 26px; }
+  }
+  @media (max-width: 420px) {
+    .tab-btn span:not(.due-pill) { font-size: .5625rem; }
+    .tab-btn .ic { width: 19px; height: 19px; }
+    #chatEmpty h3 { font-size: 2.45rem; }
+    .vhead { align-items: flex-start; }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
       animation-duration: .01ms !important; animation-iteration-count: 1 !important;
@@ -962,8 +1592,11 @@
   <!-- ================= 侧栏（桌面） ================= -->
   <aside id="sidebar">
     <div class="brand" title="息壤 — Personal Agent">
-      <span class="brand-mark">息壤<span class="brand-dot" id="brandDot"></span></span>
-      <span class="brand-sub">私人管家</span>
+      <span class="brand-copy">
+        <span class="brand-mark">Solum<span class="brand-dot" id="brandDot"></span></span>
+        <span class="brand-sub">息壤 · Personal Agent</span>
+      </span>
+      <span class="solum-signal" aria-hidden="true"></span>
     </div>
     <nav id="nav" aria-label="主导航"></nav>
     <div class="side-foot">
@@ -988,7 +1621,8 @@
   <!-- ================= 顶栏（移动） ================= -->
   <header id="mHeader">
     <div class="brand">
-      <span class="brand-mark" style="font-size:1.125rem;">息壤<span class="brand-dot" id="brandDotM"></span></span>
+      <span class="brand-mark" style="font-size:1.125rem;">Solum<span class="brand-dot" id="brandDotM"></span></span>
+      <span class="solum-signal" aria-hidden="true"></span>
     </div>
     <div class="grow"></div>
     <span class="due-pill" id="duePillM" title="到点未触发的提醒数"></span>
@@ -1026,8 +1660,8 @@
             </div>
             <div id="chatEmpty">
               <div class="lamp"><i></i></div>
-              <h3>你好，我是息壤。</h3>
-              <p class="sub">随口说一件事：我来排日程、按重要度提前提醒、记录状态、给出建议。高危指令会被拦下，必须你人工确认。</p>
+              <h3>今天，从这里继续。</h3>
+              <p class="sub">告诉我一件需要记住或推进的事。我会排进日程、按重要度提醒、保留上下文；涉及风险的动作，仍然只在你确认后执行。</p>
               <div class="examples" id="examples"></div>
             </div>
             <div id="chatLog"></div>
@@ -5766,6 +6400,103 @@ function handleSubnavKeydown(e) {
   showView(nextView);
   requestAnimationFrame(() => $("tab-" + nextView)?.focus());
 }
+
+/* ---- Motion system -------------------------------------------------------
+   GSAP skill conventions, adapted to this repository's zero-dependency rule:
+   timeline-style sequencing, compositor-only transform/opacity, cancellation
+   on navigation, and a hard prefers-reduced-motion exit. */
+const motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
+let viewMotion = [];
+const motionSeen = new WeakSet();
+function cancelViewMotion() {
+  for (const animation of viewMotion) {
+    try { animation.cancel(); } catch (_) { /* detached target */ }
+  }
+  viewMotion = [];
+}
+function motionTween(target, keyframes, options) {
+  if (!target || motionPreference.matches || typeof target.animate !== "function") return null;
+  const animation = target.animate(keyframes, {
+    duration: 420,
+    easing: "cubic-bezier(.22,1,.36,1)",
+    fill: "both",
+    ...options,
+  });
+  viewMotion.push(animation);
+  animation.finished.then(() => {
+    animation.cancel();
+    viewMotion = viewMotion.filter((item) => item !== animation);
+  }).catch(() => { /* navigation intentionally interrupts the timeline */ });
+  return animation;
+}
+function playViewTimeline(view) {
+  cancelViewMotion();
+  if (motionPreference.matches) return;
+  const panel = $("view-" + view);
+  if (!panel) return;
+  const isChat = view === "chat";
+  const title = isChat ? panel.querySelector("#chatEmpty h3") : panel.querySelector(".vhead h2");
+  const actions = isChat ? panel.querySelector("#chatEmpty .sub") : panel.querySelector(".vactions");
+  const content = isChat
+    ? [panel.querySelector("#chatEmpty"), panel.querySelector(".composer")]
+    : Array.from(panel.querySelectorAll(".vwrap > .block, .vwrap > details.fold, .vwrap > .banner, .vwrap > .nav-menu, .vwrap > .mail-layout, .vwrap > [id$='Box'], .vwrap > [id$='Out']")).slice(0, 8);
+
+  motionTween(title, [
+    { opacity: 0, transform: "translateY(18px)" },
+    { opacity: 1, transform: "translateY(0)" },
+  ], { duration: 480, delay: 20 });
+  motionTween(actions, [
+    { opacity: 0, transform: "translateY(12px)" },
+    { opacity: 1, transform: "translateY(0)" },
+  ], { duration: 420, delay: 90 });
+  content.forEach((target, index) => motionTween(target, [
+    { opacity: 0, transform: "translateY(20px) scale(.992)" },
+    { opacity: 1, transform: "translateY(0) scale(1)" },
+  ], { duration: 500, delay: 140 + index * 52 }));
+
+  document.querySelectorAll(".nav-btn.active, .tab-btn.active").forEach((target) => {
+    motionTween(target, [
+      { transform: "scale(.96)" },
+      { transform: "scale(1)" },
+    ], { duration: 300, delay: 0 });
+  });
+}
+
+// Async IPC refreshes populate cards after the main view timeline. Animate only
+// newly inserted user-facing rows/cards, cap each batch, and never touch layout.
+const dataMotionObserver = new MutationObserver((records) => {
+  if (motionPreference.matches) return;
+  const targets = [];
+  for (const record of records) {
+    for (const node of record.addedNodes) {
+      if (!(node instanceof HTMLElement)) continue;
+      const candidates = node.matches(".row,.ev-row,.notif-row,.mail-row,.gc-card,.empty,.statusline")
+        ? [node]
+        : Array.from(node.querySelectorAll(".row,.ev-row,.notif-row,.mail-row,.gc-card,.empty,.statusline"));
+      for (const candidate of candidates) {
+        if (motionSeen.has(candidate) || !candidate.closest("section.view.active")) continue;
+        motionSeen.add(candidate);
+        targets.push(candidate);
+        if (targets.length >= 14) break;
+      }
+      if (targets.length >= 14) break;
+    }
+    if (targets.length >= 14) break;
+  }
+  targets.forEach((target, index) => {
+    const animation = target.animate([
+      { opacity: 0, transform: "translateY(10px)" },
+      { opacity: 1, transform: "translateY(0)" },
+    ], {
+      duration: 340,
+      delay: index * 28,
+      easing: "cubic-bezier(.22,1,.36,1)",
+    });
+    animation.finished.catch(() => {});
+  });
+});
+dataMotionObserver.observe($("main"), { childList: true, subtree: true });
+
 function showView(view) {
   const group = groupOfView(view);
   navLastView[group.id] = view;
@@ -5809,6 +6540,9 @@ function showView(view) {
   }
   document.querySelectorAll("section.view").forEach((x) =>
     x.classList.toggle("active", x.id === "view-" + view));
+  document.body.dataset.view = view;
+  document.body.dataset.group = group.id;
+  requestAnimationFrame(() => playViewTimeline(view));
   refreshAll();
 }
 
