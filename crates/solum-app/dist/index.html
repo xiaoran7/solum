@@ -1842,16 +1842,147 @@
     .search-quick { padding: 18px; border-radius: 22px; }
   }
   @media (max-width: 420px) {
-    .tab-btn span:not(.due-pill) { font-size: .6875rem; }
+    .tab-btn span:not(.due-pill) { font-size: .75rem; }
     .tab-btn .ic { width: 19px; height: 19px; }
     #chatEmpty h3 { font-size: 2.45rem; }
     .vhead { align-items: flex-start; }
+  }
+
+  /* =========================================================================
+     2026-07-29 可读性与交互反馈：中文字面节奏、长内容换行、数字对齐。
+     保持编辑部式大标题，但不以牺牲正文扫读与移动端 12px 下限为代价。
+     ========================================================================= */
+  :root {
+    --text-xs: .75rem;
+    --text-sm: .8125rem;
+    --text-ui: .9375rem;
+    --text-body: 1rem;
+    --leading-tight: 1.12;
+    --leading-ui: 1.55;
+    --leading-body: 1.72;
+    --measure: 68ch;
+  }
+  body {
+    font-size: var(--text-ui);
+    line-height: var(--leading-ui);
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    overflow-wrap: break-word;
+  }
+  button,
+  input,
+  select,
+  textarea {
+    font-family: inherit;
+    font-synthesis: none;
+  }
+  h1, h2, h3, h4,
+  .search-question,
+  #chatEmpty h3 {
+    text-wrap: balance;
+    line-break: strict;
+  }
+  :lang(zh-CN) .vhead h2,
+  :lang(zh-CN) .search-question,
+  :lang(zh-CN) #chatEmpty h3 {
+    letter-spacing: -.035em;
+  }
+  .hint,
+  .desc,
+  .meta,
+  .nd,
+  .search-result-copy,
+  .msg,
+  .digest,
+  .mdbody {
+    line-height: var(--leading-body);
+    line-break: strict;
+    text-wrap: pretty;
+  }
+  .msg,
+  .digest,
+  .mdbody,
+  .filename,
+  .llm-test,
+  .search-result-copy {
+    overflow-wrap: anywhere;
+  }
+  .msg,
+  .digest,
+  .mdbody {
+    font-size: var(--text-body);
+    max-width: var(--measure);
+  }
+  .vhead .desc {
+    font-size: var(--text-sm);
+    line-height: 1.65;
+  }
+  .day-h,
+  .time,
+  .when,
+  .dt,
+  .dtme,
+  .hstat .v,
+  .session-meta,
+  #globalSearchCount {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+  }
+  ::selection {
+    color: var(--ink);
+    background: var(--accent-soft);
+  }
+
+  /* 切页刷新条不占布局，只用 transform / opacity 进入合成层。短请求延迟显示，
+     避免快速缓存命中时闪一下；减少动态效果时保留静态状态。 */
+  #main { position: relative; }
+  #routeProgress {
+    position: absolute;
+    top: 0;
+    left: 28px;
+    right: 28px;
+    z-index: calc(var(--z-sticky) + 1);
+    height: 2px;
+    overflow: hidden;
+    border-radius: 999px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--t-fast) ease;
+  }
+  #routeProgress::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: color-mix(in srgb, var(--accent-fill) 22%, transparent);
+  }
+  #routeProgress span {
+    display: block;
+    width: 42%;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent-fill);
+    transform: translateX(-120%);
+  }
+  #routeProgress.active { opacity: 1; }
+  #routeProgress.active span {
+    animation: routeProgress 1.15s var(--ease) infinite;
+  }
+  @keyframes routeProgress {
+    from { transform: translateX(-120%); }
+    to { transform: translateX(340%); }
+  }
+  @media (max-width: 899px) {
+    #routeProgress { left: 18px; right: 18px; }
   }
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
       animation-duration: .01ms !important; animation-iteration-count: 1 !important;
       transition-duration: .01ms !important;
+    }
+    #routeProgress.active span {
+      width: 100%;
+      transform: none;
     }
   }
 </style>
@@ -1913,6 +2044,7 @@
 
   <!-- ================= 主区 ================= -->
   <main id="main">
+    <div id="routeProgress" aria-hidden="true"><span></span></div>
     <div id="banners"></div>
     <!-- 同步健康：常驻横幅（缺口/无法解密批次）。挂在全局 banners 区而不是
          某个视图里，因为它描述的是整机状态，切到哪一页都该看得见。 -->
@@ -2100,7 +2232,7 @@
         <form class="search-form" id="globalSearchForm">
           <div class="search-field">
             <span id="globalSearchIcon"></span>
-            <input id="globalSearchInput" type="search" placeholder="输入记忆、计划或关键词" autocomplete="off" />
+            <input id="globalSearchInput" type="search" placeholder="输入记忆、计划或关键词" autocomplete="off" aria-keyshortcuts="/" />
           </div>
           <button class="btn primary" id="globalSearchBtn" type="submit">搜索</button>
         </form>
@@ -2602,12 +2734,107 @@
 // Android WebView 下 env(safe-area-inset-*) 可能恒为 0，CSS 里 html.android
 // 分支提供状态栏/手势条兜底内边距（见移动端媒体查询注释）。
 if (/Android/i.test(navigator.userAgent)) document.documentElement.classList.add("android");
-const invoke = window.__TAURI__ && window.__TAURI__.core
-  ? window.__TAURI__.core.invoke
+const rawInvoke = window.__TAURI__ && window.__TAURI__.core
+  ? window.__TAURI__.core.invoke.bind(window.__TAURI__.core)
   : () => Promise.reject(new Error("Tauri API 不可用（请从桌面应用打开）"));
+
+// 只缓存幂等、权威数据的短时读取：目的不是复制一份数据库，而是合并同一轮
+// refreshToday / refreshAll 发出的重复 IPC。邮件内容、隐私同意状态和配置密钥
+// 不进入这里；任何写命令成功后整代失效，删除/改写会立即回到权威存储。
+const IPC_CACHE_TTL_MS = new Map([
+  ["sync_status", 1200], ["sync_config_get", 1200],
+  ["agenda", 900], ["due", 900], ["all_notifications", 900], ["all_events", 900],
+  ["suggestions", 900], ["behavior_log", 900], ["health_status", 1200],
+  ["ledger", 900], ["routines", 900], ["persona_get", 1200], ["rules", 1200],
+  ["proactivity_get", 1200], ["notif_cloud_get", 900],
+  ["capture_entry_points", 1200], ["capture_inbox_list", 700],
+  ["notif_intelligence_status", 700], ["tools", 1500], ["audit", 900],
+  ["llm_config_get", 1200], ["account_status_get", 1200],
+  ["soulous_config_get", 1200], ["widget_defs", 900], ["widget_records", 900],
+]);
+const IPC_READ_ONLY_UNCACHED = new Set([
+  "app_info", "email_config_get", "email_folders", "email_message", "email_messages",
+  "email_search", "health_samples", "notif_access_status", "notif_intelligence_apps",
+  "notif_intelligence_auto_event_counts", "privacy_consent_status", "review",
+]);
+const ipcCache = new Map();
+const ipcInFlight = new Map();
+let ipcCacheGeneration = 0;
+function ipcCacheKey(command, args) {
+  try { return `${command}:${JSON.stringify(args || {})}`; }
+  catch (_) { return command; }
+}
+function invalidateIpcCache() {
+  ipcCacheGeneration += 1;
+  ipcCache.clear();
+}
+function invoke(command, args) {
+  const ttl = IPC_CACHE_TTL_MS.get(command);
+  if (!ttl) {
+    return rawInvoke(command, args).then((value) => {
+      if (!IPC_READ_ONLY_UNCACHED.has(command)) invalidateIpcCache();
+      return value;
+    });
+  }
+  const key = ipcCacheKey(command, args);
+  const now = performance.now();
+  const cached = ipcCache.get(key);
+  if (cached && now - cached.at < ttl) return Promise.resolve(cached.value);
+  const pending = ipcInFlight.get(key);
+  if (pending) return pending;
+  const generation = ipcCacheGeneration;
+  const request = rawInvoke(command, args).then((value) => {
+    if (generation === ipcCacheGeneration) ipcCache.set(key, { at: performance.now(), value });
+    return value;
+  }).finally(() => ipcInFlight.delete(key));
+  ipcInFlight.set(key, request);
+  return request;
+}
 
 /* ============================== 基础工具 ============================== */
 const $ = (id) => document.getElementById(id);
+
+/* UI 状态只留在本机 WebView：导航位置、滚动位置和对话草稿。
+   不写邮件字段、搜索关键词、通知正文或任何账号/密钥。 */
+const UI_STATE_KEY = "solum.ui-state.v1";
+const UI_STATE_VERSION = 1;
+function safeLocalGet(key) {
+  try { return localStorage.getItem(key); } catch (_) { return null; }
+}
+function safeLocalSet(key, value) {
+  try { localStorage.setItem(key, value); return true; } catch (_) { return false; }
+}
+function loadUiState() {
+  try {
+    const parsed = JSON.parse(safeLocalGet(UI_STATE_KEY) || "null");
+    if (!parsed || parsed.version !== UI_STATE_VERSION) throw new Error("unsupported UI state");
+    return {
+      version: UI_STATE_VERSION,
+      lastView: typeof parsed.lastView === "string" ? parsed.lastView : "chat",
+      navLastView: parsed.navLastView && typeof parsed.navLastView === "object" ? parsed.navLastView : {},
+      scroll: parsed.scroll && typeof parsed.scroll === "object" ? parsed.scroll : {},
+      chatDrafts: parsed.chatDrafts && typeof parsed.chatDrafts === "object" ? parsed.chatDrafts : {},
+    };
+  } catch (_) {
+    return { version: UI_STATE_VERSION, lastView: "chat", navLastView: {}, scroll: {}, chatDrafts: {} };
+  }
+}
+let uiState = loadUiState();
+let uiStateSaveTimer = 0;
+function flushUiState() {
+  clearTimeout(uiStateSaveTimer);
+  uiStateSaveTimer = 0;
+  const drafts = Object.entries(uiState.chatDrafts || {})
+    .filter(([id, text]) => id && typeof text === "string" && text.length)
+    .slice(-12);
+  uiState.chatDrafts = Object.fromEntries(drafts);
+  safeLocalSet(UI_STATE_KEY, JSON.stringify({ ...uiState, updatedAt: new Date().toISOString() }));
+}
+function saveUiState(immediate) {
+  clearTimeout(uiStateSaveTimer);
+  if (immediate) { flushUiState(); return; }
+  uiStateSaveTimer = setTimeout(flushUiState, 280);
+}
 
 // el("div", { class: "x", text: "y", onclick: fn }, [children]) → DOM 节点。
 // 全部走 textContent / createElement，杜绝字符串拼 HTML 的注入面。
@@ -3059,6 +3286,9 @@ const CHAT_SESSIONS_KEY = "pa.chat-sessions.v1";
 const CHAT_MAX_SESSIONS = 40;
 const CHAT_MAX_MESSAGES = 240;
 const CHAT_MAX_MESSAGE_CHARS = 12_000;
+// localStorage 常见配额只有数 MiB；给聊天留出明确预算，避免理论上的
+// 40 × 240 × 12k 把整个 UI 状态一起顶出配额。优先保留最近会话与最近消息。
+const CHAT_STORAGE_BUDGET_CHARS = 2_400_000;
 let chatSessions = loadChatSessions();
 
 function newChatSession() {
@@ -3072,7 +3302,7 @@ function newChatSession() {
 }
 function loadChatSessions() {
   try {
-    const raw = JSON.parse(localStorage.getItem(CHAT_SESSIONS_KEY) || "null");
+    const raw = JSON.parse(safeLocalGet(CHAT_SESSIONS_KEY) || "null");
     const sessions = Array.isArray(raw?.sessions) ? raw.sessions.map((item) => ({
       id: typeof item.id === "string" ? item.id : "",
       title: typeof item.title === "string" ? item.title.slice(0, 80) : "新对话",
@@ -3091,13 +3321,66 @@ function loadChatSessions() {
     return { sessions: [session], activeId: session.id };
   }
 }
-function saveChatSessions() {
-  try {
-    localStorage.setItem(CHAT_SESSIONS_KEY, JSON.stringify(chatSessions));
-    return true;
-  } catch (_) {
-    return false;
+let chatSessionSaveTimer = 0;
+function serializeChatSessions(budget) {
+  const full = JSON.stringify(chatSessions);
+  if (full.length <= budget) return full;
+  let remaining = budget - 256;
+  const snapshot = { activeId: chatSessions.activeId, sessions: [] };
+  const sessions = [...chatSessions.sessions]
+    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+    .slice(0, CHAT_MAX_SESSIONS);
+  for (const session of sessions) {
+    const base = {
+      id: session.id,
+      title: session.title,
+      updatedAt: session.updatedAt,
+      messages: [],
+      contextTurns: session.contextTurns || [],
+    };
+    remaining -= JSON.stringify({ ...base, contextTurns: [] }).length;
+    const turns = [];
+    for (const turn of [...base.contextTurns].reverse()) {
+      const cost = JSON.stringify(turn).length + 1;
+      if (cost > remaining) break;
+      turns.unshift(turn);
+      remaining -= cost;
+    }
+    base.contextTurns = turns;
+    const messages = [];
+    for (const message of [...(session.messages || [])].reverse()) {
+      const cost = JSON.stringify(message).length + 1;
+      if (cost > remaining) break;
+      messages.unshift(message);
+      remaining -= cost;
+    }
+    base.messages = messages;
+    snapshot.sessions.push(base);
+    if (remaining < 1024) break;
   }
+  if (!snapshot.sessions.some((session) => session.id === snapshot.activeId)) {
+    const active = activeChatSession();
+    snapshot.sessions.unshift({
+      id: active.id, title: active.title, updatedAt: active.updatedAt,
+      messages: (active.messages || []).slice(-12),
+      contextTurns: (active.contextTurns || []).slice(-4),
+    });
+  }
+  return JSON.stringify(snapshot);
+}
+function flushChatSessions() {
+  clearTimeout(chatSessionSaveTimer);
+  chatSessionSaveTimer = 0;
+  if (safeLocalSet(CHAT_SESSIONS_KEY, serializeChatSessions(CHAT_STORAGE_BUDGET_CHARS))) return true;
+  // 同源里若已有其他 UI 数据，退到更小预算再试一次；IndexedDB 文档不受影响。
+  return safeLocalSet(CHAT_SESSIONS_KEY, serializeChatSessions(1_400_000));
+}
+function saveChatSessions(immediate) {
+  clearTimeout(chatSessionSaveTimer);
+  if (immediate) return flushChatSessions();
+  // localStorage 序列化是同步任务；让当前点击/消息渲染先完成，退出时再强制落盘。
+  chatSessionSaveTimer = setTimeout(flushChatSessions, 80);
+  return true;
 }
 function activeChatSession() {
   let session = chatSessions.sessions.find((item) => item.id === chatSessions.activeId);
@@ -3107,6 +3390,21 @@ function activeChatSession() {
     chatSessions.activeId = session.id;
   }
   return session;
+}
+function saveCurrentChatDraft(immediate) {
+  const session = activeChatSession();
+  const value = String($("chatInput")?.value || "").slice(0, CHAT_MAX_MESSAGE_CHARS);
+  if (value) {
+    // 重新插入使最近编辑的草稿排在对象末尾；达到 12 份上限时淘汰真正最旧的。
+    delete uiState.chatDrafts[session.id];
+    uiState.chatDrafts[session.id] = value;
+  }
+  else delete uiState.chatDrafts[session.id];
+  saveUiState(immediate);
+}
+function restoreCurrentChatDraft() {
+  const input = $("chatInput");
+  if (input) input.value = String(uiState.chatDrafts[activeChatSession().id] || "").slice(0, CHAT_MAX_MESSAGE_CHARS);
 }
 function sessionTime(iso) {
   const d = new Date(iso);
@@ -3188,21 +3486,25 @@ async function syncChatContext() {
 }
 async function switchChatSession(id) {
   if (!chatSessions.sessions.some((session) => session.id === id)) return;
+  saveCurrentChatDraft(true);
   chatSessions.activeId = id;
-  saveChatSessions();
+  saveChatSessions(true);
   renderChatSessions();
   renderActiveChatSession();
+  restoreCurrentChatDraft();
   try { await syncChatContext(); } catch (e) { toast(`无法切换会话上下文：${String(e)}`, "danger"); }
 }
 async function createChatSession() {
+  saveCurrentChatDraft(true);
   const session = newChatSession();
   chatSessions.sessions.unshift(session);
   chatSessions.sessions.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
   if (chatSessions.sessions.length > CHAT_MAX_SESSIONS) chatSessions.sessions.length = CHAT_MAX_SESSIONS;
   chatSessions.activeId = session.id;
-  saveChatSessions();
+  saveChatSessions(true);
   renderChatSessions();
   renderActiveChatSession();
+  restoreCurrentChatDraft();
   try { await syncChatContext(); } catch (e) { toast(`无法初始化新会话：${String(e)}`, "danger"); }
   $("chatInput").focus();
 }
@@ -3214,11 +3516,14 @@ function confirmDeleteChatSession(id) {
     el("div", { class: "fine", text: "不会影响已创建的日程、提醒、组件或记忆；删除后无法恢复。" }),
   ]), "删除对话", async () => {
     chatSessions.sessions = chatSessions.sessions.filter((item) => item.id !== id);
+    delete uiState.chatDrafts[id];
     if (!chatSessions.sessions.length) chatSessions.sessions.push(newChatSession());
     if (chatSessions.activeId === id) chatSessions.activeId = chatSessions.sessions[0].id;
-    saveChatSessions();
+    saveChatSessions(true);
+    saveUiState(true);
     renderChatSessions();
     renderActiveChatSession();
+    restoreCurrentChatDraft();
     try { await syncChatContext(); } catch (_) { /* visual deletion still succeeds locally */ }
   }, { icon: "trash" });
 }
@@ -3456,8 +3761,10 @@ $("chatForm").addEventListener("submit", async (e) => {
   const text = $("chatInput").value.trim();
   if (!text) return;
   $("chatInput").value = "";
+  saveCurrentChatDraft(true);
   await sendChat(text);
 });
+$("chatInput").addEventListener("input", () => saveCurrentChatDraft(false));
 $("sendBtn").appendChild(icon("send", 17));
 $("newSessionBtn").appendChild(icon("plus", 17));
 $("newSessionBtnMobile").appendChild(icon("plus", 17));
@@ -5699,6 +6006,7 @@ function adoptCaptureDraft(draft) {
     // 所以换行显式折成空格，而不是交给浏览器去丢（走查发现，2026-07-27）。
     input.value = draft.text.replace(/\s*[\r\n]+\s*/g, " ").trim();
     input.focus();
+    saveCurrentChatDraft(true);
   }
   discardCaptureDraft(draft.id, true);
   showView("chat");
@@ -6764,7 +7072,9 @@ const UTILITY_GROUPS = [
   SETTINGS_GROUP,
 ];
 const GROUPS = [...PRIMARY_GROUPS, ...UTILITY_GROUPS];
-const navLastView = {};
+const navLastView = { ...uiState.navLastView };
+const viewScrollPositions = new Map(Object.entries(uiState.scroll || {}).map(([view, top]) => [view, Number(top) || 0]));
+let currentView = "";
 function groupOfView(view) {
   for (const g of GROUPS) {
     if (g.views.some(([v]) => v === view)) return g;
@@ -6954,9 +7264,21 @@ const dataMotionObserver = new MutationObserver((records) => {
 });
 dataMotionObserver.observe($("main"), { childList: true, subtree: true });
 
-function showView(view) {
+function showView(view, options) {
+  options = options || {};
+  if (!$("view-" + view)) view = "chat";
+  if (currentView && currentView !== view) {
+    const currentPanel = $("view-" + currentView);
+    if (currentPanel) {
+      viewScrollPositions.set(currentView, currentPanel.scrollTop);
+      uiState.scroll[currentView] = currentPanel.scrollTop;
+    }
+  }
   const group = groupOfView(view);
   navLastView[group.id] = view;
+  uiState.lastView = view;
+  uiState.navLastView = { ...navLastView };
+  saveUiState(false);
   closeMobileTools();
   document.querySelectorAll(".nav-btn, .tab-btn").forEach((b) => {
     const on = b.dataset.group === group.id;
@@ -7006,36 +7328,103 @@ function showView(view) {
     x.classList.toggle("active", x.id === "view-" + view));
   document.body.dataset.view = view;
   document.body.dataset.group = group.id;
-  requestAnimationFrame(() => playViewTimeline(view));
-  refreshAll();
+  const changed = currentView !== view;
+  currentView = view;
+  requestAnimationFrame(() => {
+    const panel = $("view-" + view);
+    if (panel && changed && options.restoreScroll !== false) panel.scrollTop = viewScrollPositions.get(view) || 0;
+    if (options.animate !== false) playViewTimeline(view);
+  });
+  if (options.refresh !== false) refreshView(view);
   if (view === "search") {
     clearTimeout(globalSearchTimer);
-    globalSearchTimer = setTimeout(runGlobalSearch, 360);
+    globalSearchTimer = setTimeout(runGlobalSearch, options.refresh === false ? 120 : 360);
   }
 }
 
-function refreshAll() {
-  refreshAgenda();
-  refreshNotifs();
-  refreshJournal();
-  refreshWearable();
-  refreshSuggest();
-  refreshLedger();
-  refreshPersona();
-  refreshRules();
-  refreshProactivity();
-  refreshPrivacy();
-  refreshCapture();
-  refreshGuard();
-  refreshCloud();
-  refreshAccount();
-  refreshSoulous();
-  refreshSyncConfig();
-  refreshEmail();
-  refreshToday();
-  refreshWidgets();
-  refreshDocuments();
+const VIEW_REFRESHERS = {
+  chat: [refreshToday],
+  agenda: [refreshAgenda],
+  notifs: [refreshNotifs],
+  suggest: [refreshSuggest],
+  journal: [refreshJournal],
+  wearable: [refreshWearable],
+  review: [],
+  ledger: [refreshLedger],
+  captures: [refreshLedger],
+  search: [refreshAgenda, refreshLedger, refreshJournal],
+  settings: [],
+  persona: [refreshPersona],
+  proactivity: [refreshProactivity],
+  privacy: [refreshPrivacy],
+  capture: [refreshCapture],
+  sync: [refreshSyncConfig, refreshSyncStatus],
+  email: [refreshEmail],
+  cloud: [refreshCloud, refreshAccount, refreshSoulous],
+  rules: [refreshRules],
+  guard: [refreshGuard],
+};
+let routeRefreshDepth = 0;
+let routeProgressTimer = 0;
+function beginRouteRefresh(view) {
+  routeRefreshDepth += 1;
+  const panel = $("view-" + view);
+  if (panel) panel.setAttribute("aria-busy", "true");
+  clearTimeout(routeProgressTimer);
+  routeProgressTimer = setTimeout(() => $("routeProgress").classList.add("active"), 120);
 }
+function endRouteRefresh(view) {
+  routeRefreshDepth = Math.max(0, routeRefreshDepth - 1);
+  const panel = $("view-" + view);
+  if (panel) panel.removeAttribute("aria-busy");
+  if (routeRefreshDepth) return;
+  clearTimeout(routeProgressTimer);
+  $("routeProgress").classList.remove("active");
+}
+async function refreshView(view) {
+  const refreshers = VIEW_REFRESHERS[view] || [];
+  if (!refreshers.length) return;
+  beginRouteRefresh(view);
+  try {
+    await Promise.allSettled(refreshers.map((refresh) => Promise.resolve().then(refresh)));
+    if (view === "search") runGlobalSearch();
+  } finally {
+    endRouteRefresh(view);
+  }
+}
+async function refreshAll(options) {
+  const refreshers = [
+    refreshAgenda, refreshNotifs, refreshJournal, refreshWearable, refreshSuggest,
+    refreshLedger, refreshPersona, refreshRules, refreshProactivity, refreshPrivacy,
+    refreshCapture, refreshGuard, refreshCloud, refreshAccount, refreshSoulous,
+    refreshSyncConfig, refreshEmail, refreshToday, refreshWidgets, refreshDocuments,
+  ];
+  const view = currentView || "chat";
+  if (options && options.progress) beginRouteRefresh(view);
+  try {
+    await Promise.allSettled(refreshers.map((refresh) => Promise.resolve().then(refresh)));
+    if (currentView === "search") runGlobalSearch();
+  } finally {
+    if (options && options.progress) endRouteRefresh(view);
+  }
+}
+
+// 四个一级入口对应 Alt+1…4；“/”随时进入本地搜索。表单输入中不抢键。
+document.addEventListener("keydown", (event) => {
+  if ($("privacyGate").classList.contains("open")) return;
+  const target = event.target;
+  const typing = target && (target.matches("input, textarea, select") || target.isContentEditable);
+  if (!typing && event.altKey && !event.ctrlKey && !event.metaKey && /^[1-4]$/.test(event.key)) {
+    event.preventDefault();
+    gotoGroup(PRIMARY_GROUPS[Number(event.key) - 1]);
+    return;
+  }
+  if (!typing && !event.altKey && !event.ctrlKey && !event.metaKey && event.key === "/") {
+    event.preventDefault();
+    showView("search");
+    requestAnimationFrame(() => $("globalSearchInput").focus());
+  }
+});
 
 /* ============================== 常驻宿主事件（Rust ticker → window） ============================== */
 if (window.__TAURI__ && window.__TAURI__.event) {
@@ -7093,13 +7482,24 @@ if (window.__TAURI__ && window.__TAURI__.event) {
 /* ============================== 启动 ============================== */
 renderChatSessions();
 renderActiveChatSession();
+restoreCurrentChatDraft();
 syncChatContext().catch(() => { /* static preview has no IPC; sending stays guarded */ });
-showView("chat");
-initClock().then(refreshAll);
+const initialView = $("view-" + uiState.lastView) ? uiState.lastView : "chat";
+showView(initialView, { refresh: false, animate: false });
+initClock().then(() => refreshAll({ progress: true }));
 refreshNotifAccess();
 // 隐私门最后挂：它盖在所有已渲染内容之上，不需要也不应该阻塞其余初始化。
 initPrivacyGate();
 setInterval(() => { refreshNotifs(); refreshToday(); }, 30000); // 到点角标定期刷新
+window.addEventListener("pagehide", () => {
+  if (currentView) {
+    const panel = $("view-" + currentView);
+    if (panel) uiState.scroll[currentView] = panel.scrollTop;
+  }
+  saveCurrentChatDraft(true);
+  flushChatSessions();
+  flushUiState();
+});
 // 宽屏今日面板在窗口跨过 1200px 断点时才首次可见——不挂 resize 就会一直是
 // 空壳直到下一个 30s 周期（2026-07-17 走查发现 4）。
 let todayResizeTimer = 0;
