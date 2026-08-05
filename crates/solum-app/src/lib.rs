@@ -524,7 +524,7 @@ fn account_model_save(state: State<AppState>, model: String) -> CmdResult<String
     Ok(summary)
 }
 
-// ---- 首启隐私门 + 应用内隐私政策（自 PA-harmony 回移）----------------------
+// ---- 首启隐私门 + 应用内隐私政策（自 Solum Harmony 回移）----------------------
 
 #[derive(Serialize)]
 struct PrivacyConsentStatus {
@@ -577,7 +577,7 @@ fn privacy_consent_decline(_app: tauri::AppHandle) {
     std::process::exit(0);
 }
 
-// ---- 多入口采集（capture 领域层，自 PA-harmony 回移）------------------------
+// ---- 多入口采集（capture 领域层，自 Solum Harmony 回移）------------------------
 
 #[derive(Serialize)]
 struct CaptureDraftView {

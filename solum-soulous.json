@@ -1,0 +1,6 @@
+{
+    "server_url":  "https://soul.tannerlab.xyz",
+    "access_token":  "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIzIiwicm9sZSI6IlVTRVIiLCJ1c2VybmFtZSI6InhpYW9yYW5hIiwidHYiOjAsImlhdCI6MTc4NDM1NzE2MCwiZXhwIjoxNzg0MzYwNzYwfQ.6AJw0D7655v0LxWNIAUznVZJJoeJc97oWvK9035cQkw",
+    "refresh_token":  "0KdjE_l8vbAXj0SgiKVrijJADr48K_CPNwmjvjSzslM",
+    "timeout_secs":  30
+}

@@ -1,4 +1,4 @@
-//! Solum 独立账号：鉴权自建 solum-cloud AI 代理（`server/`，与 PA-harmony 共用同一契约）。
+//! Solum 独立账号：鉴权自建 solum-cloud AI 代理（`server/`，与 Solum Harmony 共用同一契约）。
 //!
 //! 账号只做一件事——替「直连厂商 API Key」提供另一条云端通路：登录后请求发往
 //! `{server}/v1/ai/chat/completions`，第三方 API Key 只存在于服务端环境变量。

@@ -1,4 +1,4 @@
-//! 首启隐私同意与应用内隐私政策全文（自 PA-harmony `privacyConsent*/privacyPolicy.ets` 回移）。
+//! 首启隐私同意与应用内隐私政策全文（自 Solum Harmony `privacyConsent*/privacyPolicy.ets` 回移）。
 //!
 //! **政策正文不是从鸿蒙原样搬过来的。** 鸿蒙 0.2.0 是上架包，它的政策里写着
 //! 「本版本不提供多设备同步」「不使用第三方通知监听」——这两句对本仓都是**假的**：

@@ -1,6 +1,6 @@
 # Solum Cloud
 
-Solum 的独立账号与 AI 代理服务，主仓（桌面/Android）与鸿蒙版（PA-harmony）共用同一份服务端契约；本目录与 `PA-harmony/server/` 同源，改动要两边同步。它不接收或同步客户端数据库；当前只提供：
+Solum 的独立账号与 AI 代理服务，主仓（桌面/Android）与 Solum Harmony（息壤鸿蒙版）共用同一份服务端契约；本目录与 `../solum-harmony/server/` 同源，改动要两边同步。它不接收或同步客户端数据库；当前只提供：
 
 - `POST /v1/auth/login`
 - `POST /v1/auth/refresh`
@@ -13,7 +13,7 @@ Solum 的独立账号与 AI 代理服务，主仓（桌面/Android）与鸿蒙�
 ## 部署
 
 1. 复制 `.env.example` 为服务器私有环境配置，不要提交。
-2. 生成至少 32 字符的随机 `PA_AUTH_SECRET`，设置初始账号和强密码。
+2. 生成至少 32 字符的随机 `SOLUM_AUTH_SECRET`，设置初始账号和强密码。
 3. 把 MiMo Token Plan 密钥写入服务器环境变量 `MIMO_API_KEY`。
 4. 构建并运行：
 
@@ -33,4 +33,4 @@ docker run -d --name solum-cloud \
 > `-p 127.0.0.1:8787:8787` 把宿主侧收敛到回环；如果不经 Docker 直接 `npm start`
 > 裸跑，必须自行用防火墙或反向代理收口，否则无 TLS 的鉴权接口会暴露到所有网卡。
 
-首次启动会按 `PA_ADMIN_USERNAME` / `PA_ADMIN_PASSWORD` 创建账号；数据库已有同名账号后不会用环境变量覆盖密码。访问令牌有效期 15 分钟；刷新令牌有效期 30 天且每次刷新都会轮换，旧令牌立即失效。
+首次启动会按 `SOLUM_ADMIN_USERNAME` / `SOLUM_ADMIN_PASSWORD` 创建账号；数据库已有同名账号后不会用环境变量覆盖密码。旧版 `PA_*` 环境变量仍被兼容读取。访问令牌有效期 15 分钟；刷新令牌有效期 30 天且每次刷新都会轮换，旧令牌立即失效。

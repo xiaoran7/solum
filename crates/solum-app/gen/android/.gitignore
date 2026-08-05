@@ -1,6 +1,5 @@
 *.iml
 .gradle
-/local.properties
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml
@@ -12,9 +11,6 @@ build
 /captures
 .externalNativeBuild
 .cxx
-local.properties
-key.properties
-keystore.properties
 
 /.tauri
 /tauri.settings.gradle

@@ -141,18 +141,18 @@ function validateMessages(value) {
 
 function buildConfig(overrides = {}) {
   const config = {
-    port: Number(process.env.PA_PORT || 8787),
-    dbPath: process.env.PA_DB_PATH || path.join(process.cwd(), 'data', 'pa-cloud.db'),
-    authSecret: process.env.PA_AUTH_SECRET || '',
-    adminUsername: process.env.PA_ADMIN_USERNAME || '',
-    adminPassword: process.env.PA_ADMIN_PASSWORD || '',
+    port: Number(process.env.SOLUM_PORT || process.env.PA_PORT || 8787),
+    dbPath: process.env.SOLUM_DB_PATH || process.env.PA_DB_PATH || path.join(process.cwd(), 'data', 'solum-cloud.db'),
+    authSecret: process.env.SOLUM_AUTH_SECRET || process.env.PA_AUTH_SECRET || '',
+    adminUsername: process.env.SOLUM_ADMIN_USERNAME || process.env.PA_ADMIN_USERNAME || '',
+    adminPassword: process.env.SOLUM_ADMIN_PASSWORD || process.env.PA_ADMIN_PASSWORD || '',
     mimoApiKey: process.env.MIMO_API_KEY || '',
     mimoBaseUrl: process.env.MIMO_BASE_URL || 'https://token-plan-cn.xiaomimimo.com/v1',
-    defaultModel: process.env.PA_DEFAULT_MODEL || 'mimo-v2.5',
+    defaultModel: process.env.SOLUM_DEFAULT_MODEL || process.env.PA_DEFAULT_MODEL || 'mimo-v2.5',
     ...overrides,
   };
-  if (config.authSecret.length < 32) throw new Error('PA_AUTH_SECRET must be at least 32 characters');
-  if (!config.adminUsername) throw new Error('PA_ADMIN_USERNAME is required');
+  if (config.authSecret.length < 32) throw new Error('SOLUM_AUTH_SECRET must be at least 32 characters');
+  if (!config.adminUsername) throw new Error('SOLUM_ADMIN_USERNAME is required');
   validateModel(config.defaultModel, 'mimo-v2.5');
   return config;
 }
@@ -181,7 +181,7 @@ function openDatabase(config) {
   if (!existing) {
     if (config.adminPassword.length < 12) {
       db.close();
-      throw new Error('PA_ADMIN_PASSWORD must be at least 12 characters when bootstrapping');
+      throw new Error('SOLUM_ADMIN_PASSWORD must be at least 12 characters when bootstrapping');
     }
     const salt = crypto.randomBytes(16).toString('hex');
     db.prepare(
@@ -384,7 +384,7 @@ function createPaServer(overrides = {}) {
 
 if (require.main === module) {
   const app = createPaServer();
-  const port = Number(process.env.PA_PORT || 8787);
+  const port = Number(process.env.SOLUM_PORT || process.env.PA_PORT || 8787);
   app.server.listen(port, '0.0.0.0', () => {
     console.log(`Solum cloud listening on ${port}`);
   });
