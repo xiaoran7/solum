@@ -5,9 +5,9 @@
 //! locally-originated ops to the relay as an **end-to-end encrypted** blob and
 //! pulls + merges other devices' blobs (last-write-wins per row on a
 //! `(hlc, origin)` stamp). The relay (`solum-sync-server`) only ever sees
-//! ciphertext: key management is the pre-shared master key decided 2026-07-07
-//! — one symmetric key manually configured on every device via `solum-sync.json`
-//! (gitignored, same pattern as `solum-llm.json`) or `SOLUM_SYNC_*` env vars.
+//! ciphertext. The logged-in Solum account selects the relay tenant, while a
+//! separate symmetric key in `solum-sync.json` remains device-only and opens
+//! the end-to-end encrypted blobs. Legacy direct relay tokens remain readable.
 //! The file's path can be overridden with `SOLUM_SYNC_CONFIG`, same as
 //! `SOLUM_LLM_CONFIG` — mobile has no meaningful cwd, so `solum-app` points it
 //! at the platform app-data dir (see `resolve_db_path`'s siblings).
@@ -80,22 +80,25 @@ pub struct SyncOutcome {
 
 // ---- config -------------------------------------------------------------------
 
-/// Client-side sync settings. Loaded from env (`SOLUM_SYNC_URL` / `SOLUM_SYNC_TOKEN`
-/// / `SOLUM_SYNC_KEY`) first, then a `solum-sync.json` file — path from
+/// Client-side sync settings. Loaded from env (`SOLUM_SYNC_URL` / `SOLUM_SYNC_KEY`,
+/// plus optional legacy `SOLUM_SYNC_TOKEN`) first, then a `solum-sync.json` file — path from
 /// `SOLUM_SYNC_CONFIG` if set, else next to the executable's cwd (adopted into
-/// app-data on desktop). The file may hold either the raw `{url,token,key}`
-/// shape or `{url,username,password}` (2026-07-22, see `derive_credentials`) —
-/// the latter is derived into the former at load time, so everything past
-/// this function still only ever sees `token`/`key`. Absent config means sync
-/// is off.
+/// app-data on desktop). The recommended shape is `{url,key}` and takes its
+/// access token from `solum-account.json`. The legacy `{url,token,key}` and
+/// `{url,username,password}` shapes remain readable for migration. Absent
+/// config or an account for the recommended shape means sync is off.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SyncConfig {
     /// Relay base URL, e.g. `http://127.0.0.1:8787`.
     pub url: String,
-    /// Bearer token shared with the relay.
+    /// Legacy relay token. Empty when account authentication is active.
     pub token: String,
     /// 64 hex chars — the 32-byte pre-shared master key (§3.8).
     pub key: String,
+    /// Logged-in identity used to select the relay tenant. Never serialized
+    /// into `solum-sync.json`; its source of truth is `solum-account.json`.
+    #[serde(skip)]
+    pub account: Option<crate::account::AccountSession>,
 }
 
 /// The two shapes `solum-sync.json` may take. Untagged so existing raw
@@ -114,16 +117,32 @@ enum SyncConfigFile {
         token: String,
         key: String,
     },
+    Account {
+        url: String,
+        key: String,
+    },
 }
 
 impl SyncConfig {
     pub fn load() -> Option<SyncConfig> {
-        if let (Ok(url), Ok(token), Ok(key)) = (
+        if let (Ok(url), Ok(key)) = (
             std::env::var("SOLUM_SYNC_URL"),
-            std::env::var("SOLUM_SYNC_TOKEN"),
             std::env::var("SOLUM_SYNC_KEY"),
         ) {
-            return Some(SyncConfig { url, token, key });
+            if let Ok(token) = std::env::var("SOLUM_SYNC_TOKEN") {
+                return Some(SyncConfig {
+                    url,
+                    token,
+                    key,
+                    account: None,
+                });
+            }
+            return crate::account::AccountSession::load().map(|account| SyncConfig {
+                url,
+                token: String::new(),
+                key,
+                account: Some(account),
+            });
         }
         let path: std::path::PathBuf = match std::env::var("SOLUM_SYNC_CONFIG") {
             Ok(p) => p.into(),
@@ -131,23 +150,47 @@ impl SyncConfig {
         };
         let raw = std::fs::read_to_string(path).ok()?;
         match serde_json::from_str::<SyncConfigFile>(&raw).ok()? {
-            SyncConfigFile::Direct { url, token, key } => Some(SyncConfig { url, token, key }),
+            SyncConfigFile::Direct { url, token, key } => Some(SyncConfig {
+                url,
+                token,
+                key,
+                account: None,
+            }),
             SyncConfigFile::Credentials {
                 url,
                 username,
                 password,
             } => {
                 let (token, key) = derive_credentials(&username, &password).ok()?;
-                Some(SyncConfig { url, token, key })
+                Some(SyncConfig {
+                    url,
+                    token,
+                    key,
+                    account: None,
+                })
+            }
+            SyncConfigFile::Account { url, key } => {
+                crate::account::AccountSession::load().map(|account| SyncConfig {
+                    url,
+                    token: String::new(),
+                    key,
+                    account: Some(account),
+                })
             }
         }
     }
 
     /// Redacted one-liner for status displays.
     pub fn masked_summary(&self) -> String {
+        let auth = self
+            .account
+            .as_ref()
+            .map(|session| format!("账号 {}", session.username))
+            .unwrap_or_else(|| "兼容令牌 legacy".to_string());
         format!(
-            "{} (key ****{})",
+            "{} · {} · key ****{}",
             self.url,
+            auth,
             &self.key[self.key.len().saturating_sub(4)..]
         )
     }
@@ -229,6 +272,13 @@ pub fn derive_credentials(username: &str, password: &str) -> Result<(String, Str
     Ok((to_hex(&token_bytes), to_hex(&key_bytes)))
 }
 
+/// Derive only the device-side encryption key for account-authenticated sync.
+/// The relay access token comes from `solum-account.json`; this password and
+/// its derived key never leave the device.
+pub fn derive_sync_key(username: &str, password: &str) -> Result<String> {
+    derive_credentials(username, password).map(|(_, key)| key)
+}
+
 fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -296,12 +346,31 @@ const MAX_PULL_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 /// The real relay client (`solum-sync-server` wire protocol).
 pub struct HttpTransport {
     url: String,
-    token: String,
+    auth: RelayAuth,
     agent: ureq::Agent,
     /// Captured from the last `pull` response. Interior mutability because the
     /// trait takes `&self` — and it has to come from the *same* response as the
     /// blobs, or the two could describe different relay states.
     oldest_seq: std::cell::Cell<Option<i64>>,
+}
+
+enum RelayAuth {
+    Legacy(String),
+    Account(std::sync::Mutex<crate::account::AccountSession>),
+}
+
+enum RelayRequestError {
+    Unauthorized,
+    Other(String),
+}
+
+impl std::fmt::Display for RelayRequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unauthorized => f.write_str("认证失败"),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
 }
 
 impl HttpTransport {
@@ -316,23 +385,63 @@ impl HttpTransport {
             .build();
         Ok(HttpTransport {
             url,
-            token: cfg.token.clone(),
+            auth: match &cfg.account {
+                Some(session) => RelayAuth::Account(std::sync::Mutex::new(session.clone())),
+                None => RelayAuth::Legacy(cfg.token.clone()),
+            },
             agent,
             oldest_seq: std::cell::Cell::new(None),
         })
+    }
+
+    fn with_auth<T>(
+        &self,
+        send: impl Fn(&str) -> std::result::Result<T, RelayRequestError>,
+    ) -> Result<T> {
+        match &self.auth {
+            RelayAuth::Legacy(token) => send(token).map_err(|e| match e {
+                RelayRequestError::Unauthorized => CoreError::Invalid("同步服务器认证失败".into()),
+                RelayRequestError::Other(message) => {
+                    CoreError::Invalid(format!("同步服务器请求失败: {message}"))
+                }
+            }),
+            RelayAuth::Account(session) => {
+                let mut session = session
+                    .lock()
+                    .map_err(|_| CoreError::Invalid("同步账号状态锁中毒".into()))?;
+                match send(&session.access_token) {
+                    Ok(value) => Ok(value),
+                    Err(RelayRequestError::Unauthorized) => {
+                        let rotated = crate::account::refresh_and_save(&session)?;
+                        *session = rotated;
+                        send(&session.access_token).map_err(|e| {
+                            CoreError::Invalid(format!("刷新账号后重试同步请求失败: {e}"))
+                        })
+                    }
+                    Err(RelayRequestError::Other(message)) => {
+                        Err(CoreError::Invalid(format!("同步服务器请求失败: {message}")))
+                    }
+                }
+            }
+        }
     }
 }
 
 impl SyncTransport for HttpTransport {
     fn push(&self, device: &str, blob: &[u8]) -> Result<i64> {
         let resp: serde_json::Value = self
-            .agent
-            .post(&format!("{}/v1/push", self.url))
-            .set("Authorization", &format!("Bearer {}", self.token))
-            .set("X-Device", device)
-            .set("Content-Type", "application/octet-stream")
-            .send_bytes(blob)
-            .map_err(|e| CoreError::Invalid(format!("同步服务器 push 失败: {e}")))?
+            .with_auth(|token| {
+                self.agent
+                    .post(&format!("{}/v1/push", self.url))
+                    .set("Authorization", &format!("Bearer {token}"))
+                    .set("X-Device", device)
+                    .set("Content-Type", "application/octet-stream")
+                    .send_bytes(blob)
+                    .map_err(|error| match error {
+                        ureq::Error::Status(401, _) => RelayRequestError::Unauthorized,
+                        other => RelayRequestError::Other(other.to_string()),
+                    })
+            })?
             .into_json()
             .map_err(|e| CoreError::Invalid(format!("同步服务器响应不可解析: {e}")))?;
         resp.get("seq")
@@ -342,14 +451,19 @@ impl SyncTransport for HttpTransport {
 
     fn pull(&self, since: i64, device: &str) -> Result<Vec<PulledBlob>> {
         let reader = self
-            .agent
-            .get(&format!(
-                "{}/v1/pull?since={since}&device={device}",
-                self.url
-            ))
-            .set("Authorization", &format!("Bearer {}", self.token))
-            .call()
-            .map_err(|e| CoreError::Invalid(format!("同步服务器 pull 失败: {e}")))?
+            .with_auth(|token| {
+                self.agent
+                    .get(&format!(
+                        "{}/v1/pull?since={since}&device={device}",
+                        self.url
+                    ))
+                    .set("Authorization", &format!("Bearer {token}"))
+                    .call()
+                    .map_err(|error| match error {
+                        ureq::Error::Status(401, _) => RelayRequestError::Unauthorized,
+                        other => RelayRequestError::Other(other.to_string()),
+                    })
+            })?
             .into_reader();
         // Read through a cap rather than `into_json()` straight off the socket:
         // `into_json` will happily allocate whatever the peer sends.
@@ -562,6 +676,7 @@ pub(crate) mod tests {
             url: "mem://".into(),
             token: "t".into(),
             key: "11".repeat(32),
+            account: None,
         }
     }
 
@@ -592,7 +707,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn sync_config_file_parses_both_shapes() {
+    fn sync_config_file_parses_all_supported_shapes() {
         let creds: SyncConfigFile = serde_json::from_str(
             r#"{"url":"https://relay.example","username":"solum","password":"514000"}"#,
         )
@@ -607,7 +722,9 @@ pub(crate) mod tests {
                 assert_eq!(username, "solum");
                 assert_eq!(password, "514000");
             }
-            SyncConfigFile::Direct { .. } => panic!("expected Credentials shape"),
+            SyncConfigFile::Direct { .. } | SyncConfigFile::Account { .. } => {
+                panic!("expected Credentials shape")
+            }
         }
 
         let direct: SyncConfigFile = serde_json::from_str(
@@ -621,7 +738,22 @@ pub(crate) mod tests {
                 assert_eq!(token, "t");
                 assert_eq!(key, "11".repeat(32));
             }
-            SyncConfigFile::Credentials { .. } => panic!("expected Direct shape"),
+            SyncConfigFile::Credentials { .. } | SyncConfigFile::Account { .. } => {
+                panic!("expected Direct shape")
+            }
+        }
+
+        let account: SyncConfigFile = serde_json::from_str(
+            &serde_json::json!({"url": "https://relay.example", "key": "22".repeat(32)})
+                .to_string(),
+        )
+        .unwrap();
+        match account {
+            SyncConfigFile::Account { url, key } => {
+                assert_eq!(url, "https://relay.example");
+                assert_eq!(key, "22".repeat(32));
+            }
+            _ => panic!("expected Account shape"),
         }
     }
 

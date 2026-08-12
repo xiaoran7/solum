@@ -23,9 +23,11 @@
 //! Config via env: `SOLUM_SYNC_SERVER_TOKEN` (required), `SOLUM_SYNC_SERVER_ADDR`
 //! (default `127.0.0.1:8787`), `SOLUM_SYNC_SERVER_DB` (default `pa-sync.sqlite`).
 
-use base64::engine::general_purpose::STANDARD as B64;
+use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD};
 use base64::Engine;
+use hmac::{Hmac, Mac};
 use rusqlite::{params, Connection};
+use sha2::Sha256;
 use std::io::Read;
 use std::sync::Mutex;
 use tiny_http::{Header, Method, Response, Server};
@@ -54,19 +56,207 @@ const MAX_PULL_ROWS: usize = 500;
 /// compares it against its own cursor and refuses to advance silently across a
 /// gap (see `sync::sync_once`). Never add retention without that half.
 const DEFAULT_RETENTION_DAYS: i64 = 30;
+const ALERT_RETENTION_DAYS: i64 = 7;
+const MAX_ALERT_BODY_BYTES: usize = 16 * 1024;
+const LEGACY_TENANT: &str = "legacy";
 
 /// Ops dashboard, embedded so the deployed artifact stays a single binary —
 /// no separate static file to ship alongside it.
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 
+#[derive(serde::Deserialize)]
+struct AlertInput {
+    event_id: String,
+    source: String,
+    monitor_id: Option<String>,
+    name: Option<String>,
+    status: String,
+    latency_ms: Option<i64>,
+    ping_latency_ms: Option<i64>,
+    availability_7d: Option<f64>,
+    checked_at: String,
+    detail_url: Option<String>,
+}
+
+impl AlertInput {
+    fn is_valid(&self) -> bool {
+        let event_id_ok = !self.event_id.is_empty()
+            && self.event_id.len() <= 128
+            && self
+                .event_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        let source_ok = self.source == "gptplus" || self.source == "benefit-monitor";
+        let monitor_id_ok = self.monitor_id.as_ref().is_none_or(|value| {
+            !value.is_empty()
+                && value.len() <= 64
+                && value
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        });
+        let name_ok = self
+            .name
+            .as_ref()
+            .is_none_or(|value| !value.trim().is_empty() && value.chars().count() <= 80);
+        let status_ok = matches!(
+            self.status.as_str(),
+            "operational" | "degraded" | "error" | "unknown" | "test"
+        );
+        let latency_ok = self.latency_ms.is_none_or(|v| (0..=120_000).contains(&v));
+        let ping_ok = self
+            .ping_latency_ms
+            .is_none_or(|v| (0..=120_000).contains(&v));
+        let availability_ok = self
+            .availability_7d
+            .is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v));
+        let detail_url_ok = self.detail_url.as_ref().is_none_or(|value| {
+            value.is_empty()
+                || (value.starts_with("https://")
+                    && value.len() <= 2048
+                    && !value.contains(['\r', '\n']))
+        });
+        event_id_ok
+            && source_ok
+            && monitor_id_ok
+            && name_ok
+            && status_ok
+            && latency_ok
+            && ping_ok
+            && availability_ok
+            && !self.checked_at.is_empty()
+            && self.checked_at.len() <= 64
+            && detail_url_ok
+    }
+}
+
+#[derive(Debug)]
+struct AuthContext {
+    tenant_id: String,
+    legacy: bool,
+}
+
+fn verify_account_token(token: &str, secret: &str) -> Option<String> {
+    if secret.len() < 32 {
+        return None;
+    }
+    let (payload, signature) = token.split_once('.')?;
+    if signature.contains('.') {
+        return None;
+    }
+    let signature = URL_SAFE_NO_PAD.decode(signature).ok()?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
+    mac.update(payload.as_bytes());
+    mac.verify_slice(&signature).ok()?;
+    let payload: serde_json::Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).ok()?).ok()?;
+    let subject = payload.get("sub")?.as_str()?.trim();
+    let expires_at = payload.get("exp")?.as_i64()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    if subject.is_empty() || subject.len() > 256 || expires_at <= now {
+        return None;
+    }
+    Some(subject.to_string())
+}
+
+fn authenticate(
+    req: &tiny_http::Request,
+    legacy_token: Option<&str>,
+    auth_secret: Option<&str>,
+) -> Option<AuthContext> {
+    let bearer = req
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv("Authorization"))?
+        .value
+        .as_str()
+        .strip_prefix("Bearer ")?;
+    if legacy_token.is_some_and(|token| bearer == token) {
+        return Some(AuthContext {
+            tenant_id: LEGACY_TENANT.to_string(),
+            legacy: true,
+        });
+    }
+    verify_account_token(bearer, auth_secret.unwrap_or_default()).map(|tenant_id| AuthContext {
+        tenant_id,
+        legacy: false,
+    })
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+    conn.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1)"),
+        params![column],
+        |row| row.get(0),
+    )
+    .unwrap_or(false)
+}
+
+fn migrate_tenants(conn: &Connection) -> rusqlite::Result<()> {
+    if !column_exists(conn, "blobs", "tenant_id") {
+        conn.execute(
+            "ALTER TABLE blobs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'legacy'",
+            [],
+        )?;
+    }
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_blobs_tenant_seq ON blobs(tenant_id, seq)",
+        [],
+    )?;
+
+    if !column_exists(conn, "alerts", "tenant_id") {
+        conn.execute_batch(
+            r#"
+            BEGIN IMMEDIATE;
+            ALTER TABLE alerts RENAME TO alerts_single_tenant;
+            CREATE TABLE alerts (
+                seq             INTEGER PRIMARY KEY,
+                tenant_id       TEXT NOT NULL,
+                event_id        TEXT NOT NULL,
+                source          TEXT NOT NULL,
+                monitor_id      TEXT,
+                name            TEXT,
+                status          TEXT NOT NULL,
+                latency_ms      INTEGER,
+                ping_latency_ms INTEGER,
+                availability_7d REAL,
+                checked_at      TEXT NOT NULL,
+                detail_url      TEXT,
+                received_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                UNIQUE(tenant_id, event_id)
+            );
+            INSERT INTO alerts(
+                seq,tenant_id,event_id,source,monitor_id,name,status,latency_ms,
+                ping_latency_ms,availability_7d,checked_at,detail_url,received_at
+            )
+            SELECT seq,'legacy',event_id,source,monitor_id,name,status,latency_ms,
+                   ping_latency_ms,availability_7d,checked_at,detail_url,received_at
+            FROM alerts_single_tenant;
+            DROP TABLE alerts_single_tenant;
+            COMMIT;
+            "#,
+        )?;
+    }
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_alerts_tenant_source_seq ON alerts(tenant_id, source, seq)",
+        [],
+    )?;
+    Ok(())
+}
+
 fn main() {
-    let token = match std::env::var("SOLUM_SYNC_SERVER_TOKEN") {
-        Ok(t) if !t.trim().is_empty() => t,
-        _ => {
-            eprintln!("SOLUM_SYNC_SERVER_TOKEN 未设置——拒绝无鉴权启动");
-            std::process::exit(1);
-        }
-    };
+    let legacy_token = std::env::var("SOLUM_SYNC_SERVER_TOKEN")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let auth_secret = std::env::var("SOLUM_AUTH_SECRET")
+        .ok()
+        .filter(|value| value.len() >= 32);
+    if legacy_token.is_none() && auth_secret.is_none() {
+        eprintln!("SOLUM_AUTH_SECRET 与 SOLUM_SYNC_SERVER_TOKEN 均未设置——拒绝无鉴权启动");
+        std::process::exit(1);
+    }
     let addr = std::env::var("SOLUM_SYNC_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".into());
     // 默认库名停留在改名前的 pa-sync.sqlite：它指向的是**已部署中继上的既有
     // 文件**，改默认值会让中继静默从一个空库起步（设备游标全丢）。要改得连同
@@ -84,9 +274,47 @@ fn main() {
             received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
         );
         CREATE INDEX IF NOT EXISTS idx_blobs_device ON blobs(device, seq);
+        CREATE TABLE IF NOT EXISTS alerts (
+            seq             INTEGER PRIMARY KEY,
+            event_id        TEXT NOT NULL UNIQUE,
+            source          TEXT NOT NULL,
+            monitor_id      TEXT,
+            name            TEXT,
+            status          TEXT NOT NULL,
+            latency_ms      INTEGER,
+            ping_latency_ms INTEGER,
+            availability_7d REAL,
+            checked_at      TEXT NOT NULL,
+            detail_url      TEXT,
+            received_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_alerts_source_seq ON alerts(source, seq);
         "#,
     )
     .expect("migrate sync db");
+    for (column, migration) in [
+        (
+            "monitor_id",
+            "ALTER TABLE alerts ADD COLUMN monitor_id TEXT",
+        ),
+        ("name", "ALTER TABLE alerts ADD COLUMN name TEXT"),
+        (
+            "detail_url",
+            "ALTER TABLE alerts ADD COLUMN detail_url TEXT",
+        ),
+    ] {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('alerts') WHERE name = ?1)",
+                params![column],
+                |row| row.get(0),
+            )
+            .expect("inspect alert table");
+        if !exists {
+            conn.execute(migration, []).expect("migrate alert table");
+        }
+    }
+    migrate_tenants(&conn).expect("migrate tenant isolation");
     // Retention sweep. Bounded disk on a long-running self-hosted instance,
     // paired with the `oldest_seq` gap signal so a device that slept through
     // the window is told rather than silently shorted.
@@ -107,6 +335,12 @@ fn main() {
         }
     } else {
         println!("留存清理已关闭（SOLUM_SYNC_SERVER_RETENTION_DAYS=0），中继文件将持续增长");
+    }
+    if let Err(e) = conn.execute(
+        "DELETE FROM alerts WHERE received_at < strftime('%Y-%m-%dT%H:%M:%fZ','now',?1)",
+        params![format!("-{ALERT_RETENTION_DAYS} days")],
+    ) {
+        eprintln!("alert retention sweep failed (service continues): {e}");
     }
     let conn = Mutex::new(conn);
 
@@ -130,19 +364,137 @@ fn main() {
             let _ = req.respond(resp);
             continue;
         }
-
-        let authed = req
-            .headers()
-            .iter()
-            .find(|h| h.field.equiv("Authorization"))
-            .map(|h| h.value.as_str() == format!("Bearer {token}"))
-            .unwrap_or(false);
-        if !authed {
-            respond(req, 401, r#"{"error":"unauthorized"}"#);
+        if method == Method::Get && url == "/favicon.ico" {
+            let _ = req.respond(Response::empty(204));
             continue;
         }
+        let Some(auth) = authenticate(&req, legacy_token.as_deref(), auth_secret.as_deref()) else {
+            respond(req, 401, r#"{"error":"unauthorized"}"#);
+            continue;
+        };
 
         match (method, url.as_str()) {
+            (Method::Post, "/v1/alerts") => {
+                let mut body = Vec::new();
+                if req
+                    .as_reader()
+                    .take(MAX_ALERT_BODY_BYTES as u64 + 1)
+                    .read_to_end(&mut body)
+                    .is_err()
+                    || body.is_empty()
+                    || body.len() > MAX_ALERT_BODY_BYTES
+                {
+                    respond(req, 400, r#"{"error":"bad alert body"}"#);
+                    continue;
+                }
+                let alert = match serde_json::from_slice::<AlertInput>(&body) {
+                    Ok(alert) if alert.is_valid() => alert,
+                    _ => {
+                        respond(req, 400, r#"{"error":"invalid alert"}"#);
+                        continue;
+                    }
+                };
+                let stored = {
+                    let c = conn.lock().unwrap();
+                    match c.execute(
+                        "INSERT OR IGNORE INTO alerts(
+                            tenant_id, event_id, source, monitor_id, name, status, latency_ms,
+                            ping_latency_ms, availability_7d, checked_at, detail_url
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                        params![
+                            auth.tenant_id,
+                            alert.event_id,
+                            alert.source,
+                            alert.monitor_id,
+                            alert.name,
+                            alert.status,
+                            alert.latency_ms,
+                            alert.ping_latency_ms,
+                            alert.availability_7d,
+                            alert.checked_at,
+                            alert.detail_url,
+                        ],
+                    ) {
+                        Ok(changed) => c
+                            .query_row(
+                                "SELECT seq FROM alerts WHERE tenant_id = ?1 AND event_id = ?2",
+                                params![auth.tenant_id, alert.event_id],
+                                |row| row.get::<_, i64>(0),
+                            )
+                            .map(|seq| (seq, changed > 0)),
+                        Err(e) => Err(e),
+                    }
+                };
+                match stored {
+                    Ok((seq, created)) => respond(
+                        req,
+                        200,
+                        &serde_json::json!({"seq": seq, "created": created}).to_string(),
+                    ),
+                    Err(e) => {
+                        eprintln!("alert store failed: {e}");
+                        respond(req, 500, r#"{"error":"store failed"}"#);
+                    }
+                }
+            }
+            (Method::Get, u) if u.starts_with("/v1/alerts") => {
+                let since = query_param(u, "since")
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .unwrap_or(0)
+                    .max(0);
+                let limit = query_param(u, "limit")
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .unwrap_or(60)
+                    .clamp(1, 100);
+                let source = query_param(u, "source");
+                if source
+                    .as_deref()
+                    .is_some_and(|value| value != "gptplus" && value != "benefit-monitor")
+                {
+                    respond(req, 400, r#"{"error":"invalid source"}"#);
+                    continue;
+                }
+                let rows: Result<Vec<serde_json::Value>, rusqlite::Error> = {
+                    let c = conn.lock().unwrap();
+                    let sql = match (since == 0, source.is_some()) {
+                        (true, true) => "SELECT * FROM (SELECT seq,event_id,source,monitor_id,name,status,latency_ms,ping_latency_ms,availability_7d,checked_at,detail_url,received_at FROM alerts WHERE tenant_id=?1 AND source=?3 ORDER BY seq DESC LIMIT ?4) ORDER BY seq ASC",
+                        (true, false) => "SELECT * FROM (SELECT seq,event_id,source,monitor_id,name,status,latency_ms,ping_latency_ms,availability_7d,checked_at,detail_url,received_at FROM alerts WHERE tenant_id=?1 ORDER BY seq DESC LIMIT ?4) ORDER BY seq ASC",
+                        (false, true) => "SELECT seq,event_id,source,monitor_id,name,status,latency_ms,ping_latency_ms,availability_7d,checked_at,detail_url,received_at FROM alerts WHERE tenant_id=?1 AND seq>?2 AND source=?3 ORDER BY seq ASC LIMIT ?4",
+                        (false, false) => "SELECT seq,event_id,source,monitor_id,name,status,latency_ms,ping_latency_ms,availability_7d,checked_at,detail_url,received_at FROM alerts WHERE tenant_id=?1 AND seq>?2 ORDER BY seq ASC LIMIT ?4",
+                    };
+                    c.prepare(sql).and_then(|mut stmt| {
+                        stmt.query_map(
+                            params![auth.tenant_id, since, source.as_deref(), limit],
+                            |row| {
+                                Ok(serde_json::json!({
+                                    "seq": row.get::<_, i64>(0)?,
+                                    "event_id": row.get::<_, String>(1)?,
+                                    "source": row.get::<_, String>(2)?,
+                                    "monitor_id": row.get::<_, Option<String>>(3)?,
+                                    "name": row.get::<_, Option<String>>(4)?,
+                                    "status": row.get::<_, String>(5)?,
+                                    "latency_ms": row.get::<_, Option<i64>>(6)?,
+                                    "ping_latency_ms": row.get::<_, Option<i64>>(7)?,
+                                    "availability_7d": row.get::<_, Option<f64>>(8)?,
+                                    "checked_at": row.get::<_, String>(9)?,
+                                    "detail_url": row.get::<_, Option<String>>(10)?,
+                                    "received_at": row.get::<_, String>(11)?,
+                                }))
+                            },
+                        )?
+                        .collect()
+                    })
+                };
+                match rows {
+                    Ok(alerts) => {
+                        respond(req, 200, &serde_json::json!({"alerts": alerts}).to_string())
+                    }
+                    Err(e) => {
+                        eprintln!("alert read failed: {e}");
+                        respond(req, 500, r#"{"error":"read failed"}"#);
+                    }
+                }
+            }
             (Method::Post, u) if u.starts_with("/v1/push") => {
                 let device = header(&req, "X-Device");
                 let Some(device) = device.filter(|d| !d.is_empty()) else {
@@ -164,8 +516,8 @@ fn main() {
                 let seq: i64 = {
                     let c = conn.lock().unwrap();
                     match c.execute(
-                        "INSERT INTO blobs(device, blob) VALUES (?1, ?2)",
-                        params![device, blob],
+                        "INSERT INTO blobs(tenant_id, device, blob) VALUES (?1, ?2, ?3)",
+                        params![auth.tenant_id, device, blob],
                     ) {
                         Ok(_) => c.last_insert_rowid(),
                         Err(e) => {
@@ -187,10 +539,10 @@ fn main() {
                     let r = c
                         .prepare(
                             "SELECT seq, device, blob FROM blobs
-                             WHERE seq > ?1 AND device != ?2 ORDER BY seq ASC LIMIT ?3",
+                             WHERE tenant_id = ?1 AND seq > ?2 AND device != ?3 ORDER BY seq ASC LIMIT ?4",
                         )
                         .and_then(|mut stmt| {
-                            stmt.query_map(params![since, device, MAX_PULL_ROWS as i64], |r| {
+                            stmt.query_map(params![auth.tenant_id, since, device, MAX_PULL_ROWS as i64], |r| {
                                 Ok((r.get(0)?, r.get(1)?, r.get(2)?))
                             })?
                             .collect()
@@ -199,8 +551,12 @@ fn main() {
                 };
                 let oldest: i64 = {
                     let c = conn.lock().unwrap();
-                    c.query_row("SELECT COALESCE(MIN(seq), 0) FROM blobs", [], |r| r.get(0))
-                        .unwrap_or(0)
+                    c.query_row(
+                        "SELECT COALESCE(MIN(seq), 0) FROM blobs WHERE tenant_id=?1",
+                        params![auth.tenant_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0)
                 };
                 match rows {
                     Ok(rows) => {
@@ -241,19 +597,19 @@ fn main() {
                     let c = conn.lock().unwrap();
                     let totals = c
                         .query_row(
-                            "SELECT COUNT(*), COALESCE(SUM(LENGTH(blob)),0),
-                                    COALESCE(MIN(seq),0), COALESCE(MAX(seq),0) FROM blobs",
-                            [],
+                             "SELECT COUNT(*), COALESCE(SUM(LENGTH(blob)),0),
+                                     COALESCE(MIN(seq),0), COALESCE(MAX(seq),0) FROM blobs WHERE tenant_id=?1",
+                            params![auth.tenant_id],
                             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                         )
                         .unwrap_or((0, 0, 0, 0));
                     let devices = c
                         .prepare(
                             "SELECT device, COUNT(*), COALESCE(SUM(LENGTH(blob)),0), MAX(seq), MAX(received_at)
-                             FROM blobs GROUP BY device ORDER BY MAX(seq) DESC",
+                             FROM blobs WHERE tenant_id=?1 GROUP BY device ORDER BY MAX(seq) DESC",
                         )
                         .and_then(|mut stmt| {
-                            stmt.query_map([], |r| {
+                            stmt.query_map(params![auth.tenant_id], |r| {
                                 let device: String = r.get(0)?;
                                 let count: i64 = r.get(1)?;
                                 let bytes: i64 = r.get(2)?;
@@ -273,7 +629,6 @@ fn main() {
                 };
                 match devices {
                     Ok(devices) => {
-                        let db_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
                         respond(
                             req,
                             200,
@@ -283,7 +638,8 @@ fn main() {
                                 "oldest_seq": totals.2,
                                 "newest_seq": totals.3,
                                 "retention_days": retention_days,
-                                "db_bytes": db_bytes,
+                                "tenant": auth.tenant_id,
+                                "auth_mode": if auth.legacy { "legacy" } else { "account" },
                                 "devices": devices,
                             })
                             .to_string(),
@@ -295,7 +651,16 @@ fn main() {
                     }
                 }
             }
-            (Method::Get, "/v1/health") => respond(req, 200, r#"{"ok":true}"#),
+            (Method::Get, "/v1/health") => respond(
+                req,
+                200,
+                &serde_json::json!({
+                    "ok": true,
+                    "tenant": auth.tenant_id,
+                    "auth_mode": if auth.legacy { "legacy" } else { "account" },
+                })
+                .to_string(),
+            ),
             _ => respond(req, 404, r#"{"error":"not found"}"#),
         }
     }

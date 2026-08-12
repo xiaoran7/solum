@@ -193,7 +193,8 @@ fn sync_notification_pipeline(
     app: &tauri::AppHandle,
     config: &NotificationIntelligenceConfig,
 ) -> CmdResult<()> {
-    if config.allowed_packages.is_empty() {
+    let relay_alerts_configured = solum_core::sync::SyncConfig::load().is_some();
+    if config.allowed_packages.is_empty() && !relay_alerts_configured {
         app.notif_access()
             .stop_pipeline()
             .map_err(|e| e.to_string())
@@ -2480,6 +2481,7 @@ struct SyncConfigSettings {
     path: String,
     url: String,
     username: String,
+    account_logged_in: bool,
     device_id: String,
 }
 
@@ -2492,6 +2494,12 @@ fn sync_config_get(state: State<AppState>) -> CmdResult<SyncConfigSettings> {
     let parsed = raw
         .as_deref()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+    let account = solum_core::account::AccountSession::load();
+    let account_username = account
+        .as_ref()
+        .map(|session| session.username.clone())
+        .unwrap_or_default();
+    let account_logged_in = account.is_some();
     let Some(v) = parsed else {
         return Ok(SyncConfigSettings {
             configured: false,
@@ -2499,6 +2507,7 @@ fn sync_config_get(state: State<AppState>) -> CmdResult<SyncConfigSettings> {
             path: path_str,
             url: String::new(),
             username: String::new(),
+            account_logged_in,
             device_id,
         });
     };
@@ -2507,13 +2516,24 @@ fn sync_config_get(state: State<AppState>) -> CmdResult<SyncConfigSettings> {
         .and_then(|x| x.as_str())
         .unwrap_or_default()
         .to_string();
-    if let Some(username) = v.get("username").and_then(|x| x.as_str()) {
+    if v.get("key").is_some() && v.get("token").is_none() && v.get("username").is_none() {
+        Ok(SyncConfigSettings {
+            configured: true,
+            format: "account",
+            path: path_str,
+            url,
+            username: account_username,
+            account_logged_in,
+            device_id,
+        })
+    } else if let Some(username) = v.get("username").and_then(|x| x.as_str()) {
         Ok(SyncConfigSettings {
             configured: true,
             format: "credentials",
             path: path_str,
             url,
             username: username.to_string(),
+            account_logged_in,
             device_id,
         })
     } else if v.get("token").is_some() && v.get("key").is_some() {
@@ -2523,6 +2543,7 @@ fn sync_config_get(state: State<AppState>) -> CmdResult<SyncConfigSettings> {
             path: path_str,
             url,
             username: String::new(),
+            account_logged_in,
             device_id,
         })
     } else {
@@ -2532,6 +2553,7 @@ fn sync_config_get(state: State<AppState>) -> CmdResult<SyncConfigSettings> {
             path: path_str,
             url: String::new(),
             username: String::new(),
+            account_logged_in,
             device_id,
         })
     }
@@ -2540,47 +2562,41 @@ fn sync_config_get(state: State<AppState>) -> CmdResult<SyncConfigSettings> {
 #[derive(Deserialize)]
 struct SyncSaveArgs {
     url: String,
-    username: String,
-    /// Empty → reuse the password already in the stored file (if that file
-    /// is itself the credentials shape) — same convenience as `LlmSaveArgs`'s
-    /// `api_key`, so editing the URL doesn't force retyping the password.
+    /// Empty -> reuse the already-derived key from an account-format file.
     #[serde(default)]
     password: String,
 }
 
-/// Persist `{url,username,password}` and return a status line for a toast.
-/// The relay is untouched by this — it still only ever compares whatever
-/// static token it was configured with; this just has to derive the *same*
-/// token/key on every device via `derive_credentials`, which happens at
-/// `SyncConfig::load()` time, not here.
+/// Persist `{url,key}` and return a status line for a toast. Account tokens
+/// remain in `solum-account.json`; the encryption password is derived here and
+/// never written to disk.
 #[tauri::command]
-fn sync_config_save(state: State<AppState>, cfg: SyncSaveArgs) -> CmdResult<String> {
+fn sync_config_save(
+    state: State<AppState>,
+    app: tauri::AppHandle,
+    cfg: SyncSaveArgs,
+) -> CmdResult<String> {
     let url = solum_core::net::validate_endpoint(&cfg.url, "同步服务器 url").map_err(core_err)?;
-    let username = cfg.username.trim().to_string();
-    if username.is_empty() {
-        return Err("请填写用户名".into());
-    }
+    let account = solum_core::account::AccountSession::load()
+        .ok_or_else(|| "请先在“云端接入”登录 Solum 账号".to_string())?;
     let password = cfg.password.trim().to_string();
-    let password = if password.is_empty() {
-        // Only a file already in the credentials shape has a password to
-        // reuse — a legacy raw `{token,key}` file has none, so this stays
-        // empty and the check below asks the user to type one.
+    let key = if password.is_empty() {
         std::fs::read_to_string(sync_config_file())
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| v.get("password").and_then(|p| p.as_str()).map(String::from))
+            .filter(|v| v.get("token").is_none() && v.get("username").is_none())
+            .and_then(|v| v.get("key").and_then(|p| p.as_str()).map(String::from))
             .unwrap_or_default()
     } else {
-        password
+        solum_core::sync::derive_sync_key(&account.username, &password).map_err(core_err)?
     };
-    if password.is_empty() {
-        return Err("请填写密码（没有已保存的密码可沿用）".into());
+    if key.is_empty() {
+        return Err("请填写同步加密密码（没有已保存的密钥可沿用）".into());
     }
 
     let json = serde_json::to_string_pretty(&serde_json::json!({
         "url": url,
-        "username": username,
-        "password": password,
+        "key": key,
     }))
     .map_err(|e| e.to_string())?;
     let path = sync_config_file();
@@ -2589,8 +2605,18 @@ fn sync_config_save(state: State<AppState>, cfg: SyncSaveArgs) -> CmdResult<Stri
     }
     solum_core::fsatomic::write_atomic(&path, &json).map_err(|e| e.to_string())?;
 
+    // A configured sync relay also carries small, fixed-shape self-use alert
+    // events. Start the Android foreground pipeline immediately so the user
+    // does not need to restart Solum after binding this device.
+    app.notif_access()
+        .start_pipeline()
+        .map_err(|e| e.to_string())?;
+
     let device_id = lock!(state).sync_device_id().map_err(core_err)?;
-    Ok(format!("已保存（本机设备标识：{device_id}）"))
+    Ok(format!(
+        "已关联账号 {}（本机设备标识：{device_id}）",
+        account.username
+    ))
 }
 
 #[derive(Serialize)]
@@ -2652,7 +2678,7 @@ fn sync_gap_acknowledge(state: State<AppState>) -> CmdResult<()> {
 /// merge actually changed something. See the `sync_store` field comment.
 fn sync_round(state: &AppState) -> CmdResult<solum_core::sync::SyncOutcome> {
     let Some(cfg) = solum_core::sync::SyncConfig::load() else {
-        return Err("同步未配置：设置 SOLUM_SYNC_URL/TOKEN/KEY 或 solum-sync.json".into());
+        return Err("同步未配置，或当前未登录对应的 Solum 账号".into());
     };
     let transport = solum_core::sync::HttpTransport::new(&cfg).map_err(core_err)?;
     let outcome = {
