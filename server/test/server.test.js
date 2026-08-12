@@ -101,6 +101,32 @@ test('login, refresh rotation and fixed-upstream model proxy', async (t) => {
   assert.equal(reused.status, 401);
 });
 
+test('CORS allows only configured dashboard origins', async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'solum-cloud-cors-'));
+  const app = createPaServer({
+    dbPath: path.join(temp, 'test.db'), authSecret: 'a'.repeat(64),
+    adminUsername: 'alice', adminPassword: 'correct-horse-battery-staple',
+    allowedOrigins: 'https://sync.example, https://ops.example',
+  });
+  const port = await listen(app.server);
+  t.after(() => {
+    app.server.closeAllConnections(); app.close();
+    fs.rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  const allowed = await fetch(`http://127.0.0.1:${port}/v1/auth/login`, {
+    method: 'OPTIONS', headers: { Origin: 'https://sync.example',
+      'Access-Control-Request-Method': 'POST' },
+  });
+  assert.equal(allowed.status, 204);
+  assert.equal(allowed.headers.get('access-control-allow-origin'), 'https://sync.example');
+  const denied = await fetch(`http://127.0.0.1:${port}/v1/auth/login`, {
+    method: 'OPTIONS', headers: { Origin: 'https://evil.example',
+      'Access-Control-Request-Method': 'POST' },
+  });
+  assert.equal(denied.status, 403);
+  assert.equal(denied.headers.get('access-control-allow-origin'), null);
+});
+
 test('stream:true proxies SSE bytes through as-is', async (t) => {
   const firstChunk = 'data: {"choices":[{"delta":{"content":"你"}}]}\n\n';
   const secondChunk = 'data: {"choices":[{"delta":{"content":"好"}}]}\n\ndata: [DONE]\n\n';

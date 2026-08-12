@@ -1,4 +1,4 @@
-//! Solum 独立账号：鉴权自建 solum-cloud AI 代理（`server/`，与 PA-harmony 共用同一契约）。
+//! Solum 独立账号：鉴权自建 solum-cloud AI 代理（`server/`，与 Solum Harmony 共用同一契约）。
 //!
 //! 账号只做一件事——替「直连厂商 API Key」提供另一条云端通路：登录后请求发往
 //! `{server}/v1/ai/chat/completions`，第三方 API Key 只存在于服务端环境变量。
@@ -26,6 +26,7 @@ pub const CLOUD_MODEL_OPTIONS: &[&str] = &["mimo-v2.5", "mimo-v2.5-pro"];
 /// The generous timeout covers streaming replies from thinking-mode models
 /// (mirrors the harmony client's 120s read timeout).
 const TIMEOUT_SECS: u64 = 120;
+static ACCOUNT_REFRESH_LOCK: Mutex<()> = Mutex::new(());
 
 fn default_cloud_model() -> String {
     DEFAULT_CLOUD_MODEL.to_string()
@@ -297,6 +298,45 @@ fn refresh_with_client<T: AccountHttp>(
     )
 }
 
+/// Rotate an account session through the configured identity server.
+///
+/// This is shared by non-AI clients (sync and alert delivery) so every Solum
+/// surface follows the same refresh protocol. The returned session is not
+/// persisted; use [`refresh_and_save`] when the caller owns the active local
+/// session file.
+pub fn refresh(session: &AccountSession) -> Result<AccountSession> {
+    refresh_with_client(&HttpAccountClient::new(), session)
+}
+
+/// Rotate and atomically persist an account session before it is reused.
+/// Persisting before retry prevents a successful refresh token rotation from
+/// being lost when the retried relay request fails for an unrelated reason.
+pub fn refresh_and_save(session: &AccountSession) -> Result<AccountSession> {
+    refresh_and_save_with_client(&HttpAccountClient::new(), session)
+}
+
+fn refresh_and_save_with_client<T: AccountHttp>(
+    client: &T,
+    session: &AccountSession,
+) -> Result<AccountSession> {
+    let _guard = ACCOUNT_REFRESH_LOCK
+        .lock()
+        .map_err(|_| CoreError::Llm("账号刷新锁中毒".into()))?;
+    // Another client in this process may have rotated the single-use refresh
+    // token while this request was in flight. Re-read before spending it.
+    let current = AccountSession::load().filter(|loaded| {
+        loaded.server_url == session.server_url && loaded.username == session.username
+    });
+    if let Some(current) = current {
+        if current.refresh_token != session.refresh_token {
+            return Ok(current);
+        }
+    }
+    let rotated = refresh_with_client(client, session)?;
+    rotated.save()?;
+    Ok(rotated)
+}
+
 /// POST an authorized request; a 401 refreshes the session exactly once and
 /// retries. On rotation the new pair is persisted immediately — even if the
 /// retry then fails — so a valid replacement token is never lost.
@@ -310,9 +350,8 @@ fn post_with_refresh<T: AccountHttp>(
     match client.post_json(&url, Some(&session.access_token), body.clone()) {
         Ok(value) => Ok(value),
         Err(AccountHttpError::Unauthorized) => {
-            let rotated = refresh_with_client(client, session)?;
+            let rotated = refresh_and_save_with_client(client, session)?;
             *session = rotated;
-            session.save()?;
             client
                 .post_json(&url, Some(&session.access_token), body)
                 .map_err(|e| CoreError::Llm(format!("刷新后重试失败: {e}")))
@@ -414,9 +453,8 @@ impl Reasoner for AccountReasoner {
             Ok(response) => response,
             Err(AccountHttpError::Unauthorized) => {
                 let client = HttpAccountClient::new();
-                let rotated = refresh_with_client(&client, &session)?;
+                let rotated = refresh_and_save_with_client(&client, &session)?;
                 *session = rotated;
-                session.save()?;
                 self.send_streaming(&session, system, user)
                     .map_err(|e| CoreError::Llm(format!("刷新后重试失败: {e}")))?
             }

@@ -47,7 +47,7 @@
   .sub { color: var(--muted); margin: 0; font-size: 13px; max-width: 56ch; }
 
   .card {
-    background: var(--side); border: 1px solid var(--line); border-radius: 14px;
+    background: var(--side); border: 1px solid var(--line); border-radius: 8px;
     padding: 18px 20px; margin-bottom: 18px; box-shadow: var(--shadow);
   }
   .card h2 {
@@ -169,31 +169,31 @@
     <h2>连接</h2>
     <div class="row">
       <div class="field">
-        <label for="token">Bearer token
+        <label for="token">Legacy tenant token
           <button type="button" class="hint-btn" id="hint-toggle" aria-label="token 在哪">?</button>
         </label>
         <div class="token-wrap">
-          <input type="password" id="token" placeholder="SOLUM_SYNC_SERVER_TOKEN" autocomplete="off" />
+          <input type="password" id="token" placeholder="仅旧部署迁移时使用" autocomplete="off" />
           <button type="button" class="eye" id="eye">👁</button>
         </div>
       </div>
       <button id="connect">连接</button>
       <button id="refresh-now" class="icon-btn" title="立即刷新">↻</button>
-      <button id="forget" class="ghost">忘记 token</button>
+      <button id="forget" class="ghost">退出 / 清除</button>
       <label class="toggle-row">
         <input type="checkbox" id="auto" checked /> 每 10s 自动刷新
       </label>
     </div>
     <div class="hint-box" id="hint-box" hidden>
-      token 是部署时设的 <code>SOLUM_SYNC_SERVER_TOKEN</code>，和设备同步用的是同一把。
-      忘了的话去部署这台服务的 1Panel → 容器 → 编排 → <code>solum-sync</code> → 编辑，「环境变量」框里就是。
-      这里只用它做 API 鉴权，不会把它发到别处，只存在你自己浏览器的 localStorage 里。
+      旧版 <code>SOLUM_SYNC_SERVER_TOKEN</code> 只能查看 <code>legacy</code> 租户。新部署请用下方 Solum 账号登录，账号访问令牌只保存在当前页面内存。
     </div>
     <div class="row" style="margin-top:10px;">
-      <button type="button" class="ghost" id="toggle-login" style="font-size:12px;">或用用户名+密码登录 ▾</button>
+      <button type="button" class="ghost" id="toggle-login" style="font-size:12px;">用 Solum 账号登录 ▾</button>
     </div>
     <div id="login-box" hidden style="margin-top:10px;">
       <div class="row">
+        <div class="field"><label for="account-server">账号服务器</label>
+          <input type="text" id="account-server" placeholder="https://solum-cloud.example.com" autocomplete="off" /></div>
         <div class="field"><label for="login-user">用户名</label>
           <input type="text" id="login-user" autocomplete="off" /></div>
         <div class="field"><label for="login-pass">密码</label>
@@ -201,7 +201,7 @@
         <button type="button" id="login-btn">登录</button>
       </div>
       <p class="hint-box" style="margin-top:10px;">
-        在浏览器本地按跟设备端一样的方式（PBKDF2 + HKDF）算出 token，只存派生结果，密码本身不会保存、不会发出去。
+        密码只发送给你配置的账号服务器完成登录，不保存；访问令牌过期后会在本页内自动刷新一次。
       </p>
     </div>
     <div class="statusline">
@@ -217,7 +217,7 @@
     <div class="grid" id="totals">
       <div class="stat"><span class="lbl"><span class="ico">📦</span> 总 blob 数</span><b id="s-blobs">—</b></div>
       <div class="stat"><span class="lbl"><span class="ico">🔒</span> 密文总量</span><b id="s-bytes">—</b></div>
-      <div class="stat"><span class="lbl"><span class="ico">💾</span> DB 文件大小</span><b id="s-db">—</b></div>
+      <div class="stat"><span class="lbl"><span class="ico">👤</span> 当前租户</span><b id="s-tenant">—</b></div>
       <div class="stat"><span class="lbl"><span class="ico">🔢</span> seq 区间</span><b id="s-seq">—</b></div>
       <div class="stat"><span class="lbl"><span class="ico">🗑️</span> 留存天数</span><b id="s-retention">—</b></div>
       <div class="stat"><span class="lbl"><span class="ico">📱</span> 设备数</span><b id="s-devices">—</b></div>
@@ -243,18 +243,21 @@
     </div>
   </div>
 
-  <footer>只读仪表盘。所有请求走既有 Bearer 鉴权，token 只存在这台浏览器里。</footer>
+  <footer>只读仪表盘。账号只查看自己的租户数据；密码不保存，会话令牌只存在当前页面内存。</footer>
 </main>
 
 <script>
 (function () {
-  var TOKEN_KEY = "solum_sync_dashboard_token";
+  var TOKEN_KEY = "solum_sync_dashboard_legacy_token";
   var tokenInput = document.getElementById("token");
   var errBox = document.getElementById("err");
   var healthDot = document.getElementById("health-dot");
   var healthText = document.getElementById("health-text");
   var asOf = document.getElementById("as-of");
   var timer = null;
+  var accountServer = "";
+  var accessToken = "";
+  var refreshToken = "";
 
   var saved = localStorage.getItem(TOKEN_KEY);
   if (saved) tokenInput.value = saved;
@@ -271,53 +274,31 @@
     box.hidden = !box.hidden;
   });
 
-  // Mirrors solum-core::sync::derive_credentials bit-for-bit: PBKDF2-HMAC-SHA256
-  // (600,000 rounds, salt = SHA-256(username)) stretches the password into an
-  // intermediate key, then HKDF-SHA256 (zero salt, "solum-sync-v1:token" info)
-  // expands it into the relay token. Chosen specifically because both PBKDF2
-  // and HKDF are native SubtleCrypto algorithms — no vendored JS crypto lib,
-  // no hand-rolled Argon2 in JS (see sync.rs for the full trade-off writeup).
-  function toHex(buf) {
-    var bytes = new Uint8Array(buf), out = "";
-    for (var i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, "0");
-    return out;
-  }
-  async function deriveToken(username, password) {
-    var enc = new TextEncoder();
-    var saltBuf = await crypto.subtle.digest("SHA-256", enc.encode(username));
-    var passKey = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
-    var ikm = await crypto.subtle.deriveBits(
-      { name: "PBKDF2", salt: saltBuf, iterations: 600000, hash: "SHA-256" },
-      passKey, 256);
-    var hkdfKey = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
-    var tokenBits = await crypto.subtle.deriveBits(
-      { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(32), info: enc.encode("solum-sync-v1:token") },
-      hkdfKey, 256);
-    return toHex(tokenBits);
-  }
   document.getElementById("login-btn").addEventListener("click", async function () {
     var btn = this;
+    var server = document.getElementById("account-server").value.trim().replace(/\/$/, "");
     var user = document.getElementById("login-user").value.trim();
     var pass = document.getElementById("login-pass").value;
-    if (!user || !pass) { errBox.hidden = false; errBox.textContent = "请填写用户名和密码"; return; }
-    if (!(window.crypto && crypto.subtle)) {
-      errBox.hidden = false;
-      errBox.textContent = "这个浏览器/连接不支持 SubtleCrypto（需要 HTTPS 或 localhost）";
-      return;
-    }
+    if (!server || !user || !pass) { errBox.hidden = false; errBox.textContent = "请填写账号服务器、用户名和密码"; return; }
     btn.disabled = true;
     var original = btn.textContent;
-    btn.textContent = "推导中…";
+    btn.textContent = "登录中…";
     try {
-      var token = await deriveToken(user, pass);
-      tokenInput.value = token;
+      var response = await fetch(server + "/v1/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: user, password: pass }) });
+      if (!response.ok) throw new Error("登录失败：" + response.status);
+      var session = await response.json();
+      accountServer = server;
+      accessToken = session.access_token || "";
+      refreshToken = session.refresh_token || "";
+      if (!accessToken || !refreshToken) throw new Error("账号服务器返回的会话不完整");
       document.getElementById("login-pass").value = "";
-      localStorage.setItem(TOKEN_KEY, token);
+      tokenInput.value = "";
+      localStorage.removeItem(TOKEN_KEY);
       refresh();
       scheduleAuto();
     } catch (e) {
       errBox.hidden = false;
-      errBox.textContent = "推导失败：" + e.message;
+      errBox.textContent = e.message;
     } finally {
       btn.disabled = false;
       btn.textContent = original;
@@ -355,15 +336,30 @@
     healthText.textContent = msg;
   }
 
-  function authedFetch(path) {
-    var token = tokenInput.value.trim();
-    return fetch(path, { headers: { Authorization: "Bearer " + token } });
+  async function refreshAccount() {
+    if (!accountServer || !refreshToken) throw new Error("登录已失效，请重新登录");
+    var response = await fetch(accountServer + "/v1/auth/refresh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: refreshToken }) });
+    if (!response.ok) throw new Error("登录刷新失败：" + response.status);
+    var session = await response.json();
+    accessToken = session.access_token || "";
+    refreshToken = session.refresh_token || "";
+    if (!accessToken || !refreshToken) throw new Error("刷新响应不完整");
+  }
+
+  async function authedFetch(path, retried) {
+    var token = accessToken || tokenInput.value.trim();
+    var response = await fetch(path, { headers: { Authorization: "Bearer " + token } });
+    if (response.status === 401 && accessToken && !retried) {
+      await refreshAccount();
+      return authedFetch(path, true);
+    }
+    return response;
   }
 
   function renderStats(s) {
     document.getElementById("s-blobs").textContent = s.total_blobs;
     document.getElementById("s-bytes").textContent = fmtBytes(s.total_bytes);
-    document.getElementById("s-db").textContent = fmtBytes(s.db_bytes);
+    document.getElementById("s-tenant").textContent = s.tenant || "legacy";
     document.getElementById("s-seq").textContent =
       s.total_blobs > 0 ? s.oldest_seq + " – " + s.newest_seq : "—";
     document.getElementById("s-retention").textContent =
@@ -395,33 +391,26 @@
     return d.innerHTML;
   }
 
-  function refresh() {
-    var token = tokenInput.value.trim();
+  async function refresh() {
+    var token = accessToken || tokenInput.value.trim();
     if (!token) {
       setHealth(null, "未连接");
       return;
     }
     errBox.hidden = true;
-    authedFetch("/v1/health")
-      .then(function (r) {
-        if (r.status === 401) throw new Error("token 不对（401）");
-        if (!r.ok) throw new Error("health 请求失败：" + r.status);
-        return r.json();
-      })
-      .then(function () {
-        setHealth(true, "在线");
-        return authedFetch("/v1/stats");
-      })
-      .then(function (r) {
-        if (!r.ok) throw new Error("stats 请求失败：" + r.status);
-        return r.json();
-      })
-      .then(renderStats)
-      .catch(function (e) {
-        setHealth(false, "连接失败");
-        errBox.hidden = false;
-        errBox.textContent = e.message;
-      });
+    try {
+      var health = await authedFetch("/v1/health");
+      if (health.status === 401) throw new Error("认证失败（401）");
+      if (!health.ok) throw new Error("health 请求失败：" + health.status);
+      setHealth(true, "在线");
+      var stats = await authedFetch("/v1/stats");
+      if (!stats.ok) throw new Error("stats 请求失败：" + stats.status);
+      renderStats(await stats.json());
+    } catch (e) {
+      setHealth(false, "连接失败");
+      errBox.hidden = false;
+      errBox.textContent = e.message;
+    }
   }
 
   function scheduleAuto() {
@@ -440,6 +429,7 @@
   document.getElementById("forget").addEventListener("click", function () {
     localStorage.removeItem(TOKEN_KEY);
     tokenInput.value = "";
+    accessToken = ""; refreshToken = ""; accountServer = "";
     setHealth(null, "未连接");
     asOf.textContent = "";
   });

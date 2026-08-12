@@ -2417,20 +2417,18 @@
     <section class="view" id="view-sync"><div class="vwrap">
       <div class="vhead"><div class="vt">
         <h2>同步 <button class="qmark" type="button" aria-expanded="false" aria-controls="descSync" aria-label="说明"></button></h2>
-        <p class="desc" id="descSync" hidden>只中转端到端加密的数据，服务器看不到明文（§3.8）。每台要同步的设备都在这里填同一个用户名+密码；换密码等于吊销所有旧设备，需要在每台设备上重新填一次。</p>
+        <p class="desc" id="descSync" hidden>Solum 账号决定同步数据属于谁，中继只保存端到端密文。同步加密密码只在本机派生密钥，不会发送到账号服务器或同步中继。</p>
       </div></div>
       <div id="syncConfigStatus" style="margin-bottom:18px;"></div>
       <div class="block">
-        <h3>账户</h3>
+        <h3>同步连接 <span class="bnote">账号身份与加密密钥相互独立</span></h3>
         <div class="formcol">
-          <div class="field"><label for="syncUrl">同步服务器</label>
+          <div class="field"><label>关联账号</label><div id="syncAccountIdentity" class="statusline"><span class="sdot"></span><span class="t">尚未登录 Solum 账号</span></div></div>
+          <div class="field"><label for="syncUrl">同步中继地址</label>
             <input type="text" id="syncUrl" placeholder="https://your-relay.example" autocomplete="off" spellcheck="false" /></div>
-          <div class="fieldrow">
-            <div class="field"><label for="syncUsername">用户名</label>
-              <input type="text" id="syncUsername" autocomplete="off" spellcheck="false" /></div>
-            <div class="field"><label for="syncPassword">密码</label>
-              <input type="password" id="syncPassword" placeholder="首次保存必填" autocomplete="off" /></div>
-          </div>
+          <div class="field"><label for="syncPassword">同步加密密码</label>
+            <input type="password" id="syncPassword" placeholder="首次保存必填" autocomplete="new-password" />
+            <span class="hint">每台设备填写同一密码才能解密彼此的数据。密码不会保存，只保存派生后的加密密钥。</span></div>
           <div class="btnrow">
             <button class="btn primary" id="syncSaveBtn">保存</button>
           </div>
@@ -3090,23 +3088,27 @@ $("syncBtn").addEventListener("click", () => doSync($("syncBtn")));
 $("syncBtnM").addEventListener("click", () => doSync($("syncBtnM")));
 
 /* ============================== 同步账户（设置 → 同步） ============================== */
-// 2026-07-22：把「复制一把 64 位十六进制主密钥到每台设备」换成「每台设备登录同一个
-// 用户名+密码」——推导逻辑在 Rust 侧（Argon2id 拉伸 + HKDF domain-separate），这里
-// 只管表单。密码不回显、不预填，留空保存＝沿用已存的那份（本机文件里才有，这里拿不到）。
+// 账号访问令牌只存在 solum-account.json；这里仅配置中继和端到端加密密码。
+// 密码由 Rust 派生为 key 后丢弃，留空保存表示沿用已经派生的 key。
 let syncFormSeeded = false;
 
 function renderSyncConfigStatus(s) {
   const box = $("syncConfigStatus");
   box.textContent = "";
-  if (s.format === "credentials") {
+  if (s.format === "account") {
     box.appendChild(el("div", { class: "statusline", title: `配置文件：${s.path}（本地、gitignore，不进同步）` }, [
       el("span", { class: "sdot ok" }),
-      el("span", { class: "t", text: `已登录：${s.username} @ ${s.url}（设备 ${s.device_id}）` }),
+      el("span", { class: "t", text: `已连接：${s.username} · ${s.url}（设备 ${s.device_id}）` }),
+    ]));
+  } else if (s.format === "credentials") {
+    box.appendChild(el("div", { class: "statusline", title: `配置文件：${s.path}` }, [
+      el("span", { class: "sdot amber" }),
+      el("span", { class: "t", text: `检测到旧版用户名密码配置（设备 ${s.device_id}）——登录 Solum 账号并保存即可迁移。` }),
     ]));
   } else if (s.format === "raw") {
     box.appendChild(el("div", { class: "statusline", title: `配置文件：${s.path}` }, [
       el("span", { class: "sdot amber" }),
-      el("span", { class: "t", text: `已用旧版密钥文件配置（设备 ${s.device_id}）——保存下方表单可换成用户名+密码。` }),
+      el("span", { class: "t", text: `正在使用 legacy 静态令牌（设备 ${s.device_id}）——登录 Solum 账号并保存即可迁移。` }),
     ]));
   } else {
     box.appendChild(el("div", { class: "banner" }, [
@@ -3123,21 +3125,23 @@ async function refreshSyncConfig() {
   let s;
   try { s = await invoke("sync_config_get"); } catch (_) { return; }
   renderSyncConfigStatus(s);
-  $("syncPassword").placeholder = s.format === "credentials" ? "已保存，留空则沿用" : "首次保存必填";
+  const identity = $("syncAccountIdentity");
+  identity.textContent = "";
+  identity.appendChild(el("span", { class: `sdot${s.account_logged_in ? " ok" : ""}` }));
+  identity.appendChild(el("span", { class: "t", text: s.account_logged_in ? `已登录 ${s.username}` : "尚未登录，请先到“云端接入”登录" }));
+  $("syncSaveBtn").disabled = !s.account_logged_in;
+  $("syncPassword").placeholder = s.format === "account" ? "已保存密钥，留空则沿用" : "首次保存必填";
   if (syncFormSeeded) return;
   syncFormSeeded = true;
   $("syncUrl").value = s.url;
-  $("syncUsername").value = s.username;
 }
 
 $("syncSaveBtn").addEventListener("click", async () => {
   const cfg = {
     url: $("syncUrl").value.trim(),
-    username: $("syncUsername").value.trim(),
     password: $("syncPassword").value,
   };
   if (!/^https?:\/\//.test(cfg.url)) return toast("同步服务器地址需要以 http(s):// 开头", "danger");
-  if (!cfg.username) return toast("请填写用户名", "danger");
   $("syncSaveBtn").disabled = true;
   try {
     const summary = await invoke("sync_config_save", { cfg });
@@ -6469,7 +6473,7 @@ $("accountLoginBtn").addEventListener("click", async () => {
     $("llmText").textContent = "云端在线";
     $("llmRow").title = summary;
     accountFormSeeded = false;
-    refreshAccount(); refreshCloud();
+    refreshAccount(); refreshCloud(); refreshSyncConfig(); refreshSyncStatus();
   } catch (e) { toast(String(e), "danger"); }
   finally { $("accountLoginBtn").disabled = false; }
 });
@@ -6483,6 +6487,8 @@ $("accountLogoutBtn").addEventListener("click", async () => {
     accountFormSeeded = false;
     llmFormSeeded = false;
     await refreshAccount(); await refreshCloud();
+    syncFormSeeded = false;
+    await refreshSyncConfig(); await refreshSyncStatus();
     const on = !accountLoggedIn && !!llmKeyTail;
     $("llmDot").className = "sdot" + (on ? " ok" : "");
     $("llmText").textContent = on ? "云端在线" : "离线模式";

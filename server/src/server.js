@@ -27,6 +27,17 @@ function json(res, status, value) {
   res.end(body);
 }
 
+function parseAllowedOrigins(value) {
+  const origins = Array.isArray(value) ? value : String(value || '').split(',');
+  return new Set(origins.map((item) => item.trim()).filter(Boolean).map((item) => {
+    try {
+      return new URL(item).origin;
+    } catch {
+      throw new Error(`invalid SOLUM_ALLOWED_ORIGINS entry: ${item}`);
+    }
+  }));
+}
+
 async function readJson(req) {
   const chunks = [];
   let size = 0;
@@ -141,19 +152,21 @@ function validateMessages(value) {
 
 function buildConfig(overrides = {}) {
   const config = {
-    port: Number(process.env.PA_PORT || 8787),
-    dbPath: process.env.PA_DB_PATH || path.join(process.cwd(), 'data', 'pa-cloud.db'),
-    authSecret: process.env.PA_AUTH_SECRET || '',
-    adminUsername: process.env.PA_ADMIN_USERNAME || '',
-    adminPassword: process.env.PA_ADMIN_PASSWORD || '',
+    port: Number(process.env.SOLUM_PORT || process.env.PA_PORT || 8787),
+    dbPath: process.env.SOLUM_DB_PATH || process.env.PA_DB_PATH || path.join(process.cwd(), 'data', 'solum-cloud.db'),
+    authSecret: process.env.SOLUM_AUTH_SECRET || process.env.PA_AUTH_SECRET || '',
+    adminUsername: process.env.SOLUM_ADMIN_USERNAME || process.env.PA_ADMIN_USERNAME || '',
+    adminPassword: process.env.SOLUM_ADMIN_PASSWORD || process.env.PA_ADMIN_PASSWORD || '',
     mimoApiKey: process.env.MIMO_API_KEY || '',
     mimoBaseUrl: process.env.MIMO_BASE_URL || 'https://token-plan-cn.xiaomimimo.com/v1',
-    defaultModel: process.env.PA_DEFAULT_MODEL || 'mimo-v2.5',
+    defaultModel: process.env.SOLUM_DEFAULT_MODEL || process.env.PA_DEFAULT_MODEL || 'mimo-v2.5',
+    allowedOrigins: process.env.SOLUM_ALLOWED_ORIGINS || '',
     ...overrides,
   };
-  if (config.authSecret.length < 32) throw new Error('PA_AUTH_SECRET must be at least 32 characters');
-  if (!config.adminUsername) throw new Error('PA_ADMIN_USERNAME is required');
+  if (config.authSecret.length < 32) throw new Error('SOLUM_AUTH_SECRET must be at least 32 characters');
+  if (!config.adminUsername) throw new Error('SOLUM_ADMIN_USERNAME is required');
   validateModel(config.defaultModel, 'mimo-v2.5');
+  config.allowedOrigins = parseAllowedOrigins(config.allowedOrigins);
   return config;
 }
 
@@ -181,7 +194,7 @@ function openDatabase(config) {
   if (!existing) {
     if (config.adminPassword.length < 12) {
       db.close();
-      throw new Error('PA_ADMIN_PASSWORD must be at least 12 characters when bootstrapping');
+      throw new Error('SOLUM_ADMIN_PASSWORD must be at least 12 characters when bootstrapping');
     }
     const salt = crypto.randomBytes(16).toString('hex');
     db.prepare(
@@ -238,6 +251,20 @@ function createPaServer(overrides = {}) {
   }
 
   async function handle(req, res) {
+    const origin = req.headers.origin;
+    if (typeof origin === 'string' && config.allowedOrigins.has(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    }
+    if (req.method === 'OPTIONS') {
+      if (typeof origin !== 'string' || !config.allowedOrigins.has(origin)) {
+        throw new HttpError(403, 'origin_not_allowed');
+      }
+      res.writeHead(204, { 'Content-Length': '0', 'Cache-Control': 'no-store' });
+      return res.end();
+    }
     if (req.method === 'GET' && req.url === '/v1/health') {
       return json(res, 200, { status: 'ok' });
     }
@@ -384,7 +411,7 @@ function createPaServer(overrides = {}) {
 
 if (require.main === module) {
   const app = createPaServer();
-  const port = Number(process.env.PA_PORT || 8787);
+  const port = Number(process.env.SOLUM_PORT || process.env.PA_PORT || 8787);
   app.server.listen(port, '0.0.0.0', () => {
     console.log(`Solum cloud listening on ${port}`);
   });
