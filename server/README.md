@@ -33,6 +33,16 @@ docker compose ps
 
 5. 使用 Caddy、Nginx 或云厂商网关为宿主机 `127.0.0.1:8787` 提供 HTTPS。客户端的“账号服务器”和“同步服务器”都填写同一个 HTTPS 地址。
 
+在 Windows 上从 Git 提取服务端发布包时，从仓库根归档 `server` 路径，让根级
+`.gitattributes` 保持 shell 脚本为 LF：
+
+```sh
+git archive --format=tar.gz --output=solum-server.tar.gz HEAD server
+```
+
+如果必须用 `HEAD:server` 把子树直接作为归档根，则显式加
+`-c core.autocrlf=false`，并在部署前确认 `db/init/00-roles.sh` 不含 CR 字节。
+
 PostgreSQL 不发布宿主端口，只存在于 Compose 私有网络。迁移容器每次启动都会幂等执行 schema；API 使用非 owner、非 superuser、无 `BYPASSRLS` 的 `solum_runtime` 账号和有限连接池。所有租户数据表都启用并强制 RLS，API 必须在事务内设置由 access token `sub` 得到的 `app.current_tenant_id`。
 
 公开中心部署使用开放注册：

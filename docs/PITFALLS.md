@@ -5,9 +5,9 @@
 ## 2026-08-13：Windows `git archive` 会把迁移脚本发布为 CRLF
 
 - **现象**：生产镜像构建成功，但迁移容器立即以 `/migrations/00-roles.sh: set: line 2: illegal option` 退出；旧 API 容器仍健康。
-- **根因**：仓库 blob 是 LF，但 Windows 工作树没有 `.gitattributes` 约束；`git archive` 应用了行尾转换，把 `set -eu` 变成了 `set -eu\r`。同时真实容器运行暴露出 `sync.alerts` 保留期清理只有 SQL 策略、没有表级 `DELETE` 权限。
-- **解决**：发布现场只对 `*.sh` 做 CRLF 到 LF 的字节级归一化后重跑幂等迁移；仓库新增 `*.sh text eol=lf` 和测试，并给 `solum_api` 补齐 `sync.alerts` 的 `DELETE` 权限。
-- **避免**：Windows 生成 Linux 发布包后，启动前检查脚本不含 CR 字节；数据库最小权限测试必须覆盖后台维护语句，不只覆盖请求主路径。
+- **根因**：仓库 blob 是 LF，但 Windows 工作树此前没有 `.gitattributes` 约束；`git archive HEAD:server` 又把 `server` 子树提升成归档根，根级属性即使后来补上也不会参与该归档，于是行尾转换把 `set -eu` 变成了 `set -eu\r`。同时真实容器运行暴露出 `sync.alerts` 保留期清理只有 SQL 策略、没有表级 `DELETE` 权限。
+- **解决**：发布现场只对 `*.sh` 做 CRLF 到 LF 的字节级归一化后重跑幂等迁移；仓库新增 `*.sh text eol=lf` 和测试，发布改为从仓库根归档 `server`（或对子树归档显式使用 `-c core.autocrlf=false`），并给 `solum_api` 补齐 `sync.alerts` 的 `DELETE` 权限。
+- **避免**：Windows 生成 Linux 发布包后，启动前检查脚本不含 CR 字节；不要默认子树归档会继承仓库根属性。数据库最小权限测试必须覆盖后台维护语句，不只覆盖请求主路径。
 
 ## 2026-08-13：Node 测试文件会并行运行，Windows socket 清理可能产生 libuv 假失败
 
