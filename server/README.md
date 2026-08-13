@@ -66,6 +66,12 @@ recipient。客户端用账号密码与不可变 user UUID 在本地导出包装
 
 迁移生产数据时遵循“停写 → 备份 SQLite/WAL/SHM → 导入并核对账号 UUID和每租户 blob 数 → 切换域名 → 保留旧库只读”的顺序。当前提交不会自动认领 `legacy` 静态 token 租户，也不会删除任何旧数据库；在为 legacy 数据明确指定归属账号前，不做不可逆迁移。
 
+一次性迁移工具为 `scripts/import-legacy-sqlite.js`。它只读两个 SQLite 文件，在单个 PostgreSQL 事务中保留账号密码哈希、有效刷新会话、租户归属以及 blob/告警原始 `seq`；目标中心非空、租户无法唯一映射或旧 schema 不兼容时会整体回滚。运行前必须停止旧服务写入并完成 WAL checkpoint 与文件备份：
+
+```sh
+PGUSER=postgres PGPASSWORD=... node scripts/import-legacy-sqlite.js /backup/solum-cloud.db /backup/solum-sync.sqlite
+```
+
 ## 本地验证
 
 ```sh

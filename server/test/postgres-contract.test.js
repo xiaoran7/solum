@@ -4,8 +4,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const { DatabaseSync } = require('node:sqlite');
 const { verifyAccessToken, withTenant } = require('../src/postgres-server');
+const { loadLegacy } = require('../scripts/import-legacy-sqlite');
 
 const root = path.join(__dirname, '..');
 
@@ -97,4 +100,51 @@ test('recovery envelope is fixed-scope and create-only', () => {
   assert.doesNotMatch(source, /last_seen_at=excluded\.last_seen_at,revoked_at=null/);
   assert.equal((source.match(/where sync\.devices\.revoked_at is null returning device_id/g) || []).length, 3);
   assert.equal((source.match(/throw new HttpError\(403, 'device_revoked'\)/g) || []).length, 3);
+});
+
+test('legacy importer preserves tenant ownership and cursor sequences atomically', () => {
+  const source = fs.readFileSync(path.join(root, 'scripts', 'import-legacy-sqlite.js'), 'utf8');
+  assert.match(source, /new DatabaseSync\([^,]+, \{ readOnly: true \}\)/);
+  assert.match(source, /target PostgreSQL center is not empty/);
+  assert.match(source, /overriding system value values\(\$1/);
+  assert.match(source, /pg_get_serial_sequence/);
+  assert.match(source, /await client\.query\('begin'\)/);
+  assert.match(source, /await client\.query\('commit'\)/);
+  assert.match(source, /await client\.query\('rollback'\)/);
+  assert.doesNotMatch(source, /console\.(?:log|error).*password|console\.(?:log|error).*tokenHash/);
+});
+
+test('legacy importer maps username tenants and decodes refresh hashes', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'solum-import-'));
+  const cloudPath = path.join(directory, 'cloud.sqlite');
+  const relayPath = path.join(directory, 'relay.sqlite');
+  try {
+    const cloud = new DatabaseSync(cloudPath);
+    cloud.exec(`
+      create table users(username text primary key,password_hash text,password_salt text,created_at integer);
+      create table refresh_tokens(token_hash text primary key,username text,expires_at integer,created_at integer);
+      insert into users values('alice','hash','salt',1700000000);
+      insert into refresh_tokens values('${'ab'.repeat(32)}','alice',1800000000,1700000001);`);
+    cloud.close();
+    const relay = new DatabaseSync(relayPath);
+    relay.exec(`
+      create table blobs(seq integer primary key,tenant_id text,device text,blob blob,received_at text);
+      create table alerts(seq integer primary key,tenant_id text,event_id text,source text,
+        monitor_id text,name text,status text,latency_ms integer,ping_latency_ms integer,
+        availability_7d real,checked_at text,detail_url text,received_at text);
+      insert into blobs values(8,'alice','desktop',x'0102','2026-08-13T00:00:00Z');
+      insert into alerts values(72,'alice','evt','benefit-monitor','m','福利版','operational',10,
+        3,100.0,'2026-08-13T00:00:00Z','https://example.com','2026-08-13T00:00:01Z');`);
+    relay.close();
+
+    const data = loadLegacy(cloudPath, relayPath);
+    assert.match(data.users[0].id, /^[0-9a-f-]{36}$/);
+    assert.equal(data.refreshTokens[0].tokenHash.toString('hex'), 'ab'.repeat(32));
+    assert.equal(data.blobs[0].tenantId, data.users[0].id);
+    assert.equal(data.blobs[0].seq, 8);
+    assert.equal(data.alerts[0].tenantId, data.users[0].id);
+    assert.equal(data.alerts[0].seq, 72);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
