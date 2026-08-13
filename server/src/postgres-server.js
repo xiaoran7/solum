@@ -12,8 +12,10 @@ const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_BLOB_BYTES = 8 * 1024 * 1024;
 const MAX_PULL_BYTES = 16 * 1024 * 1024;
 const MAX_PULL_ROWS = 500;
+const DEFAULT_AI_RESPONSE_BYTES = 8 * 1024 * 1024;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 5;
+const MAX_AI_TOKENS_PER_REQUEST = 10 * 1000 * 1000;
 const DASHBOARD = fs.readFileSync(path.join(__dirname, 'dashboard.html'));
 
 class HttpError extends Error {
@@ -198,6 +200,29 @@ function validateMessages(value) {
   });
 }
 
+function validateCompletionOptions(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new HttpError(400, 'invalid_request');
+  }
+  if (body.stream !== undefined && typeof body.stream !== 'boolean') {
+    throw new HttpError(400, 'invalid_stream');
+  }
+  if (body.temperature !== undefined &&
+    (typeof body.temperature !== 'number' || !Number.isFinite(body.temperature) ||
+      body.temperature < 0 || body.temperature > 2)) {
+    throw new HttpError(400, 'invalid_temperature');
+  }
+  if (body.max_tokens !== undefined &&
+    (!Number.isInteger(body.max_tokens) || body.max_tokens < 1 || body.max_tokens > 32768)) {
+    throw new HttpError(400, 'invalid_max_tokens');
+  }
+  return {
+    stream: body.stream === true,
+    temperature: body.temperature,
+    maxTokens: body.max_tokens,
+  };
+}
+
 function parseAllowedOrigins(value) {
   return new Set(String(value || '').split(',').map((item) => item.trim()).filter(Boolean).map((item) => {
     try {
@@ -221,6 +246,8 @@ function buildConfig(overrides = {}) {
     allowedModels: process.env.SOLUM_ALLOWED_MODELS || 'mimo-v2.5,mimo-v2.5-pro',
     standardPlan: process.env.SOLUM_STANDARD_PLAN || 'standard',
     standardMonthlyRequestLimit: Number(process.env.SOLUM_STANDARD_MONTHLY_REQUEST_LIMIT || 1000),
+    aiMaxResponseBytes: Number(process.env.SOLUM_AI_MAX_RESPONSE_BYTES || DEFAULT_AI_RESPONSE_BYTES),
+    aiPendingTimeoutSeconds: Number(process.env.SOLUM_AI_PENDING_TIMEOUT_SECONDS || 600),
     allowedOrigins: process.env.SOLUM_ALLOWED_ORIGINS || '',
     poolMax: Number(process.env.SOLUM_DB_POOL_MAX || 10),
     blobRetentionDays: Number(process.env.SOLUM_SYNC_RETENTION_DAYS || 30),
@@ -247,6 +274,14 @@ function buildConfig(overrides = {}) {
   if (!Number.isInteger(config.standardMonthlyRequestLimit) ||
     config.standardMonthlyRequestLimit < 1 || config.standardMonthlyRequestLimit > 10000000) {
     throw new Error('SOLUM_STANDARD_MONTHLY_REQUEST_LIMIT must be between 1 and 10000000');
+  }
+  if (!Number.isInteger(config.aiMaxResponseBytes) ||
+    config.aiMaxResponseBytes < 1024 || config.aiMaxResponseBytes > 64 * 1024 * 1024) {
+    throw new Error('SOLUM_AI_MAX_RESPONSE_BYTES must be between 1024 and 67108864');
+  }
+  if (!Number.isInteger(config.aiPendingTimeoutSeconds) ||
+    config.aiPendingTimeoutSeconds < 60 || config.aiPendingTimeoutSeconds > 86400) {
+    throw new Error('SOLUM_AI_PENDING_TIMEOUT_SECONDS must be between 60 and 86400');
   }
   config.allowedOrigins = parseAllowedOrigins(config.allowedOrigins);
   return config;
@@ -313,6 +348,26 @@ async function cleanExpiredData(pool, config) {
   await pool.query('delete from auth.refresh_tokens where expires_at<=now()');
 }
 
+async function recoverTenantStaleAiRequests(client, tenantId, timeoutSeconds) {
+  await client.query(
+    `with recovered as (
+       update ai.usage_events set status='interrupted',completed_at=now()
+       where tenant_id=$1 and status='pending'
+         and created_at<now()-($2::text||' seconds')::interval
+       returning period_start,fallback_occurred
+     ), totals as (
+       select period_start,count(*)::integer as failures,
+              count(*) filter(where fallback_occurred)::integer as fallbacks
+       from recovered group by period_start
+     )
+     update ai.usage_monthly usage set
+       failure_count=usage.failure_count+totals.failures,
+       fallback_count=usage.fallback_count+totals.fallbacks,updated_at=now()
+     from totals where usage.tenant_id=$1 and usage.period_start=totals.period_start`,
+    [tenantId, timeoutSeconds]
+  );
+}
+
 async function ensureEntitlement(client, tenantId, config) {
   await client.query(
     `insert into ai.entitlements(tenant_id,plan,monthly_request_limit)
@@ -327,8 +382,15 @@ async function ensureEntitlement(client, tenantId, config) {
 }
 
 function usageProjection(entitlement, row = {}) {
-  const limit = Number(entitlement.monthly_request_limit);
-  const used = Number(row.request_count || 0);
+  const safeCount = (value, name) => {
+    const count = Number(value || 0);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error(`invalid AI usage counter: ${name}`);
+    }
+    return count;
+  };
+  const limit = safeCount(entitlement.monthly_request_limit, 'monthly_request_limit');
+  const used = safeCount(row.request_count, 'request_count');
   const periodStart = row.period_start ? new Date(row.period_start) : new Date();
   const resetAt = new Date(Date.UTC(periodStart.getUTCFullYear(), periodStart.getUTCMonth() + 1, 1));
   return {
@@ -338,17 +400,18 @@ function usageProjection(entitlement, row = {}) {
     requests_used: used,
     requests_remaining: Math.max(0, limit - used),
     reset_at: resetAt.toISOString(),
-    success_count: Number(row.success_count || 0),
-    failure_count: Number(row.failure_count || 0),
-    fallback_count: Number(row.fallback_count || 0),
-    prompt_tokens: Number(row.prompt_tokens || 0),
-    completion_tokens: Number(row.completion_tokens || 0),
-    total_tokens: Number(row.total_tokens || 0),
+    success_count: safeCount(row.success_count, 'success_count'),
+    failure_count: safeCount(row.failure_count, 'failure_count'),
+    fallback_count: safeCount(row.fallback_count, 'fallback_count'),
+    prompt_tokens: safeCount(row.prompt_tokens, 'prompt_tokens'),
+    completion_tokens: safeCount(row.completion_tokens, 'completion_tokens'),
+    total_tokens: safeCount(row.total_tokens, 'total_tokens'),
   };
 }
 
 async function readAiUsage(pool, tenantId, config) {
   return withTenant(pool, tenantId, async (client) => {
+    await recoverTenantStaleAiRequests(client, tenantId, config.aiPendingTimeoutSeconds);
     const entitlement = await ensureEntitlement(client, tenantId, config);
     const selected = await client.query(
       `select period_start,request_count,success_count,failure_count,fallback_count,
@@ -367,6 +430,7 @@ async function readAiUsage(pool, tenantId, config) {
 
 async function reserveAiRequest(pool, tenantId, requestedModel, config) {
   return withTenant(pool, tenantId, async (client) => {
+    await recoverTenantStaleAiRequests(client, tenantId, config.aiPendingTimeoutSeconds);
     const entitlement = await ensureEntitlement(client, tenantId, config);
     const requestedAllowed = config.modelCatalog.models.includes(requestedModel);
     const canUseRequested = requestedAllowed &&
@@ -407,7 +471,8 @@ async function reserveAiRequest(pool, tenantId, requestedModel, config) {
 async function finalizeAiRequest(pool, tenantId, reservation, outcome) {
   return withTenant(pool, tenantId, async (client) => {
     const rawTokens = outcome.usage || {};
-    const tokenCount = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 2147483647 ?
+    const tokenCount = (value) => Number.isSafeInteger(value) && value >= 0 &&
+      value <= MAX_AI_TOKENS_PER_REQUEST ?
       value : 0;
     const tokens = {
       prompt_tokens: tokenCount(rawTokens.prompt_tokens),
@@ -454,54 +519,165 @@ function aiResponseHeaders(reservation, effectiveModel, fallbackReason) {
   };
 }
 
-async function requestUpstream(config, body, model, wantStream) {
+function requestSignal(req, res, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error('upstream_timeout')), timeoutMs);
+  timeout.unref();
+  const abort = () => controller.abort(new Error('client_disconnected'));
+  req.once('aborted', abort);
+  res.once('close', abort);
+  if (req.aborted || res.destroyed) abort();
+  return {
+    signal: controller.signal,
+    release() {
+      clearTimeout(timeout);
+      req.off('aborted', abort);
+      res.off('close', abort);
+    },
+  };
+}
+
+async function requestUpstream(config, body, model, wantStream, req, res) {
   const startedAt = Date.now();
+  const lifetime = requestSignal(req, res, wantStream ? 300000 : 60000);
   try {
     const response = await fetch(`${config.mimoBaseUrl.replace(/\/+$/, '')}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.mimoApiKey}` },
       body: JSON.stringify({ ...body, model }),
-      signal: AbortSignal.timeout(wantStream ? 300000 : 60000),
+      signal: lifetime.signal,
     });
-    return { response, latencyMs: Date.now() - startedAt };
+    return {
+      response,
+      latencyMs: Date.now() - startedAt,
+      release: lifetime.release,
+      clientDisconnected: () => lifetime.signal.reason?.message === 'client_disconnected',
+    };
   } catch {
-    return { response: null, latencyMs: Date.now() - startedAt };
+    const disconnected = lifetime.signal.reason?.message === 'client_disconnected';
+    lifetime.release();
+    return {
+      response: null,
+      latencyMs: Date.now() - startedAt,
+      release() {},
+      clientDisconnected: () => disconnected,
+    };
+  }
+}
+
+async function readBodyLimited(response, maxBytes) {
+  const declared = response.headers.get('content-length');
+  if (declared !== null && /^\d+$/.test(declared) && Number(declared) > maxBytes) {
+    await response.body.cancel().catch(() => {});
+    throw new HttpError(502, 'upstream_response_too_large');
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of response.body) {
+    size += chunk.length;
+    if (size > maxBytes) {
+      await response.body.cancel().catch(() => {});
+      throw new HttpError(502, 'upstream_response_too_large');
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function waitForDrain(res) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      res.off('drain', drained);
+      res.off('close', closed);
+      res.off('error', failed);
+    };
+    const drained = () => { cleanup(); resolve(); };
+    const closed = () => { cleanup(); reject(new Error('client_disconnected')); };
+    const failed = (error) => { cleanup(); reject(error); };
+    res.once('drain', drained);
+    res.once('close', closed);
+    res.once('error', failed);
+  });
+}
+
+async function nextStreamChunk(reader) {
+  try {
+    return await reader.read();
+  } catch {
+    return { done: true, failed: true };
   }
 }
 
 async function proxyCompletion(req, res, pool, tenantId, config) {
   if (!config.mimoApiKey) throw new HttpError(503, 'ai_not_configured');
   const body = await readJson(req);
-  const wantStream = body.stream === true;
+  const options = validateCompletionOptions(body);
+  const wantStream = options.stream;
   const requestedModel = validateModel(body.model, config.defaultModel);
   const upstreamBody = {
     messages: validateMessages(body.messages),
     stream: wantStream,
   };
-  if (typeof body.temperature === 'number') upstreamBody.temperature = body.temperature;
-  if (Number.isInteger(body.max_tokens) && body.max_tokens > 0) upstreamBody.max_tokens = body.max_tokens;
+  if (options.temperature !== undefined) upstreamBody.temperature = options.temperature;
+  if (options.maxTokens !== undefined) upstreamBody.max_tokens = options.maxTokens;
   const reservation = await reserveAiRequest(pool, tenantId, requestedModel, config);
   let effectiveModel = reservation.effectiveModel;
   let fallbackReason = reservation.fallbackReason;
-  let attempt = await requestUpstream(config, upstreamBody, effectiveModel, wantStream);
+  let attempt = await requestUpstream(config, upstreamBody, effectiveModel, wantStream, req, res);
   let totalLatency = attempt.latencyMs;
-  if ((!attempt.response || !attempt.response.ok) && effectiveModel !== config.modelCatalog.defaultModel) {
+  if ((!attempt.response || !attempt.response.ok) && !attempt.clientDisconnected() &&
+    effectiveModel !== config.modelCatalog.defaultModel) {
     if (attempt.response && attempt.response.body) await attempt.response.body.cancel().catch(() => {});
     fallbackReason = attempt.response ? `upstream_http_${attempt.response.status}` : 'upstream_unavailable';
     effectiveModel = config.modelCatalog.defaultModel;
-    attempt = await requestUpstream(config, upstreamBody, effectiveModel, wantStream);
+    attempt.release();
+    attempt = await requestUpstream(config, upstreamBody, effectiveModel, wantStream, req, res);
     totalLatency += attempt.latencyMs;
   }
   const upstream = attempt.response;
   if (!upstream || !upstream.ok) {
     if (upstream && upstream.body) await upstream.body.cancel().catch(() => {});
-    await finalizeAiRequest(pool, tenantId, reservation, {
-      status: 'failed', effectiveModel, fallbackReason, latencyMs: totalLatency,
-    });
+    try {
+      await finalizeAiRequest(pool, tenantId, reservation, {
+        status: attempt.clientDisconnected() ? 'interrupted' : 'failed',
+        effectiveModel, fallbackReason, latencyMs: totalLatency,
+      });
+    } finally {
+      attempt.release();
+    }
     throw new HttpError(502, 'upstream_unavailable');
   }
-  const responseHeaders = aiResponseHeaders(reservation, effectiveModel, fallbackReason);
   if (wantStream) {
+    let reader = upstream.body.getReader();
+    let first = await nextStreamChunk(reader);
+    if ((first.failed || first.done) && !attempt.clientDisconnected() &&
+      effectiveModel !== config.modelCatalog.defaultModel) {
+      await reader.cancel().catch(() => {});
+      attempt.release();
+      fallbackReason = 'upstream_stream_interrupted_before_first_byte';
+      effectiveModel = config.modelCatalog.defaultModel;
+      attempt = await requestUpstream(config, upstreamBody, effectiveModel, true, req, res);
+      totalLatency += attempt.latencyMs;
+      if (attempt.response && attempt.response.ok) {
+        reader = attempt.response.body.getReader();
+        first = await nextStreamChunk(reader);
+      }
+    }
+    if (!attempt.response || !attempt.response.ok || first.failed || first.done) {
+      if (attempt.response && attempt.response.body) {
+        await attempt.response.body.cancel().catch(() => {});
+      }
+      try {
+        await finalizeAiRequest(pool, tenantId, reservation, {
+          status: attempt.clientDisconnected() ? 'interrupted' : 'failed',
+          effectiveModel, fallbackReason, latencyMs: totalLatency,
+        });
+      } finally {
+        attempt.release();
+      }
+      throw new HttpError(502, 'upstream_unavailable');
+    }
+    const responseHeaders = aiResponseHeaders(reservation, effectiveModel, fallbackReason);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-store',
@@ -509,37 +685,61 @@ async function proxyCompletion(req, res, pool, tenantId, config) {
       ...responseHeaders,
     });
     try {
-      for await (const chunk of upstream.body) res.write(chunk);
+      if (!first.done && !res.write(first.value)) await waitForDrain(res);
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        if (!res.write(next.value)) await waitForDrain(res);
+      }
     } catch {
-      await finalizeAiRequest(pool, tenantId, reservation, {
-        status: 'interrupted', effectiveModel, fallbackReason, latencyMs: totalLatency,
-      });
+      await reader.cancel().catch(() => {});
+      try {
+        await finalizeAiRequest(pool, tenantId, reservation, {
+          status: 'interrupted', effectiveModel, fallbackReason, latencyMs: totalLatency,
+        });
+      } finally {
+        attempt.release();
+      }
       res.destroy();
       return;
     }
-    await finalizeAiRequest(pool, tenantId, reservation, {
-      status: 'succeeded', effectiveModel, fallbackReason, latencyMs: totalLatency,
-    });
+    try {
+      await finalizeAiRequest(pool, tenantId, reservation, {
+        status: 'succeeded', effectiveModel, fallbackReason, latencyMs: totalLatency,
+      });
+    } finally {
+      attempt.release();
+    }
     res.end();
     return;
   }
   let response;
   try {
-    response = await upstream.text();
-  } catch {
-    await finalizeAiRequest(pool, tenantId, reservation, {
-      status: 'interrupted', effectiveModel, fallbackReason, latencyMs: totalLatency,
-    });
-    throw new HttpError(502, 'upstream_interrupted');
+    response = await readBodyLimited(upstream, config.aiMaxResponseBytes);
+  } catch (error) {
+    try {
+      await finalizeAiRequest(pool, tenantId, reservation, {
+        status: error instanceof HttpError ? 'failed' : 'interrupted',
+        effectiveModel, fallbackReason, latencyMs: totalLatency,
+      });
+    } finally {
+      attempt.release();
+    }
+    throw error instanceof HttpError ? error : new HttpError(502, 'upstream_interrupted');
   }
   let usage;
   try {
     const parsed = JSON.parse(response);
     if (parsed && parsed.usage && typeof parsed.usage === 'object') usage = parsed.usage;
   } catch { /* Preserve an upstream-compatible response even when usage is absent. */ }
-  await finalizeAiRequest(pool, tenantId, reservation, {
-    status: 'succeeded', effectiveModel, fallbackReason, latencyMs: totalLatency, usage,
-  });
+  try {
+    await finalizeAiRequest(pool, tenantId, reservation, {
+      status: 'succeeded', effectiveModel, fallbackReason, latencyMs: totalLatency, usage,
+    });
+  } finally {
+    attempt.release();
+  }
+  const responseHeaders = aiResponseHeaders(reservation, effectiveModel, fallbackReason);
   res.writeHead(200, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
@@ -554,11 +754,19 @@ async function createPostgresServer(overrides = {}) {
   const pool = overrides.pool || new Pool({ max: config.poolMax, idleTimeoutMillis: 30000 });
   await pool.query('select 1');
   await bootstrapAdmin(pool, config);
-  cleanExpiredData(pool, config).catch((error) => console.error('retention cleanup failed', error));
-  const cleanupTimer = setInterval(() => {
-    cleanExpiredData(pool, config).catch((error) => console.error('retention cleanup failed', error));
+  let retentionInFlight = null;
+  const runRetention = () => {
+    if (retentionInFlight) return retentionInFlight;
+    retentionInFlight = cleanExpiredData(pool, config)
+      .catch((error) => console.error('retention cleanup failed', error))
+      .finally(() => { retentionInFlight = null; });
+    return retentionInFlight;
+  };
+  runRetention();
+  const retentionTimer = setInterval(() => {
+    runRetention();
   }, 6 * 60 * 60 * 1000);
-  cleanupTimer.unref();
+  retentionTimer.unref();
   const loginFailures = new Map();
 
   function authenticate(req) {
@@ -1035,8 +1243,9 @@ async function createPostgresServer(overrides = {}) {
     server,
     pool,
     async close() {
-      clearInterval(cleanupTimer);
+      clearInterval(retentionTimer);
       await new Promise((resolve) => server.close(resolve));
+      if (retentionInFlight) await retentionInFlight;
       if (!overrides.pool) await pool.end();
     },
   };
@@ -1063,4 +1272,5 @@ if (require.main === module) {
 
 module.exports = {
   createPostgresServer, verifyAccessToken, withTenant, parseModelCatalog, usageProjection,
+  validateCompletionOptions, readBodyLimited, recoverTenantStaleAiRequests, proxyCompletion,
 };

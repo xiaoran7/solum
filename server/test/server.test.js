@@ -8,11 +8,108 @@ const path = require('node:path');
 const http = require('node:http');
 const { DatabaseSync } = require('node:sqlite');
 const { createPaServer } = require('../src/server');
+const { proxyCompletion } = require('../src/postgres-server');
 
 async function listen(server) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   return server.address().port;
 }
+
+test('an empty stream before its first byte falls back once and spends one request', async (t) => {
+  const seenModels = [];
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const model = JSON.parse(Buffer.concat(chunks).toString('utf8')).model;
+    seenModels.push(model);
+    if (model === 'mimo-v2.5-pro') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.flushHeaders();
+      return setTimeout(() => res.end(), 20);
+    }
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.end('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n');
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(async () => {
+    upstream.closeAllConnections();
+    await new Promise((resolve) => upstream.close(resolve));
+  });
+
+  const tenant = '9d4df1be-9f7b-4a3a-b986-ec920d2df60e';
+  const state = { reserved: 0, event: null, monthly: null };
+  const client = {
+    async query(text, values) {
+      if (text === 'begin' || text === 'commit' || text === 'rollback' ||
+        text.includes("set_config('app.current_tenant_id'")) return { rows: [], rowCount: 0 };
+      if (text.includes("update ai.usage_events set status='interrupted'")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (text.includes('insert into ai.entitlements') || text.includes('insert into ai.usage_monthly')) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (text.startsWith('select plan,monthly_request_limit')) {
+        return { rows: [{ plan: 'standard', monthly_request_limit: 10,
+          custom_models_enabled: true }], rowCount: 1 };
+      }
+      if (text.includes('update ai.usage_monthly usage set request_count=request_count+1')) {
+        state.reserved += 1;
+        return { rows: [{ period_start: '2026-08-01', request_count: state.reserved,
+          success_count: 0, failure_count: 0, fallback_count: 0,
+          prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }], rowCount: 1 };
+      }
+      if (text.includes('insert into ai.usage_events')) {
+        state.event = { requestId: values[0], requested: values[2], effective: values[3] };
+        return { rows: [], rowCount: 1 };
+      }
+      if (text.includes('update ai.usage_events set status=')) {
+        state.event = { ...state.event, status: values[2], effective: values[3],
+          fallback: values[4], reason: values[5] };
+        return { rows: [{ period_start: '2026-08-01' }], rowCount: 1 };
+      }
+      if (text.includes('update ai.usage_monthly set')) {
+        state.monthly = { success: values[2], failure: values[3], fallback: values[4] };
+        return { rows: [], rowCount: 1 };
+      }
+      throw new Error(`unexpected query: ${text}`);
+    },
+    release() {},
+  };
+  const pool = { async connect() { return client; } };
+  const proxy = http.createServer((req, res) => {
+    proxyCompletion(req, res, pool, tenant, {
+      mimoApiKey: 'server-only',
+      mimoBaseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+      defaultModel: 'mimo-v2.5',
+      modelCatalog: { defaultModel: 'mimo-v2.5', models: ['mimo-v2.5', 'mimo-v2.5-pro'] },
+      standardPlan: 'standard', standardMonthlyRequestLimit: 10,
+      aiMaxResponseBytes: 1024 * 1024,
+    }).catch((error) => {
+      if (!res.headersSent) res.writeHead(error.status || 500);
+      res.end(error.code || 'internal_error');
+    });
+  });
+  const proxyPort = await listen(proxy);
+  t.after(async () => {
+    proxy.closeAllConnections();
+    await new Promise((resolve) => proxy.close(resolve));
+  });
+  const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/ai/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'mimo-v2.5-pro', stream: true,
+      messages: [{ role: 'user', content: 'hello' }] }),
+  });
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /"content":"ok"/);
+  assert.deepEqual(seenModels, ['mimo-v2.5-pro', 'mimo-v2.5']);
+  assert.equal(state.reserved, 1);
+  assert.deepEqual(state.monthly, { success: 1, failure: 0, fallback: 1 });
+  assert.deepEqual({ status: state.event.status, effective: state.event.effective,
+    fallback: state.event.fallback, reason: state.event.reason }, {
+    status: 'succeeded', effective: 'mimo-v2.5', fallback: true,
+    reason: 'upstream_stream_interrupted_before_first_byte',
+  });
+});
 
 test('login, refresh rotation and fixed-upstream model proxy', async (t) => {
   let seenAuthorization = '';

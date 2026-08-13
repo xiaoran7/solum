@@ -6,6 +6,9 @@
 
 ## [Unreleased]
 
+- **solum-cloud 0.6.1（2026-08-13）——AI 代理流式、内存与异常恢复加固。** 上游请求现在绑定客户端连接生命周期，断开即取消；流式转发先取得首块再提交 200，非默认模型在空流或首字节前断流时仍可回退默认模型，响应开始后遵守背压且不切换模型。非流式响应增加默认 8 MiB 上限，严格校验 `stream`、`temperature`、`max_tokens`，异常 token 聚合值不再静默转成不精确的 JavaScript 数字。崩溃遗留的 `pending` 用量会在该租户下次读取/调用时幂等结算为中断，不在启动或后台执行随账号数线性增长的扫描。客户端代码和 Android 包未变化，因此 Solum 仍为 0.2.3 / versionCode 1013。
+  - 验证：solum-cloud Node 测试 20/20（含真实 HTTP 空流首块前回退、只扣一次额度、非流式体积上限、输入严格校验和悬空用量幂等恢复）；`cargo test --workspace` 全绿（solum-core 313 项、solum-app 16 项、闭环 4 项、relay 7 项等），Clippy `-D warnings`、fmt、前端静态检查、Node 语法检查与 `git diff --check` 通过。当前机器没有 Docker，真实 PostgreSQL/RLS 容器集成仍未执行。
+
 - **Solum 0.2.3（Android versionCode 1013）+ solum-cloud 0.6.0（2026-08-13）——账号默认模型、自动回退与订阅额度基础。** 登录用户无需自行填写第三方 API Key 即可调用中心默认模型；中心发布允许的模型目录且始终保留默认项，非默认模型在响应提交前失败会自动重试默认模型，流式开始后不混合重启。PostgreSQL 新增强制 RLS 的 `ai.entitlements`、`ai.usage_monthly`、`ai.usage_events`，请求联系上游前按租户/月度原子预留一次额度，并分别统计成功、失败、回退、模型、延迟和可获得的 token 数，不保存提示词或回复正文。新增 `/v1/ai/models|usage` 与 `X-Solum-*` 模型/额度元数据；账户页改为中心模型下拉，展示权益、已用/剩余、重置时间、最近实际模型与回退原因。当前是支付系统可更新的 entitlement/quota 基础，不声称支付已接通。
   - 验证：`cargo test --workspace` 全绿（solum-core 313 项、solum-app 16 项、闭环 4 项、relay 7 项等），Clippy `-D warnings`、fmt、solum-cloud 16 项 Node 测试、前端静态检查与 `git diff --check` 通过。真实浏览器在桌面与 390×844 验证模型目录、额度轨道、自动回退说明和移动单列布局，无横向溢出、应用控制台零错误。arm64 Release APK 为 27,664,325 字节，versionName 0.2.3 / versionCode 1013，仅含 arm64-v8a，APK Signature Scheme v2 有效，SHA-256 `7B314B12C9D88F4F2389F74B3B5FBF81DE268D923914BBD424DF35539666498F`；release 源库、Gradle jniLibs 与 APK 内 `.so` 三方 SHA-256 均为 `A5D8FE74F6DB6CB782F1E2109AA334048E85BB1E0EC32EF5C3FFBF203A743EA7`。当前机器未确认可用 Docker，尚未执行真实 PostgreSQL/RLS 容器集成；也未使用生产账号或真实上游模型做端到端联调，且当前无在线 Android 设备，未做真机安装验证。
 

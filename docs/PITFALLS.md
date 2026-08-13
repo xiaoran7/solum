@@ -2,6 +2,13 @@
 
 > 强制记录：任何调试超过几分钟、走过弯路、被坑过的问题都要写在这里，不管最后是否解决。格式：现象 / 根因 / 解决方式 / 如何避免。
 
+## 2026-08-13：Node 测试文件会并行运行，Windows socket 清理可能产生 libuv 假失败
+
+- **现象**：新增的 HTTP/fetch 回退测试单独通过，`npm test` 中所有断言也显示通过，但测试文件退出时触发 `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)` 并把整套标红。
+- **根因**：Node test runner 默认让不同测试文件在独立子进程并行；把新 socket 测试放进原本纯 SQL/函数契约文件后，它会与既有 `server.test.js` 同时创建、销毁 undici/HTTP 句柄，Node 24 + Windows 的 libuv 清理出现竞态。
+- **解决**：纯契约文件只保留无 socket 测试；HTTP/fetch 测试移入既有集成测试文件，在同一进程内按顺序清理服务器。完整套件恢复稳定 20/20，没有靠关闭全局并行掩盖问题。
+- **避免**：按资源类型组织 Node 测试文件；Windows 下新增真实 socket 测试时，先同时验证定向运行和完整 `node --test`，不能只看断言列表全绿。
+
 ## 2026-08-13：后追加的桌面基础规则会覆盖更早的移动媒体规则
 
 - **现象**：账号额度区在 1280px 下正常，但 390px 实测只剩 61px 宽；页面整体 `scrollWidth === clientWidth`，所以“无横向溢出”断言仍然是绿的。

@@ -9,6 +9,7 @@ const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const {
   verifyAccessToken, withTenant, parseModelCatalog, usageProjection,
+  validateCompletionOptions, readBodyLimited, recoverTenantStaleAiRequests,
 } = require('../src/postgres-server');
 const { loadLegacy } = require('../scripts/import-legacy-sqlite');
 
@@ -46,6 +47,10 @@ test('AI usage projection is server-authoritative and never reports negative rem
   assert.equal(usage.requests_used, 12);
   assert.equal(usage.requests_remaining, 0);
   assert.equal(usage.reset_at, '2026-09-01T00:00:00.000Z');
+  assert.throws(() => usageProjection(
+    { plan: 'standard', monthly_request_limit: 10, custom_models_enabled: true },
+    { total_tokens: '9007199254740993' }
+  ), /invalid AI usage counter/);
 });
 
 test('AI quota reservation is a conditional atomic update before the usage event insert', () => {
@@ -56,7 +61,43 @@ test('AI quota reservation is a conditional atomic update before the usage event
     source.indexOf('insert into ai.usage_events'));
   assert.match(source, /effectiveModel !== config\.modelCatalog\.defaultModel/);
   assert.match(source, /X-Solum-Effective-Model/);
-  assert.match(source, /response = await upstream\.text\(\);[\s\S]+status: 'interrupted'/);
+  assert.match(source, /if \(!res\.write\(next\.value\)\) await waitForDrain\(res\)/);
+  assert.match(source, /upstream_stream_interrupted_before_first_byte/);
+  assert.match(source, /clientDisconnected\(\) \? 'interrupted' : 'failed'/);
+});
+
+test('AI completion options reject ambiguous or unbounded values', () => {
+  assert.deepEqual(validateCompletionOptions({}), {
+    stream: false, temperature: undefined, maxTokens: undefined,
+  });
+  assert.deepEqual(validateCompletionOptions({ stream: true, temperature: 0, max_tokens: 32768 }), {
+    stream: true, temperature: 0, maxTokens: 32768,
+  });
+  for (const input of [
+    null, [], { stream: 'true' }, { temperature: Number.NaN }, { temperature: -0.1 },
+    { temperature: 2.1 }, { max_tokens: 0 }, { max_tokens: 1.5 }, { max_tokens: 32769 },
+  ]) assert.throws(() => validateCompletionOptions(input));
+});
+
+test('non-streaming upstream bodies are bounded before buffering', async () => {
+  const small = new Response(Buffer.from('1234'));
+  assert.equal(await readBodyLimited(small, 4), '1234');
+  const oversized = new Response(Buffer.from('12345'));
+  await assert.rejects(readBodyLimited(oversized, 4), /upstream_response_too_large/);
+});
+
+test('stale pending AI calls are recovered for the active tenant and counted once', async () => {
+  const calls = [];
+  const client = {
+    async query(text, values) { calls.push([text, values]); return { rows: [] }; },
+  };
+  const tenant = '9d4df1be-9f7b-4a3a-b986-ec920d2df60e';
+  await recoverTenantStaleAiRequests(client, tenant, 600);
+  const recovery = calls.find(([text]) => text.includes("status='interrupted'"));
+  assert.ok(recovery);
+  assert.match(recovery[0], /status='pending'/);
+  assert.match(recovery[0], /failure_count=usage\.failure_count\+totals\.failures/);
+  assert.deepEqual(recovery[1], [tenant, 600]);
 });
 
 test('tenant transaction sets a local database context and always clears it by commit or rollback', async () => {
