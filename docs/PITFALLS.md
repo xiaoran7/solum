@@ -2,6 +2,13 @@
 
 > 强制记录：任何调试超过几分钟、走过弯路、被坑过的问题都要写在这里，不管最后是否解决。格式：现象 / 根因 / 解决方式 / 如何避免。
 
+## 2026-08-13：Windows `git archive` 会把迁移脚本发布为 CRLF
+
+- **现象**：生产镜像构建成功，但迁移容器立即以 `/migrations/00-roles.sh: set: line 2: illegal option` 退出；旧 API 容器仍健康。
+- **根因**：仓库 blob 是 LF，但 Windows 工作树没有 `.gitattributes` 约束；`git archive` 应用了行尾转换，把 `set -eu` 变成了 `set -eu\r`。同时真实容器运行暴露出 `sync.alerts` 保留期清理只有 SQL 策略、没有表级 `DELETE` 权限。
+- **解决**：发布现场只对 `*.sh` 做 CRLF 到 LF 的字节级归一化后重跑幂等迁移；仓库新增 `*.sh text eol=lf` 和测试，并给 `solum_api` 补齐 `sync.alerts` 的 `DELETE` 权限。
+- **避免**：Windows 生成 Linux 发布包后，启动前检查脚本不含 CR 字节；数据库最小权限测试必须覆盖后台维护语句，不只覆盖请求主路径。
+
 ## 2026-08-13：Node 测试文件会并行运行，Windows socket 清理可能产生 libuv 假失败
 
 - **现象**：新增的 HTTP/fetch 回退测试单独通过，`npm test` 中所有断言也显示通过，但测试文件退出时触发 `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)` 并把整套标红。

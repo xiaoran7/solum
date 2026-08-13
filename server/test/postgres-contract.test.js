@@ -27,7 +27,16 @@ test('PostgreSQL schema forces RLS on every tenant-owned table', () => {
   assert.match(sql, /current_setting\('app\.current_tenant_id', true\)/);
   assert.match(sql, /create index if not exists blobs_tenant_seq_idx\s+on sync\.blobs \(tenant_id, seq\)/i);
   assert.match(sql, /create index if not exists usage_events_tenant_created_idx\s+on ai\.usage_events \(tenant_id, created_at desc\)/i);
+  assert.match(sql, /grant select, insert, delete on sync\.blobs to solum_api;/i);
+  assert.match(sql, /grant select, insert, delete on sync\.alerts to solum_api;/i);
   assert.doesNotMatch(sql, /grant all/i);
+});
+
+test('deployment shell scripts are normalized to LF for Alpine sh', () => {
+  const attributes = fs.readFileSync(path.join(root, '..', '.gitattributes'), 'utf8');
+  assert.match(attributes, /^\*\.sh text eol=lf$/m);
+  const roles = fs.readFileSync(path.join(root, 'db', 'init', '00-roles.sh'));
+  assert.equal(roles.includes(Buffer.from('\r\n')), false);
 });
 
 test('AI model catalog always retains one validated default and removes duplicates', () => {

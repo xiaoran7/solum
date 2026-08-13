@@ -222,7 +222,7 @@ grant select, insert, delete on auth.refresh_tokens to solum_api;
 grant select, insert, update on sync.devices to solum_api;
 grant select, insert, delete on sync.blobs to solum_api;
 grant select, insert, update on sync.preferences to solum_api;
-grant select, insert on sync.alerts to solum_api;
+grant select, insert, delete on sync.alerts to solum_api;
 grant select, insert, update on vault.key_envelopes to solum_api;
 revoke update, delete on ai.entitlements from solum_api;
 grant select, insert on ai.entitlements to solum_api;

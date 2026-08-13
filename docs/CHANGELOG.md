@@ -6,6 +6,9 @@
 
 ## [Unreleased]
 
+- **solum-cloud 0.6.2（2026-08-13）——生产迁移与保留期清理修复。** PostgreSQL 运行角色补齐 `sync.alerts` 的租户内 `DELETE` 权限，使既有按账号执行的七天告警清理不再被数据库 ACL 拒绝；`sync.blobs` 继续保留既有租户内删除权限。新增 schema 契约断言，并用仓库 `.gitattributes` 强制所有 shell 脚本为 LF，避免 Windows 发布包把 `00-roles.sh` 转成 CRLF 后被 Alpine `/bin/sh` 拒绝。客户端与 Android 包未变化，Solum 仍为 0.2.3 / versionCode 1013。
+  - 验证：生产 PostgreSQL 17 幂等迁移成功，`ai.entitlements`、`ai.usage_monthly`、`ai.usage_events` 均启用并强制 RLS；新 API 容器健康且公网 health/meta、注册、登录、模型目录与额度接口通过。Node 21/21、Rust 全工作区、Clippy `-D warnings`、fmt、前端静态检查、Node 语法检查和 `git diff --check` 通过。生产 `MIMO_API_KEY` 当前为空，真实模型调用返回 `ai_not_configured`，不能将默认 LLM 记为已联通。
+
 - **solum-cloud 0.6.1（2026-08-13）——AI 代理流式、内存与异常恢复加固。** 上游请求现在绑定客户端连接生命周期，断开即取消；流式转发先取得首块再提交 200，非默认模型在空流或首字节前断流时仍可回退默认模型，响应开始后遵守背压且不切换模型。非流式响应增加默认 8 MiB 上限，严格校验 `stream`、`temperature`、`max_tokens`，异常 token 聚合值不再静默转成不精确的 JavaScript 数字。崩溃遗留的 `pending` 用量会在该租户下次读取/调用时幂等结算为中断，不在启动或后台执行随账号数线性增长的扫描。客户端代码和 Android 包未变化，因此 Solum 仍为 0.2.3 / versionCode 1013。
   - 验证：solum-cloud Node 测试 20/20（含真实 HTTP 空流首块前回退、只扣一次额度、非流式体积上限、输入严格校验和悬空用量幂等恢复）；`cargo test --workspace` 全绿（solum-core 313 项、solum-app 16 项、闭环 4 项、relay 7 项等），Clippy `-D warnings`、fmt、前端静态检查、Node 语法检查与 `git diff --check` 通过。当前机器没有 Docker，真实 PostgreSQL/RLS 容器集成仍未执行。
 
