@@ -2,6 +2,13 @@
 
 > 强制记录：任何调试超过几分钟、走过弯路、被坑过的问题都要写在这里，不管最后是否解决。格式：现象 / 根因 / 解决方式 / 如何避免。
 
+## 2026-08-13：`cargo ndk -o` 相对当前目录，可能把新 `.so` 写到 Gradle 不读取的位置
+
+- **现象**：ARM64 Rust release 编译成功、Gradle 也 `BUILD SUCCESSFUL`，但 APK 内 `libsolum_app_lib.so` 的大小和哈希仍是上一版本。
+- **根因**：在仓库根执行 `cargo ndk -o gen/android/app/src/main/jniLibs ...` 时，输出实际落到仓库根 `gen/`；Android 工程读取的却是 `crates/solum-app/gen/android/app/src/main/jniLibs`。随后 `SOLUM_PREBUILT_JNILIBS=1` 会跳过 Rust 构建，Gradle 不知道另一处产生了新库，于是合法地打入旧库。
+- **解决**：从 `crates/solum-app` 目录运行原命令，或把 `-o` 写成仓库根下的完整实际路径；复制后先比较两处 `.so` 的 SHA-256，再执行 `:app:clean :app:assembleArm64Release`。出包后从 APK ZIP 中提取 native 库再次比对哈希，不能只看 Gradle 成功和 APK 版本号。
+- **避免**：发布检查固定包含「源码生成 `.so` 哈希 = Gradle jniLibs 哈希 = APK 内 `.so` 哈希」三方一致；临时根 `gen/` 不入库。
+
 ## 2026-08-13 后台监控不要用“每次启动都开 URL”管理控制台标签
 
 - **现象**：独立福利监控每次双击都会 `Start-Process http://127.0.0.1:17321/`，福利恢复时也主动打开详情页；长期运行会积累浏览器标签和内存占用。
