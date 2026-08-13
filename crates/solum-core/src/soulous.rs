@@ -57,7 +57,7 @@ impl SoulousConfig {
         if let Ok(p) = std::env::var("SOLUM_SOULOUS_CONFIG") {
             return p.into();
         }
-        crate::paths::resolve_with_adoption("solum-soulous.json")
+        crate::paths::resolve_profile_with_adoption("solum-soulous.json")
     }
 
     pub fn from_json(raw: &str) -> Result<Self> {

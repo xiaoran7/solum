@@ -155,7 +155,13 @@ fn verify_account_token(token: &str, secret: &str) -> Option<String> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_secs() as i64;
-    if subject.is_empty() || subject.len() > 256 || expires_at <= now {
+    let subject_bytes = subject.as_bytes();
+    let stable_id = subject_bytes.len() == 36
+        && subject_bytes.iter().enumerate().all(|(i, byte)| match i {
+            8 | 13 | 18 | 23 => *byte == b'-',
+            _ => byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase(),
+        });
+    if !stable_id || expires_at <= now {
         return None;
     }
     Some(subject.to_string())

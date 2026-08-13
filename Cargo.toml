@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/solum-core", "crates/solum-cli", "crates/solum-app", "crates/solum-sync-server", "crates/solum-notif-access", "crates/solum-health-connect", "crates/solum-alarm"]
 
 [workspace.package]
-version = "0.1.8"
+version = "0.2.1"
 edition = "2021"
 license = "MIT"
 authors = ["Solum project"]

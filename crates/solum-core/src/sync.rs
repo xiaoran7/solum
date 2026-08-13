@@ -9,12 +9,12 @@
 //! separate symmetric key in `solum-sync.json` remains device-only and opens
 //! the end-to-end encrypted blobs. Legacy direct relay tokens remain readable.
 //! The file's path can be overridden with `SOLUM_SYNC_CONFIG`, same as
-//! `SOLUM_LLM_CONFIG` — mobile has no meaningful cwd, so `solum-app` points it
-//! at the platform app-data dir (see `resolve_db_path`'s siblings).
+//! `SOLUM_LLM_CONFIG`; without an explicit override it follows the active
+//! account profile and stays in the historical app-data location for guest.
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
-use chacha20poly1305::aead::{Aead, KeyInit};
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use serde::{Deserialize, Serialize};
 
@@ -82,8 +82,8 @@ pub struct SyncOutcome {
 
 /// Client-side sync settings. Loaded from env (`SOLUM_SYNC_URL` / `SOLUM_SYNC_KEY`,
 /// plus optional legacy `SOLUM_SYNC_TOKEN`) first, then a `solum-sync.json` file — path from
-/// `SOLUM_SYNC_CONFIG` if set, else next to the executable's cwd (adopted into
-/// app-data on desktop). The recommended shape is `{url,key}` and takes its
+/// `SOLUM_SYNC_CONFIG` if set, else the active account profile (guest retains
+/// the historical app-data path). The recommended shape is `{url,key}` and takes its
 /// access token from `solum-account.json`. The legacy `{url,token,key}` and
 /// `{url,username,password}` shapes remain readable for migration. Absent
 /// config or an account for the recommended shape means sync is off.
@@ -137,16 +137,18 @@ impl SyncConfig {
                     account: None,
                 });
             }
-            return crate::account::AccountSession::load().map(|account| SyncConfig {
-                url,
-                token: String::new(),
-                key,
-                account: Some(account),
-            });
+            return crate::account::AccountSession::load()
+                .filter(|account| account.stable_user_id().is_some())
+                .map(|account| SyncConfig {
+                    url,
+                    token: String::new(),
+                    key,
+                    account: Some(account),
+                });
         }
         let path: std::path::PathBuf = match std::env::var("SOLUM_SYNC_CONFIG") {
             Ok(p) => p.into(),
-            Err(_) => crate::paths::resolve_with_adoption("solum-sync.json"),
+            Err(_) => crate::paths::resolve_profile_with_adoption("solum-sync.json"),
         };
         let raw = std::fs::read_to_string(path).ok()?;
         match serde_json::from_str::<SyncConfigFile>(&raw).ok()? {
@@ -169,14 +171,14 @@ impl SyncConfig {
                     account: None,
                 })
             }
-            SyncConfigFile::Account { url, key } => {
-                crate::account::AccountSession::load().map(|account| SyncConfig {
+            SyncConfigFile::Account { url, key } => crate::account::AccountSession::load()
+                .filter(|account| account.stable_user_id().is_some())
+                .map(|account| SyncConfig {
                     url,
                     token: String::new(),
                     key,
                     account: Some(account),
-                })
-            }
+                }),
         }
     }
 
@@ -279,6 +281,295 @@ pub fn derive_sync_key(username: &str, password: &str) -> Result<String> {
     derive_credentials(username, password).map(|(_, key)| key)
 }
 
+// ---- account recovery envelope -------------------------------------------------
+
+/// Stable wire constants shared by every Solum client. The recipient is fixed
+/// server-side: callers cannot use the recovery route as a general envelope
+/// directory or ask for another device's entry.
+pub const RECOVERY_KEY_VERSION: u32 = 1;
+pub const RECOVERY_ALGORITHM: &str = "recovery-xchacha20poly1305";
+const RECOVERY_DOMAIN: &str = "solum-sync-recovery-v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryProvision {
+    /// This account had no envelope; this device generated the random master
+    /// key and won the create-if-absent race.
+    Created,
+    /// The server envelope supplied the key for a profile that had no key.
+    Recovered,
+    /// The local key and server envelope already represented the same key.
+    Verified,
+    /// An existing local key was attached to an account that had no envelope.
+    Attached,
+}
+
+/// Small transport seam keeps the create/recover/conflict state machine
+/// testable without a socket. `put_if_absent` returns the effective envelope,
+/// which may belong to another first device that won the race.
+pub trait RecoveryEnvelopeTransport {
+    fn get(&self, session: &crate::account::AccountSession) -> Result<Option<Vec<u8>>>;
+    fn put_if_absent(
+        &self,
+        session: &crate::account::AccountSession,
+        envelope: &[u8],
+    ) -> Result<Vec<u8>>;
+}
+
+pub struct HttpRecoveryEnvelopeTransport {
+    agent: ureq::Agent,
+}
+
+impl HttpRecoveryEnvelopeTransport {
+    pub fn new() -> Self {
+        Self {
+            agent: ureq::AgentBuilder::new()
+                .timeout(std::time::Duration::from_secs(30))
+                .build(),
+        }
+    }
+
+    fn endpoint(session: &crate::account::AccountSession) -> String {
+        format!("{}/v1/keys/recovery", session.server_url)
+    }
+
+    fn decode_response(value: &serde_json::Value) -> Result<Option<Vec<u8>>> {
+        let Some(encoded) = value.get("envelope").and_then(|item| item.as_str()) else {
+            return Ok(None);
+        };
+        let envelope = B64
+            .decode(encoded)
+            .map_err(|_| CoreError::Invalid("服务器返回了损坏的恢复密钥信封".into()))?;
+        if envelope.len() < 24 + 16 || envelope.len() > 65_536 {
+            return Err(CoreError::Invalid(
+                "服务器返回的恢复密钥信封长度不合法".into(),
+            ));
+        }
+        Ok(Some(envelope))
+    }
+
+    fn map_error(error: ureq::Error) -> CoreError {
+        match error {
+            ureq::Error::Status(401, _) => CoreError::Invalid("登录已过期，请重新登录".into()),
+            ureq::Error::Status(404, _) => CoreError::Invalid(
+                "账号服务器版本过旧：缺少同步密钥恢复接口，请先升级 solum-cloud".into(),
+            ),
+            ureq::Error::Status(code, _) => {
+                CoreError::Invalid(format!("同步密钥恢复服务暂时不可用（{code}）"))
+            }
+            other => CoreError::Invalid(format!("无法连接同步密钥恢复服务：{other}")),
+        }
+    }
+}
+
+impl Default for HttpRecoveryEnvelopeTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RecoveryEnvelopeTransport for HttpRecoveryEnvelopeTransport {
+    fn get(&self, session: &crate::account::AccountSession) -> Result<Option<Vec<u8>>> {
+        let response = self
+            .agent
+            .get(&Self::endpoint(session))
+            .set("Authorization", &format!("Bearer {}", session.access_token))
+            .call()
+            .map_err(Self::map_error)?;
+        let value: serde_json::Value = response
+            .into_json()
+            .map_err(|e| CoreError::Invalid(format!("恢复接口响应不是 JSON：{e}")))?;
+        Self::decode_response(&value)
+    }
+
+    fn put_if_absent(
+        &self,
+        session: &crate::account::AccountSession,
+        envelope: &[u8],
+    ) -> Result<Vec<u8>> {
+        let response = self
+            .agent
+            .put(&Self::endpoint(session))
+            .set("Authorization", &format!("Bearer {}", session.access_token))
+            .send_json(serde_json::json!({
+                "key_version": RECOVERY_KEY_VERSION,
+                "algorithm": RECOVERY_ALGORITHM,
+                "envelope": B64.encode(envelope),
+            }))
+            .map_err(Self::map_error)?;
+        let value: serde_json::Value = response
+            .into_json()
+            .map_err(|e| CoreError::Invalid(format!("恢复接口响应不是 JSON：{e}")))?;
+        Self::decode_response(&value)?
+            .ok_or_else(|| CoreError::Invalid("恢复接口没有返回有效的密钥信封".into()))
+    }
+}
+
+fn recovery_aad(user_id: &str) -> Vec<u8> {
+    format!("{RECOVERY_DOMAIN}\0{user_id}\0{RECOVERY_KEY_VERSION}").into_bytes()
+}
+
+fn derive_recovery_key(user_id: &str, password: &str) -> Result<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+
+    if !crate::account::is_valid_user_id(user_id) || password.is_empty() {
+        return Err(CoreError::Invalid(
+            "恢复同步密钥需要有效账号和非空登录密码".into(),
+        ));
+    }
+    let salt = Sha256::digest(format!("{RECOVERY_DOMAIN}:salt:{user_id}").as_bytes());
+    let mut key = [0u8; 32];
+    pbkdf2::pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ROUNDS, &mut key);
+    Ok(key)
+}
+
+fn wrap_recovery_key(user_id: &str, password: &str, master_key: &[u8; 32]) -> Result<Vec<u8>> {
+    let key = derive_recovery_key(user_id, password)?;
+    let cipher = XChaCha20Poly1305::new((&key).into());
+    let mut nonce = [0u8; 24];
+    getrandom::getrandom(&mut nonce).map_err(|e| CoreError::Invalid(format!("os rng: {e}")))?;
+    let ciphertext = cipher
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: master_key,
+                aad: &recovery_aad(user_id),
+            },
+        )
+        .map_err(|_| CoreError::Invalid("同步主密钥包装失败".into()))?;
+    let mut envelope = nonce.to_vec();
+    envelope.extend(ciphertext);
+    Ok(envelope)
+}
+
+fn unwrap_recovery_key(user_id: &str, password: &str, envelope: &[u8]) -> Result<[u8; 32]> {
+    if envelope.len() < 24 + 16 {
+        return Err(CoreError::Invalid("恢复密钥信封太短".into()));
+    }
+    let key = derive_recovery_key(user_id, password)?;
+    let (nonce, ciphertext) = envelope.split_at(24);
+    let plaintext = XChaCha20Poly1305::new((&key).into())
+        .decrypt(
+            XNonce::from_slice(nonce),
+            Payload {
+                msg: ciphertext,
+                aad: &recovery_aad(user_id),
+            },
+        )
+        .map_err(|_| {
+            CoreError::Invalid("无法解开同步密钥：账号密码不匹配，或服务器信封已损坏".into())
+        })?;
+    plaintext
+        .try_into()
+        .map_err(|_| CoreError::Invalid("恢复信封中的同步主密钥长度不正确".into()))
+}
+
+fn read_local_account_key(path: &std::path::Path) -> Result<Option<[u8; 32]>> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(CoreError::Storage(error.to_string())),
+    };
+    let value: serde_json::Value = serde_json::from_str(&raw)?;
+    if value.get("token").is_some() || value.get("username").is_some() {
+        return Err(CoreError::Invalid(
+            "账号 profile 中存在旧版同步配置，请先显式迁移，系统不会自动覆盖".into(),
+        ));
+    }
+    let key = value
+        .get("key")
+        .and_then(|item| item.as_str())
+        .ok_or_else(|| CoreError::Invalid("账号 profile 的同步配置缺少 key".into()))?;
+    SyncConfig {
+        url: String::new(),
+        token: String::new(),
+        key: key.to_string(),
+        account: None,
+    }
+    .key_bytes()
+    .map(Some)
+}
+
+fn save_account_sync_config(
+    path: &std::path::Path,
+    server_url: &str,
+    key: &[u8; 32],
+) -> Result<()> {
+    let json = serde_json::to_string_pretty(&serde_json::json!({
+        "url": server_url,
+        "key": to_hex(key),
+    }))?;
+    crate::fsatomic::write_atomic(path, &json)
+}
+
+/// Ensure one authenticated account profile has the same random E2EE master
+/// key as its server-held recovery envelope. Server writes are create-only;
+/// an existing local/server mismatch is never repaired by overwriting either
+/// side because that would make old ciphertext silently unreadable.
+pub fn provision_account_sync_with<T: RecoveryEnvelopeTransport>(
+    transport: &T,
+    session: &crate::account::AccountSession,
+    password: &str,
+    config_path: &std::path::Path,
+) -> Result<RecoveryProvision> {
+    let user_id = session
+        .stable_user_id()
+        .ok_or_else(|| CoreError::Invalid("账号缺少不可变 user_id".into()))?;
+    let local = read_local_account_key(config_path)?;
+    if let Some(remote) = transport.get(session)? {
+        let recovered = unwrap_recovery_key(user_id, password, &remote)?;
+        if let Some(existing) = local {
+            if existing != recovered {
+                return Err(CoreError::Invalid(
+                    "本机同步主密钥与账号恢复信封冲突；为避免数据损坏，已停止登录切换".into(),
+                ));
+            }
+            save_account_sync_config(config_path, &session.server_url, &existing)?;
+            return Ok(RecoveryProvision::Verified);
+        }
+        save_account_sync_config(config_path, &session.server_url, &recovered)?;
+        return Ok(RecoveryProvision::Recovered);
+    }
+
+    let (candidate, had_local) = match local {
+        Some(key) => (key, true),
+        None => {
+            let mut key = [0u8; 32];
+            getrandom::getrandom(&mut key)
+                .map_err(|e| CoreError::Invalid(format!("os rng: {e}")))?;
+            (key, false)
+        }
+    };
+    let proposed = wrap_recovery_key(user_id, password, &candidate)?;
+    let effective = transport.put_if_absent(session, &proposed)?;
+    let recovered = unwrap_recovery_key(user_id, password, &effective)?;
+    if had_local && candidate != recovered {
+        return Err(CoreError::Invalid(
+            "另一台设备已为该账号建立不同的同步主密钥；本机旧密钥未被覆盖".into(),
+        ));
+    }
+    save_account_sync_config(config_path, &session.server_url, &recovered)?;
+    Ok(if had_local {
+        RecoveryProvision::Attached
+    } else if effective == proposed {
+        RecoveryProvision::Created
+    } else {
+        RecoveryProvision::Recovered
+    })
+}
+
+pub fn provision_account_sync(
+    session: &crate::account::AccountSession,
+    password: &str,
+    config_path: &std::path::Path,
+) -> Result<RecoveryProvision> {
+    provision_account_sync_with(
+        &HttpRecoveryEnvelopeTransport::new(),
+        session,
+        password,
+        config_path,
+    )
+}
+
 fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -379,6 +670,13 @@ impl HttpTransport {
     /// oplog would otherwise travel in cleartext.
     pub fn new(cfg: &SyncConfig) -> Result<HttpTransport> {
         let url = crate::net::validate_endpoint(&cfg.url, "同步服务器 url")?;
+        if let Some(session) = &cfg.account {
+            if url != session.server_url {
+                return Err(CoreError::Invalid(
+                    "账号同步必须使用登录服务器同源地址，已拒绝向其他站点发送账号令牌".into(),
+                ));
+            }
+        }
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
             .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
@@ -704,6 +1002,102 @@ pub(crate) mod tests {
         assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
         assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(token, key);
+    }
+
+    #[test]
+    fn recovery_envelope_binds_password_and_account_uuid() {
+        let user = "9d4df1be-9f7b-4a3a-b986-ec920d2df60e";
+        let other = "6ea64c69-0531-45cb-b585-500c5f479fd8";
+        let master = [0x5au8; 32];
+        let envelope = wrap_recovery_key(user, "correct horse", &master).unwrap();
+        assert_eq!(
+            unwrap_recovery_key(user, "correct horse", &envelope).unwrap(),
+            master
+        );
+        assert!(unwrap_recovery_key(user, "wrong", &envelope).is_err());
+        assert!(unwrap_recovery_key(other, "correct horse", &envelope).is_err());
+        assert!(!envelope
+            .windows(master.len())
+            .any(|window| window == master));
+    }
+
+    #[derive(Default)]
+    struct MemRecoveryTransport {
+        envelope: Mutex<Option<Vec<u8>>>,
+    }
+
+    impl RecoveryEnvelopeTransport for MemRecoveryTransport {
+        fn get(&self, _session: &crate::account::AccountSession) -> Result<Option<Vec<u8>>> {
+            Ok(self.envelope.lock().unwrap().clone())
+        }
+
+        fn put_if_absent(
+            &self,
+            _session: &crate::account::AccountSession,
+            proposed: &[u8],
+        ) -> Result<Vec<u8>> {
+            let mut envelope = self.envelope.lock().unwrap();
+            Ok(envelope.get_or_insert_with(|| proposed.to_vec()).clone())
+        }
+    }
+
+    fn recovery_session() -> crate::account::AccountSession {
+        crate::account::AccountSession {
+            server_url: "https://cloud.example".into(),
+            user_id: "9d4df1be-9f7b-4a3a-b986-ec920d2df60e".into(),
+            username: "alice".into(),
+            access_token: "access".into(),
+            refresh_token: "refresh".into(),
+            model: crate::account::DEFAULT_CLOUD_MODEL.into(),
+        }
+    }
+
+    #[test]
+    fn account_sync_refuses_sending_access_token_to_another_origin() {
+        let session = recovery_session();
+        let wrong = SyncConfig {
+            url: "https://relay.attacker.example".into(),
+            token: String::new(),
+            key: "11".repeat(32),
+            account: Some(session.clone()),
+        };
+        assert!(HttpTransport::new(&wrong).is_err());
+        let same = SyncConfig {
+            url: session.server_url.clone(),
+            token: String::new(),
+            key: "11".repeat(32),
+            account: Some(session),
+        };
+        assert!(HttpTransport::new(&same).is_ok());
+    }
+
+    #[test]
+    fn first_device_creates_and_second_device_recovers_same_random_key() {
+        let transport = MemRecoveryTransport::default();
+        let unique = format!(
+            "solum-recovery-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        let first = dir.join("first.json");
+        let second = dir.join("second.json");
+        let session = recovery_session();
+
+        assert_eq!(
+            provision_account_sync_with(&transport, &session, "pw", &first).unwrap(),
+            RecoveryProvision::Created
+        );
+        assert_eq!(
+            provision_account_sync_with(&transport, &session, "pw", &second).unwrap(),
+            RecoveryProvision::Recovered
+        );
+        assert_eq!(
+            read_local_account_key(&first).unwrap(),
+            read_local_account_key(&second).unwrap()
+        );
+        assert!(provision_account_sync_with(&transport, &session, "wrong", &second).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

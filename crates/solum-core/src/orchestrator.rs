@@ -800,9 +800,10 @@ impl Orchestrator {
         Ok((ev, stored))
     }
 
-    /// Cancel (delete) an event and its reminders. Only ever called from an
-    /// explicit confirmation surface — the NL path renders a named danger
-    /// button, it never deletes straight off the utterance.
+    /// Cancel (delete) an event and its reminders. Generic UI actions use the
+    /// `event_cancel` Guard tool; this direct method remains for the separate
+    /// notification-proposal flow, which binds approval to a version snapshot
+    /// and TTL before calling it.
     pub fn cancel_event(&self, id: i64) -> Result<Event> {
         let ev = self.store.get_event(id)?;
         self.store.delete_event(id)?;
@@ -812,12 +813,9 @@ impl Orchestrator {
 
     /// Record an irreversible local deletion in the append-only audit trail.
     ///
-    /// These commands are reached through a confirmation dialog in the UI, but
-    /// a dialog is a rendering, not an authorization boundary — the IPC command
-    /// underneath it can be called directly. Until they are routed through the
-    /// Guard proper, they must at least be *visible*: an unexplained deletion
-    /// the user can find a record of is a very different problem from one that
-    /// leaves no trace at all.
+    /// The notification-proposal path has its own snapshot-bound confirmation
+    /// rather than a Guard token, so its completed deletion still lands in the
+    /// same append-only audit trail.
     ///
     /// Deliberately best-effort: failing to write an audit line must not turn
     /// a completed deletion into a reported error.
@@ -2789,6 +2787,7 @@ fn builtin_tools() -> Vec<Box<dyn Tool>> {
         Box::new(MemoryForgetTool),
         Box::new(PersonaClearTool),
         Box::new(WidgetRecordDeleteTool),
+        Box::new(EventCancelTool),
     ]
 }
 
@@ -3031,6 +3030,68 @@ impl Tool for MemoryForgetTool {
         let (layer, id) = Self::parse_args(args)?;
         ctx.store.delete_memory(layer, id)?;
         Ok(format!("已永久删除{}#{id}。", layer_label(layer)))
+    }
+}
+
+/// Cancelling an event cascades to its reminders, so a visible button is not
+/// enough authorization. The preview binds the token to the event's current
+/// title, time and reminder count; edits between preview and execution make the
+/// token stale.
+struct EventCancelTool;
+
+impl EventCancelTool {
+    fn event_id(args: &str) -> Result<i64> {
+        serde_json::from_str::<serde_json::Value>(args)
+            .map_err(|e| CoreError::Invalid(format!("event_cancel 参数不是 JSON：{e}")))?
+            .get("event_id")
+            .and_then(serde_json::Value::as_i64)
+            .filter(|id| *id > 0)
+            .ok_or_else(|| CoreError::Invalid("event_cancel 缺少正整数 event_id".into()))
+    }
+}
+
+impl Tool for EventCancelTool {
+    fn name(&self) -> &str {
+        "event_cancel"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Dangerous
+    }
+
+    fn audit_summary(&self, args: &str) -> String {
+        match Self::event_id(args) {
+            Ok(id) => format!("event_cancel(event#{id})"),
+            Err(_) => "event_cancel(参数无效)".to_string(),
+        }
+    }
+
+    fn preview(&self, args: &str, ctx: &ToolCtx) -> String {
+        match Self::event_id(args).and_then(|id| {
+            let event = ctx.store.get_event(id)?;
+            let reminders = ctx
+                .store
+                .list_notifications()?
+                .into_iter()
+                .filter(|notification| notification.event_id == id)
+                .count();
+            Ok((event, reminders))
+        }) {
+            Ok((event, reminders)) => format!(
+                "将永久取消日程「{}」（{}），并删除其关联的 {} 条提醒。此操作不可恢复。",
+                event.title,
+                crate::model::fmt_ts_human(&event.start),
+                reminders
+            ),
+            Err(error) => format!("参数或日程无效，无法执行：{error}"),
+        }
+    }
+
+    fn execute(&self, args: &str, _grant: &Grant, ctx: &ToolCtx) -> Result<String> {
+        let id = Self::event_id(args)?;
+        let event = ctx.store.get_event(id)?;
+        ctx.store.delete_event(id)?;
+        Ok(format!("已取消「{}」并删除其提醒。", event.title))
     }
 }
 
@@ -3342,10 +3403,22 @@ mod tests {
         let json = serde_json::to_string(&ui).unwrap();
         assert!(json.contains("event_cancel"));
 
-        // The tap (dispatched to the command) performs the deletion.
+        // The tap opens the Guard preview. Only its one-time token performs the
+        // deletion, and the preview is bound to the current event state.
         let ev_id = o.all_events().unwrap()[0].id.unwrap();
-        let ev = o.cancel_event(ev_id).unwrap();
-        assert_eq!(ev.title, "开会");
+        let args = format!(r#"{{"event_id":{ev_id}}}"#);
+        assert!(o.run_tool("event_cancel", &args, None, now()).is_err());
+        assert_eq!(o.all_events().unwrap().len(), 1);
+        let pending = o
+            .request_confirmation("event_cancel", &args, now())
+            .unwrap();
+        assert!(pending.request.effect_preview.contains("开会"));
+        assert!(pending.request.effect_preview.contains("提醒"));
+        let token = o.confirm(&pending.id, now()).unwrap();
+        let result = o
+            .run_tool("event_cancel", &args, Some(token), now())
+            .unwrap();
+        assert!(result.contains("开会"));
         assert!(o.all_events().unwrap().is_empty());
         assert!(o.all_notifications().unwrap().is_empty());
     }
@@ -3368,6 +3441,7 @@ mod tests {
     #[test]
     fn captured_notification_schedulable_becomes_event() {
         let mut o = Orchestrator::in_memory().unwrap();
+        o.set_notif_cloud_enabled(true).unwrap();
         let out = o
             .ingest_captured(
                 "张伟 明天下午3点在会议室开项目会",
@@ -3389,8 +3463,8 @@ mod tests {
         assert!(raw
             .iter()
             .any(|e| e.summary.contains("[通知·com.tencent.mm]")));
-        // Default-on Phase 9 scope lets the existing sync triggers capture
-        // every row in the notification chain; no trigger changes are needed.
+        // Explicit opt-in lets the existing sync triggers capture every row in
+        // the notification chain; no trigger changes are needed.
         let ops = o.store.local_ops_after(0).unwrap();
         for table in ["raw_inputs", "events", "notifications"] {
             assert!(
@@ -3432,11 +3506,10 @@ mod tests {
     fn notif_cloud_toggle_scopes_only_new_captures_and_recall() {
         let mut o = Orchestrator::in_memory().unwrap();
         assert!(
-            o.notif_cloud_enabled().unwrap(),
-            "missing meta defaults to on"
+            !o.notif_cloud_enabled().unwrap(),
+            "missing meta defaults to off"
         );
 
-        o.set_notif_cloud_enabled(false).unwrap();
         let private = o
             .ingest_captured("张伟 明天下午3点在会议室开榛子品鉴会", "通知·com.x", now())
             .unwrap()
@@ -3680,6 +3753,7 @@ mod tests {
 
         let calls = Arc::new(Mutex::new(Vec::new()));
         let mut o = Orchestrator::in_memory().unwrap();
+        o.set_notif_cloud_enabled(true).unwrap();
         o.set_reasoner(Box::new(CountingReasoner(calls.clone())));
         o.ingest_captured("王芳 明天下午3点在会议室开桃子品鉴会", "通知·com.x", now())
             .unwrap()
@@ -4043,7 +4117,7 @@ mod tests {
             .unwrap()
     }
 
-    /// The three deletions that used to be bare IPC commands are now Guard
+    /// The deletions that used to be bare IPC commands are now Guard
     /// tools. What matters is the *structural* property: without a token they
     /// do not run, and the refusal is audited.
     #[test]
@@ -4068,9 +4142,25 @@ mod tests {
                 now()
             )
             .is_err());
+        let event_id = o
+            .ingest("明天下午3点开会", now())
+            .unwrap()
+            .event
+            .unwrap()
+            .id
+            .unwrap();
+        assert!(o
+            .run_tool(
+                "event_cancel",
+                &format!(r#"{{"event_id":{event_id}}}"#),
+                None,
+                now()
+            )
+            .is_err());
+        assert_eq!(o.all_events().unwrap().len(), 1);
 
         let audit = o.audit_log().unwrap();
-        assert_eq!(audit.len(), 3, "every refusal is audited");
+        assert_eq!(audit.len(), 4, "every refusal is audited");
         assert!(audit.iter().all(|e| e.decision == "refused"));
     }
 
@@ -5475,8 +5565,10 @@ mod tests {
             "a local-only capture must still reach the user's own relay"
         );
 
-        // B has the switch ON, so only the travelling stamp can hold the line.
+        // B explicitly has the switch ON, so only the travelling stamp can
+        // hold the line.
         let mut b = Orchestrator::in_memory().unwrap();
+        b.set_notif_cloud_enabled(true).unwrap();
         assert!(b.notif_cloud_enabled().unwrap());
         assert!(b.sync_now(&relay, &cfg).unwrap().applied >= 3);
 
@@ -5596,6 +5688,7 @@ mod tests {
         let mut o = Orchestrator::in_memory().unwrap();
         let event = o.ingest("明天下午3点开周会", now()).unwrap().event.unwrap();
         let event_id = event.id.unwrap();
+        o.set_notif_cloud_enabled(true).unwrap();
         o.set_notification_app_enabled("com.tencent.mm", true)
             .unwrap();
         o.set_reasoner(Box::new(FakeReasoner {

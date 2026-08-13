@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Solum 中心</title>
+  <style>
+    :root{--paper:#f5f7f6;--white:#fff;--ink:#17201c;--muted:#64716b;--line:#dce2df;--amber:#e8a528;--green:#16835b;--red:#bd493e;--shadow:0 18px 45px rgba(24,40,33,.10)}
+    *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:"Microsoft YaHei UI","PingFang SC",sans-serif;letter-spacing:0}button,input{font:inherit}button{cursor:pointer}.shell{min-height:100vh;display:grid;grid-template-rows:64px 1fr}.topbar{display:flex;align-items:center;justify-content:space-between;padding:0 clamp(18px,5vw,72px);background:var(--ink);color:#fff}.brand{display:flex;align-items:center;gap:12px}.lamp{width:12px;height:12px;border-radius:50%;background:var(--amber);box-shadow:0 0 0 5px rgba(232,165,40,.16)}.brand strong{font-size:17px}.topstate{font-size:12px;color:#bdc8c3}.layout{width:min(1120px,calc(100% - 32px));margin:clamp(26px,6vh,68px) auto;display:grid;grid-template-columns:minmax(280px,390px) 1fr;gap:clamp(28px,6vw,76px);align-items:start}.auth h1{font-size:clamp(30px,5vw,48px);line-height:1.12;margin:0 0 12px;font-weight:750}.auth>p{color:var(--muted);line-height:1.75;margin:0 0 26px;max-width:35em}.tabs{display:flex;border-bottom:1px solid var(--line);margin-bottom:20px}.tab{border:0;background:transparent;padding:11px 2px;margin-right:26px;color:var(--muted);border-bottom:2px solid transparent}.tab.active{color:var(--ink);border-color:var(--amber);font-weight:700}.form{display:grid;gap:14px}.field{display:grid;gap:6px}.field label{font-size:12px;color:var(--muted);font-weight:700}.field input{height:44px;border:1px solid #c9d1cd;background:var(--white);border-radius:5px;padding:0 12px;outline:none}.field input:focus{border-color:var(--amber);box-shadow:0 0 0 3px rgba(232,165,40,.14)}.primary,.secondary{height:44px;border-radius:5px;border:1px solid var(--ink);padding:0 16px;font-weight:700}.primary{background:var(--ink);color:#fff}.primary:disabled{opacity:.5}.secondary{background:#fff;color:var(--ink)}.error{min-height:20px;color:var(--red);font-size:12px}.privacy{font-size:11px;color:var(--muted);line-height:1.6}.workspace{border-left:1px solid var(--line);padding-left:clamp(28px,5vw,64px);min-height:520px}.empty{padding:28px 0}.empty h2,.workspace h2{margin:0 0 9px;font-size:22px}.empty p{color:var(--muted);line-height:1.7;max-width:38em}.steps{display:grid;gap:0;margin-top:34px;border-top:1px solid var(--line)}.step{display:grid;grid-template-columns:34px 1fr;gap:12px;padding:17px 0;border-bottom:1px solid var(--line)}.step b{font:700 12px Consolas,monospace;color:var(--amber)}.step strong{display:block;font-size:14px;margin-bottom:4px}.step span{font-size:12px;color:var(--muted)}.account-head{display:flex;justify-content:space-between;align-items:start;padding-bottom:20px;border-bottom:1px solid var(--line)}.account-head small{color:var(--muted)}.summary{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid var(--line)}.metric{padding:22px 12px 22px 0}.metric b{display:block;font:700 26px Consolas,monospace;margin-bottom:5px}.metric span{font-size:12px;color:var(--muted)}.section{padding:24px 0;border-bottom:1px solid var(--line)}.section h3{font-size:14px;margin:0 0 14px}.rows{display:grid;gap:8px}.row{display:grid;grid-template-columns:minmax(130px,1fr) auto;gap:12px;padding:11px 0;border-top:1px solid #e6ebe8}.row:first-child{border-top:0}.row strong{font-size:13px}.row small{display:block;color:var(--muted);margin-top:4px}.badge{align-self:center;font-size:11px;padding:4px 7px;border-radius:4px;background:#e9f4ef;color:var(--green)}.hidden{display:none!important}.notice{font-size:12px;color:var(--green);margin-top:12px}
+    @media(max-width:760px){.layout{grid-template-columns:1fr;margin-top:28px}.workspace{border-left:0;border-top:1px solid var(--line);padding:28px 0 0;min-height:auto}.summary{grid-template-columns:repeat(3,minmax(0,1fr))}.metric b{font-size:21px}.topstate{display:none}}
+    @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar"><div class="brand"><span class="lamp"></span><strong>Solum 中心</strong></div><span class="topstate" id="serviceState">正在连接中心</span></header>
+    <main class="layout">
+      <section class="auth" id="authPane">
+        <h1>一个账号，连接你的 Solum。</h1>
+        <p>电脑监控、手机通知和多设备同步都归到同一账号。注册或登录后，不再手动配置账号服务器与中继地址。</p>
+        <div class="tabs"><button class="tab active" data-mode="login">登录</button><button class="tab" data-mode="register">注册</button></div>
+        <form class="form" id="authForm">
+          <div class="field"><label for="username">账号</label><input id="username" name="username" autocomplete="username" maxlength="128" required></div>
+          <div class="field"><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" minlength="12" required></div>
+          <div class="field hidden" id="confirmField"><label for="confirm">确认密码</label><input id="confirm" type="password" autocomplete="new-password"></div>
+          <div class="error" id="error" role="alert"></div>
+          <button class="primary" id="submit">登录</button>
+          <div class="privacy">密码仅用于验证身份；中心保存密码哈希。同步内容在设备端加密后上传，中心无法查看明文。</div>
+        </form>
+      </section>
+      <section class="workspace">
+        <div class="empty" id="emptyState">
+          <h2>登录后就是你的账号空间</h2><p>这里用于确认设备是否在线、福利提醒是否送达。实际监控规则仍在你的电脑上运行，中心只负责账号隔离与通知中转。</p>
+          <div class="steps"><div class="step"><b>01</b><div><strong>创建 Solum 账号</strong><span>注册后自动进入自己的隔离空间</span></div></div><div class="step"><b>02</b><div><strong>手机登录同一账号</strong><span>允许通知并保持后台运行</span></div></div><div class="step"><b>03</b><div><strong>电脑监控器登录</strong><span>福利恢复时自动发到手机</span></div></div></div>
+        </div>
+        <div id="accountState" class="hidden">
+          <div class="account-head"><div><h2 id="accountName">账号空间</h2><small>中心连接正常</small></div><button class="secondary" id="logout">退出</button></div>
+          <div class="summary"><div class="metric"><b id="deviceCount">0</b><span>已连接设备</span></div><div class="metric"><b id="alertCount">0</b><span>最近提醒</span></div><div class="metric"><b id="blobCount">0</b><span>加密同步包</span></div></div>
+          <div class="section"><h3>已连接设备</h3><div class="rows" id="devices"></div></div>
+          <div class="section"><h3>最近福利提醒</h3><div class="rows" id="alerts"></div><div class="notice">这里只显示结构化状态提醒，不展示 Solum 的同步明文。</div></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>
+    let mode='login',access='',refresh='';const $=id=>document.getElementById(id);
+    const labels={invalid_credentials:'账号或密码不正确',username_taken:'该账号已存在',registration_closed:'注册暂未开放',too_many_attempts:'尝试次数过多，请稍后再试',unauthorized:'登录已失效，请重新登录'};
+    async function api(path,options={}){const headers={'Content-Type':'application/json',...(options.headers||{})};if(access)headers.Authorization=`Bearer ${access}`;const r=await fetch(path,{...options,headers});let data={};try{data=await r.json()}catch{}if(!r.ok)throw new Error(labels[data.error]||data.error||`请求失败 (${r.status})`);return data}
+    function setMode(next){mode=next;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.mode===mode));$('confirmField').classList.toggle('hidden',mode!=='register');$('confirm').required=mode==='register';$('password').autocomplete=mode==='register'?'new-password':'current-password';$('submit').textContent=mode==='register'?'创建账号':'登录';$('error').textContent=''}
+    function fmt(value){if(!value)return'尚无记录';const d=new Date(value);return Number.isNaN(d.getTime())?'尚无记录':d.toLocaleString('zh-CN',{hour12:false})}
+    async function loadWorkspace(user){const [stats,devices,alerts]=await Promise.all([api('/v1/stats'),api('/v1/devices'),api('/v1/alerts?since=0&limit=20&source=benefit-monitor')]);$('authPane').classList.add('hidden');$('emptyState').classList.add('hidden');$('accountState').classList.remove('hidden');$('accountName').textContent=`${user.username} 的账号空间`;$('deviceCount').textContent=devices.devices.length;$('alertCount').textContent=alerts.alerts.length;$('blobCount').textContent=stats.total_blobs;$('devices').innerHTML=devices.devices.length?devices.devices.map(x=>`<div class="row"><div><strong>${escapeHtml(x.device_id)}</strong><small>最近连接 ${fmt(x.last_seen_at)}</small></div><span class="badge">${x.revoked_at?'已停用':'在线'}</span></div>`).join(''):'<div class="row"><small>手机或桌面端登录后会显示在这里</small></div>';$('alerts').innerHTML=alerts.alerts.length?alerts.alerts.slice().reverse().map(x=>`<div class="row"><div><strong>${escapeHtml(x.name||x.monitor_id||'福利提醒')}</strong><small>${fmt(x.received_at)}</small></div><span class="badge">${escapeHtml(x.status)}</span></div>`).join(''):'<div class="row"><small>还没有收到福利恢复提醒</small></div>'}
+    function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+    document.querySelectorAll('.tab').forEach(x=>x.onclick=()=>setMode(x.dataset.mode));
+    $('authForm').onsubmit=async e=>{e.preventDefault();$('error').textContent='';const username=$('username').value.trim(),password=$('password').value;if(mode==='register'&&password!==$('confirm').value){$('error').textContent='两次输入的密码不一致';return}$('submit').disabled=true;try{const session=await api(`/v1/auth/${mode}`,{method:'POST',body:JSON.stringify({username,password})});access=session.access_token;refresh=session.refresh_token;$('password').value='';$('confirm').value='';await loadWorkspace(session.user)}catch(err){$('error').textContent=err.message}finally{$('submit').disabled=false}};
+    $('logout').onclick=async()=>{try{await api('/v1/auth/logout',{method:'POST',body:JSON.stringify({refresh_token:refresh})})}catch{}access='';refresh='';$('accountState').classList.add('hidden');$('authPane').classList.remove('hidden');$('emptyState').classList.remove('hidden');setMode('login')};
+    api('/v1/meta').then(meta=>{$('serviceState').textContent=meta.registration==='open'?'中心在线 · 开放注册':'中心在线 · 仅限登录'}).catch(()=>{$('serviceState').textContent='中心暂时不可用'});
+  </script>
+</body>
+</html>

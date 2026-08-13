@@ -99,7 +99,7 @@ class NotificationPipelineService : Service() {
             if (connection.responseCode == HttpURLConnection.HTTP_UNAUTHORIZED && config.account != null) {
                 connection.disconnect()
                 val refreshed = refreshAccount(config.account) ?: return
-                pollAlertsWithToken(refreshed, cursorKey, initializedKey, since, initialized)
+                pollAlertsWithToken(config.url, refreshed, cursorKey, initializedKey, since, initialized)
                 return
             }
             if (connection.responseCode != HttpURLConnection.HTTP_OK) return
@@ -111,13 +111,14 @@ class NotificationPipelineService : Service() {
     }
 
     private fun pollAlertsWithToken(
+        relayUrl: String,
         config: AccountSession,
         cursorKey: String,
         initializedKey: String,
         since: Long,
         initialized: Boolean,
     ) {
-        val endpoint = "${config.relayUrl.trimEnd('/')}/v1/alerts?since=$since&limit=60"
+        val endpoint = "${relayUrl.trimEnd('/')}/v1/alerts?since=$since&limit=60"
         val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"; connectTimeout = 10_000; readTimeout = 10_000
             setRequestProperty("Accept", "application/json")
@@ -197,35 +198,37 @@ class NotificationPipelineService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    private data class AccountSession(val serverUrl: String, val relayUrl: String, val username: String, val accessToken: String, val refreshToken: String)
+    private data class AccountSession(val serverUrl: String, val userId: String, val username: String, val accessToken: String, val refreshToken: String)
     private data class RelayConfig(val url: String, val accessToken: String, val account: AccountSession?, val cursorScope: String)
 
     private fun loadSyncConfig(): RelayConfig? {
-        // Tauri's mobile app-data directory is Android's dataDir root, where
-        // solum-app stores the SQLite file and credential JSON files. filesDir
-        // is a different child directory and would silently miss the binding.
-        val file = File(dataDir, "solum-sync.json")
+        // The account session is device-global; business configuration lives
+        // under the same UUID profile as SQLite. Never fall back to the guest
+        // sync file while an authenticated profile is active.
+        val account = loadAccountSession()
+        val file = if (account == null) File(dataDir, "solum-sync.json")
+            else File(File(File(dataDir, "profiles"), account.userId), "solum-sync.json")
         if (!file.isFile) return null
         val json = runCatching { JSONObject(file.readText(StandardCharsets.UTF_8)) }.getOrNull() ?: return null
         val url = json.optString("url").trim().trimEnd('/')
         if (!isAllowedEndpoint(url)) return null
-        val account = loadAccountSession(url)
         val directToken = json.optString("token").trim()
-        if (account != null) return RelayConfig(url, account.accessToken, account, account.username)
+        if (account != null) return RelayConfig(url, account.accessToken, account, account.userId)
         if (directToken.isNotEmpty()) return RelayConfig(url, directToken, null, "legacy")
         return null
     }
 
-    private fun loadAccountSession(relayUrl: String): AccountSession? {
+    private fun loadAccountSession(): AccountSession? {
         val file = File(dataDir, "solum-account.json")
         if (!file.isFile) return null
         val json = runCatching { JSONObject(file.readText(StandardCharsets.UTF_8)) }.getOrNull() ?: return null
         val serverUrl = json.optString("server_url").trim().trimEnd('/')
+        val userId = json.optString("user_id").trim().lowercase()
         val username = json.optString("username").trim()
         val access = json.optString("access_token").trim()
         val refresh = json.optString("refresh_token").trim()
-        if (!isAllowedEndpoint(serverUrl) || username.isEmpty() || access.isEmpty() || refresh.isEmpty()) return null
-        return AccountSession(serverUrl, relayUrl, username, access, refresh)
+        if (!isAllowedEndpoint(serverUrl) || !isStableUserId(userId) || username.isEmpty() || access.isEmpty() || refresh.isEmpty()) return null
+        return AccountSession(serverUrl, userId, username, access, refresh)
     }
 
     private fun refreshAccount(session: AccountSession): AccountSession? {
@@ -238,11 +241,13 @@ class NotificationPipelineService : Service() {
             if (connection.responseCode != HttpURLConnection.HTTP_OK) {
                 // Rust/AI may have won a concurrent single-use refresh-token
                 // rotation. Re-read its atomically persisted replacement.
-                return loadAccountSession(session.relayUrl)?.takeIf {
-                    it.username == session.username && it.refreshToken != session.refreshToken
+                return loadAccountSession()?.takeIf {
+                    it.userId == session.userId && it.refreshToken != session.refreshToken
                 }
             }
             val json = connection.inputStream.bufferedReader(StandardCharsets.UTF_8).use { JSONObject(it.readText()) }
+            val refreshedUserId = json.optJSONObject("user")?.optString("id")?.trim()?.lowercase().orEmpty()
+            if (refreshedUserId != session.userId) return null
             val rotated = session.copy(accessToken = json.optString("access_token"), refreshToken = json.optString("refresh_token"))
             if (rotated.accessToken.isEmpty() || rotated.refreshToken.isEmpty()) return null
             val file = File(dataDir, "solum-account.json")
@@ -262,6 +267,9 @@ class NotificationPipelineService : Service() {
             (uri.scheme.equals("http", ignoreCase = true) &&
                 (uri.host == "127.0.0.1" || uri.host == "localhost" || uri.host == "::1"))
     }.getOrDefault(false)
+
+    private fun isStableUserId(value: String): Boolean =
+        Regex("^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$").matches(value)
 
 
     companion object {

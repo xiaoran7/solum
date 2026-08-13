@@ -2996,10 +2996,11 @@ impl Store {
 
     /// Whether subsequently captured third-party notifications may leave the
     /// device through the existing sync / recall-context paths. Missing means
-    /// enabled: the Phase 9 product default is opt-out.
+    /// disabled: notification text needs an explicit opt-in before it may be
+    /// sent to a cloud model. A saved choice still wins on upgrades.
     pub fn notif_cloud_enabled(&self) -> Result<bool> {
         match self.get_meta(NOTIF_CLOUD_META_KEY)? {
-            None => Ok(true),
+            None => Ok(false),
             Some(value) => match value.as_str() {
                 "true" => Ok(true),
                 "false" => Ok(false),
@@ -5903,9 +5904,9 @@ mod tests {
         let s = Store::open_in_memory().unwrap();
         // Defaults when nothing saved.
         assert_eq!(s.load_rule_table().unwrap(), RuleTable::default_table());
-        assert!(s.notif_cloud_enabled().unwrap());
-        s.set_notif_cloud_enabled(false).unwrap();
         assert!(!s.notif_cloud_enabled().unwrap());
+        s.set_notif_cloud_enabled(true).unwrap();
+        assert!(s.notif_cloud_enabled().unwrap());
         // This is deliberately device-local; changing it cannot create a
         // synced meta document that flips another device's privacy choice.
         assert!(s.local_ops_after(0).unwrap().is_empty());

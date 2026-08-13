@@ -1,0 +1,83 @@
+name: solum-cloud
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: solum
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${SOLUM_DB_OWNER_PASSWORD:?set SOLUM_DB_OWNER_PASSWORD}
+      SOLUM_DB_APP_PASSWORD: ${SOLUM_DB_APP_PASSWORD:?set SOLUM_DB_APP_PASSWORD}
+    volumes:
+      - solum-postgres-data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d solum"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [backend]
+
+  solum-cloud:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      SOLUM_STORAGE: postgres
+      SOLUM_PORT: 8787
+      SOLUM_AUTH_SECRET: ${SOLUM_AUTH_SECRET:?set SOLUM_AUTH_SECRET}
+      SOLUM_ADMIN_USERNAME: ${SOLUM_ADMIN_USERNAME:?set SOLUM_ADMIN_USERNAME}
+      SOLUM_ADMIN_PASSWORD: ${SOLUM_ADMIN_PASSWORD:?set SOLUM_ADMIN_PASSWORD}
+      SOLUM_ALLOWED_ORIGINS: ${SOLUM_ALLOWED_ORIGINS:-}
+      SOLUM_REGISTRATION_MODE: ${SOLUM_REGISTRATION_MODE:-closed}
+      SOLUM_DEFAULT_MODEL: ${SOLUM_DEFAULT_MODEL:-mimo-v2.5}
+      MIMO_API_KEY: ${MIMO_API_KEY:-}
+      MIMO_BASE_URL: ${MIMO_BASE_URL:-https://token-plan-cn.xiaomimimo.com/v1}
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: solum
+      PGUSER: solum_runtime
+      PGPASSWORD: ${SOLUM_DB_APP_PASSWORD:?set SOLUM_DB_APP_PASSWORD}
+      SOLUM_DB_POOL_MAX: ${SOLUM_DB_POOL_MAX:-10}
+      SOLUM_SYNC_RETENTION_DAYS: ${SOLUM_SYNC_RETENTION_DAYS:-30}
+      SOLUM_ALERT_RETENTION_DAYS: ${SOLUM_ALERT_RETENTION_DAYS:-7}
+    ports:
+      - "127.0.0.1:${SOLUM_HOST_PORT:-8787}:8787"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/v1/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    networks: [backend, edge]
+
+  migrate:
+    image: postgres:17-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: solum
+      PGPASSWORD: ${SOLUM_DB_OWNER_PASSWORD:?set SOLUM_DB_OWNER_PASSWORD}
+      SOLUM_DB_APP_PASSWORD: ${SOLUM_DB_APP_PASSWORD:?set SOLUM_DB_APP_PASSWORD}
+      PGHOST: postgres
+    volumes:
+      - ./db/init:/migrations:ro
+    command:
+      - /bin/sh
+      - -c
+      - sh /migrations/00-roles.sh && psql --set=ON_ERROR_STOP=1 --username postgres --dbname solum --file /migrations/01-schema.sql
+    networks: [backend]
+
+networks:
+  backend:
+    internal: true
+  edge:
+
+volumes:
+  solum-postgres-data:

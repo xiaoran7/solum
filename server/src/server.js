@@ -85,9 +85,10 @@ function tokenHash(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
-function signAccessToken(username, secret) {
+function signAccessToken(user, secret) {
   const payload = Buffer.from(JSON.stringify({
-    sub: username,
+    sub: user.id,
+    username: user.username,
     exp: nowSeconds() + ACCESS_TTL_SECONDS,
     nonce: crypto.randomBytes(12).toString('hex'),
   })).toString('base64url');
@@ -177,6 +178,7 @@ function openDatabase(config) {
     PRAGMA journal_mode=WAL;
     PRAGMA foreign_keys=ON;
     CREATE TABLE IF NOT EXISTS users (
+      id TEXT NOT NULL UNIQUE,
       username TEXT PRIMARY KEY,
       password_hash TEXT NOT NULL,
       password_salt TEXT NOT NULL,
@@ -184,13 +186,43 @@ function openDatabase(config) {
     );
     CREATE TABLE IF NOT EXISTS refresh_tokens (
       token_hash TEXT PRIMARY KEY,
-      username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       expires_at INTEGER NOT NULL,
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_refresh_expiry ON refresh_tokens(expires_at);
   `);
-  const existing = db.prepare('SELECT username FROM users WHERE username = ?').get(config.adminUsername);
+  const userColumns = db.prepare('PRAGMA table_info(users)').all();
+  if (!userColumns.some((column) => column.name === 'id')) {
+    db.exec('ALTER TABLE users ADD COLUMN id TEXT');
+  }
+  // Repair as well as migrate: if a previous process stopped after ADD COLUMN,
+  // the next startup still fills every missing immutable id before continuing.
+  const rows = db.prepare("SELECT username FROM users WHERE id IS NULL OR id = ''").all();
+  const assignId = db.prepare('UPDATE users SET id = ? WHERE username = ?');
+  for (const row of rows) assignId.run(crypto.randomUUID(), row.username);
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_id ON users(id)');
+  const refreshColumns = db.prepare('PRAGMA table_info(refresh_tokens)').all();
+  if (!refreshColumns.some((column) => column.name === 'user_id')) {
+    db.exec(`
+      BEGIN IMMEDIATE;
+      DROP INDEX IF EXISTS idx_refresh_expiry;
+      ALTER TABLE refresh_tokens RENAME TO refresh_tokens_by_username;
+      CREATE TABLE refresh_tokens (
+        token_hash TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      INSERT INTO refresh_tokens(token_hash, user_id, expires_at, created_at)
+      SELECT rt.token_hash, u.id, rt.expires_at, rt.created_at
+      FROM refresh_tokens_by_username rt JOIN users u ON u.username = rt.username;
+      DROP TABLE refresh_tokens_by_username;
+      CREATE INDEX idx_refresh_expiry ON refresh_tokens(expires_at);
+      COMMIT;
+    `);
+  }
+  const existing = db.prepare('SELECT id, username FROM users WHERE username = ?').get(config.adminUsername);
   if (!existing) {
     if (config.adminPassword.length < 12) {
       db.close();
@@ -198,22 +230,23 @@ function openDatabase(config) {
     }
     const salt = crypto.randomBytes(16).toString('hex');
     db.prepare(
-      'INSERT INTO users(username, password_hash, password_salt, created_at) VALUES (?, ?, ?, ?)'
-    ).run(config.adminUsername, passwordHash(config.adminPassword, salt), salt, nowSeconds());
+      'INSERT INTO users(id, username, password_hash, password_salt, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(crypto.randomUUID(), config.adminUsername,
+      passwordHash(config.adminPassword, salt), salt, nowSeconds());
   }
   return db;
 }
 
-function issueSession(db, username, secret) {
+function issueSession(db, user, secret) {
   const refresh = crypto.randomBytes(48).toString('base64url');
   const now = nowSeconds();
   db.prepare(
-    'INSERT INTO refresh_tokens(token_hash, username, expires_at, created_at) VALUES (?, ?, ?, ?)'
-  ).run(tokenHash(refresh), username, now + REFRESH_TTL_SECONDS, now);
+    'INSERT INTO refresh_tokens(token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)'
+  ).run(tokenHash(refresh), user.id, now + REFRESH_TTL_SECONDS, now);
   return {
-    access_token: signAccessToken(username, secret),
+    access_token: signAccessToken(user, secret),
     refresh_token: refresh,
-    user: { username },
+    user: { id: user.id, username: user.username },
   };
 }
 
@@ -276,7 +309,7 @@ function createPaServer(overrides = {}) {
       const key = loginKey(req, username);
       if (isRateLimited(key)) throw new HttpError(429, 'too_many_attempts');
       const user = db.prepare(
-        'SELECT username, password_hash, password_salt FROM users WHERE username = ?'
+        'SELECT id, username, password_hash, password_salt FROM users WHERE username = ?'
       ).get(username);
       const candidate = user ? passwordHash(password, user.password_salt) :
         passwordHash(password, crypto.randomBytes(16).toString('hex'));
@@ -286,7 +319,7 @@ function createPaServer(overrides = {}) {
       }
       loginFailures.delete(key);
       db.prepare('DELETE FROM refresh_tokens WHERE expires_at <= ?').run(nowSeconds());
-      return json(res, 200, issueSession(db, username, config.authSecret));
+      return json(res, 200, issueSession(db, user, config.authSecret));
     }
 
     if (req.method === 'POST' && req.url === '/v1/auth/refresh') {
@@ -294,7 +327,8 @@ function createPaServer(overrides = {}) {
       const refresh = requiredString(body.refresh_token, 'invalid_refresh_token', 512);
       const hash = tokenHash(refresh);
       const row = db.prepare(
-        'SELECT username, expires_at FROM refresh_tokens WHERE token_hash = ?'
+        'SELECT rt.user_id, rt.expires_at, u.username FROM refresh_tokens rt ' +
+        'JOIN users u ON u.id = rt.user_id WHERE rt.token_hash = ?'
       ).get(hash);
       if (!row || row.expires_at <= nowSeconds()) {
         db.prepare('DELETE FROM refresh_tokens WHERE token_hash = ?').run(hash);
@@ -303,7 +337,7 @@ function createPaServer(overrides = {}) {
       db.exec('BEGIN IMMEDIATE');
       try {
         db.prepare('DELETE FROM refresh_tokens WHERE token_hash = ?').run(hash);
-        const session = issueSession(db, row.username, config.authSecret);
+        const session = issueSession(db, { id: row.user_id, username: row.username }, config.authSecret);
         db.exec('COMMIT');
         return json(res, 200, session);
       } catch (error) {

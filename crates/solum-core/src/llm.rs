@@ -88,7 +88,8 @@ impl LlmConfig {
     /// Load from `SOLUM_LLM_BASE_URL`/`SOLUM_LLM_API_KEY`/`SOLUM_LLM_MODEL` (plus the
     /// optional `SOLUM_LLM_TEMPERATURE` — "none" to omit the field —,
     /// `SOLUM_LLM_MAX_TOKENS`, `SOLUM_LLM_TIMEOUT_SECS`), falling back to a JSON
-    /// file at `SOLUM_LLM_CONFIG` (default `./solum-llm.json`).
+    /// file at `SOLUM_LLM_CONFIG` (default: active account profile, or guest
+    /// app-data when logged out).
     /// `None` means "stay offline" — never an error.
     pub fn load() -> Option<LlmConfig> {
         let env = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
@@ -113,7 +114,7 @@ impl LlmConfig {
         }
         let path: String = match env("SOLUM_LLM_CONFIG") {
             Some(p) => p,
-            None => crate::paths::resolve_with_adoption("solum-llm.json")
+            None => crate::paths::resolve_profile_with_adoption("solum-llm.json")
                 .to_string_lossy()
                 .into_owned(),
         };
