@@ -458,31 +458,71 @@ struct AccountStatus {
     username: String,
     server_url: String,
     model: String,
-    model_options: Vec<&'static str>,
+    default_model: String,
+    model_options: Vec<String>,
+    usage: Option<solum_core::account::CloudUsage>,
+    state_error: Option<String>,
     /// Where the session file lives.
     path: String,
 }
 
 #[tauri::command]
-fn account_status_get() -> CmdResult<AccountStatus> {
+async fn account_status_get() -> CmdResult<AccountStatus> {
     let path = solum_core::account::AccountSession::path()
         .to_string_lossy()
         .into_owned();
     match solum_core::account::AccountSession::load() {
-        Some(s) => Ok(AccountStatus {
-            logged_in: true,
-            username: s.username,
-            server_url: s.server_url,
-            model: s.model,
-            model_options: solum_core::account::CLOUD_MODEL_OPTIONS.to_vec(),
-            path,
-        }),
+        Some(mut s) => tauri::async_runtime::spawn_blocking(move || {
+            let remote = solum_core::account::cloud_account_state(&mut s);
+            let (default_model, model_options, usage, state_error) = match remote {
+                Ok(state) => (
+                    state.catalog.default_model,
+                    state
+                        .catalog
+                        .models
+                        .into_iter()
+                        .filter(|item| state.catalog.custom_models_enabled || item.is_default)
+                        .map(|item| item.id)
+                        .collect(),
+                    Some(state.usage),
+                    None,
+                ),
+                Err(error) => (
+                    solum_core::account::DEFAULT_CLOUD_MODEL.to_string(),
+                    solum_core::account::CLOUD_MODEL_OPTIONS
+                        .iter()
+                        .map(|item| (*item).to_string())
+                        .collect(),
+                    None,
+                    Some(error.to_string()),
+                ),
+            };
+            Ok(AccountStatus {
+                logged_in: true,
+                username: s.username,
+                server_url: s.server_url,
+                model: s.model,
+                default_model,
+                model_options,
+                usage,
+                state_error,
+                path,
+            })
+        })
+        .await
+        .map_err(|e| format!("账号状态线程失败: {e}"))?,
         None => Ok(AccountStatus {
             logged_in: false,
             username: String::new(),
             server_url: String::new(),
             model: solum_core::account::DEFAULT_CLOUD_MODEL.to_string(),
-            model_options: solum_core::account::CLOUD_MODEL_OPTIONS.to_vec(),
+            default_model: solum_core::account::DEFAULT_CLOUD_MODEL.to_string(),
+            model_options: solum_core::account::CLOUD_MODEL_OPTIONS
+                .iter()
+                .map(|item| (*item).to_string())
+                .collect(),
+            usage: None,
+            state_error: None,
             path,
         }),
     }
@@ -577,13 +617,38 @@ async fn account_logout(_state: State<'_, AppState>, app: tauri::AppHandle) -> C
 
 /// Change which model the proxy asks upstream for (login stays untouched).
 #[tauri::command]
-fn account_model_save(state: State<AppState>, model: String) -> CmdResult<String> {
+async fn account_model_save(state: State<'_, AppState>, model: String) -> CmdResult<String> {
     let Some(mut session) = solum_core::account::AccountSession::load() else {
         return Err("请先登录账号".into());
     };
-    session.model =
+    let requested =
         solum_core::account::normalize_cloud_model(&model).map_err(|e| e.to_string())?;
-    session.save().map_err(|e| e.to_string())?;
+    let session = tauri::async_runtime::spawn_blocking(move || {
+        let remote = solum_core::account::cloud_account_state(&mut session);
+        match remote {
+            Ok(account)
+                if account.catalog.models.iter().any(|item| {
+                    item.id == requested
+                        && (account.catalog.custom_models_enabled || item.is_default)
+                }) =>
+            {
+                session.model = requested;
+            }
+            Ok(_) => return Err("这个模型不在 Solum 中心当前允许的目录中".to_string()),
+            Err(_) if requested == solum_core::account::DEFAULT_CLOUD_MODEL => {
+                session.model = requested;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "暂时无法向中心确认这个模型：{error}。默认模型仍可继续使用"
+                ));
+            }
+        }
+        session.save().map_err(|e| e.to_string())?;
+        Ok::<_, String>(session)
+    })
+    .await
+    .map_err(|e| format!("模型设置线程失败: {e}"))??;
     let summary = format!("账号 · {}", session.masked_summary());
     lock!(state).set_reasoner(Box::new(solum_core::account::AccountReasoner::new(session)));
     if let Ok(mut g) = state.llm_summary.lock() {

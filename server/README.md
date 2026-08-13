@@ -6,6 +6,7 @@ Solum 的统一中心后端。桌面、Android、HarmonyOS 和以后新增的客
 
 - `POST /v1/auth/register|login|refresh|logout`
 - `POST /v1/ai/chat/completions`
+- `GET /v1/ai/models|usage`（默认/可选模型目录与账号月度用量）
 - `POST /v1/push`、`GET /v1/pull|stats`（端到端加密同步）
 - `POST|GET /v1/alerts`（固定形状的状态告警）
 - `POST /v1/devices/register`、`GET /v1/devices`（设备公钥目录）
@@ -22,7 +23,7 @@ Solum 的统一中心后端。桌面、Android、HarmonyOS 和以后新增的客
    - 至少 32 字符的随机 `SOLUM_AUTH_SECRET`；
    - 两个不同的数据库强密码 `SOLUM_DB_OWNER_PASSWORD` / `SOLUM_DB_APP_PASSWORD`；
    - 初始管理员账号与至少 12 字符的强密码。
-3. 将 MiMo Token Plan 密钥填入 `MIMO_API_KEY`；不需要 AI 时可以留空。
+3. 将 MiMo Token Plan 密钥填入 `MIMO_API_KEY`。用 `SOLUM_DEFAULT_MODEL` 指定所有登录用户可直接使用且始终保留的默认模型，用逗号分隔的 `SOLUM_ALLOWED_MODELS` 指定其他可选模型；默认模型即使未写进列表也会自动加入。`SOLUM_STANDARD_MONTHLY_REQUEST_LIMIT` 是新账号默认月度请求额度。
 4. 启动：
 
 ```sh
@@ -46,6 +47,8 @@ SOLUM_REGISTRATION_MODE=open
 ## 数据与密钥边界
 
 - `auth.*`：用户 UUID、用户名、密码哈希和刷新令牌哈希。
+- `ai.entitlements`：账号当前权益名称、月度请求上限和自定义模型开关；这是以后支付系统更新权益的入口，当前不包含支付处理。
+- `ai.usage_monthly` / `ai.usage_events`：服务端权威的月度原子计数与逐请求结果，只记录模型、状态、延迟和 token 数，不保存提示词或回复正文。
 - `sync.blobs`：端侧加密后的增量操作，不含明文业务字段。
 - `sync.devices`：设备标识、公钥、最后在线时间和撤销状态；撤销后该设备的注册、push、pull 均返回 403，不能靠再次上线自我恢复。
 - `sync.preferences`：未来账号级设置的加密文档；现有规则、主动性和画像指针仍随加密 oplog 同步。
@@ -58,7 +61,9 @@ recipient。客户端用账号密码与不可变 user UUID 在本地导出包装
 随机密文，拿到数据库或 access token 都不能解密同步内容。
 - 大图片、文档和语音以后放对象存储，PostgreSQL 只留密文索引。
 
-登录只证明“这是哪个租户”，不自动授予解密能力。当前客户端仍需输入相同的同步加密密码；key envelope API 是后续“恢复码或旧设备批准后登录即同步”的服务端地基。
+登录只证明“这是哪个租户”，不自动授予解密能力。客户端用本次登录密码在本机解封账号恢复信封；密码和同步主密钥都不上传。
+
+AI 请求与响应都经过 Solum Center。中心在联系上游前原子预留一次额度；非默认模型在响应开始前失败时只重试一次默认模型，并通过 `X-Solum-*` 响应头说明 requested/effective model、回退原因和剩余额度。流式响应一旦开始写出就不会切换模型，避免拼接两条不同回复。一次用户调用即使内部发生回退也只扣一次请求额度；成功、失败、回退与可获得的 token 数分别统计。
 
 ## SQLite 兼容与迁移
 

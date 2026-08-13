@@ -22,6 +22,53 @@ use crate::extract::Reasoner;
 pub const DEFAULT_CLOUD_MODEL: &str = "mimo-v2.5";
 pub const CLOUD_MODEL_OPTIONS: &[&str] = &["mimo-v2.5", "mimo-v2.5-pro"];
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudModelOption {
+    pub id: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudModelCatalog {
+    pub default_model: String,
+    pub models: Vec<CloudModelOption>,
+    pub custom_models_enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudUsageLatest {
+    pub request_id: String,
+    pub requested_model: String,
+    pub effective_model: String,
+    pub status: String,
+    pub fallback_occurred: bool,
+    pub fallback_reason: Option<String>,
+    pub upstream_latency_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudUsage {
+    pub plan: String,
+    pub custom_models_enabled: bool,
+    pub monthly_request_limit: u64,
+    pub requests_used: u64,
+    pub requests_remaining: u64,
+    pub reset_at: String,
+    pub success_count: u64,
+    pub failure_count: u64,
+    pub fallback_count: u64,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+    pub latest_request: Option<CloudUsageLatest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudAccountState {
+    pub catalog: CloudModelCatalog,
+    pub usage: CloudUsage,
+}
+
 /// Access tokens live 15 minutes server-side; a 401 mid-conversation is
 /// routine, so every authorized call refreshes exactly once and retries.
 /// The generous timeout covers streaming replies from thinking-mode models
@@ -198,6 +245,16 @@ pub trait AccountHttp {
         access_token: Option<&str>,
         body: Value,
     ) -> std::result::Result<Value, AccountHttpError>;
+
+    fn get_json(
+        &self,
+        _url: &str,
+        _access_token: &str,
+    ) -> std::result::Result<Value, AccountHttpError> {
+        Err(AccountHttpError::Other(
+            "当前 HTTP 实现不支持读取账号状态".into(),
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,6 +305,20 @@ impl AccountHttp for HttpAccountClient {
         }
         let response = request.send_json(body).map_err(map_http_error)?;
         response
+            .into_json()
+            .map_err(|e| AccountHttpError::Other(format!("响应不是 JSON: {e}")))
+    }
+
+    fn get_json(
+        &self,
+        url: &str,
+        access_token: &str,
+    ) -> std::result::Result<Value, AccountHttpError> {
+        self.agent
+            .get(url)
+            .set("Authorization", &format!("Bearer {access_token}"))
+            .call()
+            .map_err(map_http_error)?
             .into_json()
             .map_err(|e| AccountHttpError::Other(format!("响应不是 JSON: {e}")))
     }
@@ -457,6 +528,54 @@ fn post_with_refresh<T: AccountHttp>(
     }
 }
 
+fn get_with_refresh<T: AccountHttp>(
+    client: &T,
+    session: &mut AccountSession,
+    path: &str,
+) -> Result<Value> {
+    let url = format!("{}{}", session.server_url, path);
+    match client.get_json(&url, &session.access_token) {
+        Ok(value) => Ok(value),
+        Err(AccountHttpError::Unauthorized) => {
+            let rotated = refresh_and_save_with_client(client, session)?;
+            *session = rotated;
+            client
+                .get_json(&url, &session.access_token)
+                .map_err(|e| CoreError::Llm(format!("刷新后读取账号状态失败: {e}")))
+        }
+        Err(error) => Err(CoreError::Llm(format!("读取账号状态失败: {error}"))),
+    }
+}
+
+pub fn cloud_account_state(session: &mut AccountSession) -> Result<CloudAccountState> {
+    let client = HttpAccountClient::new();
+    cloud_account_state_with_client(&client, session)
+}
+
+fn cloud_account_state_with_client<T: AccountHttp>(
+    client: &T,
+    session: &mut AccountSession,
+) -> Result<CloudAccountState> {
+    let catalog = serde_json::from_value::<CloudModelCatalog>(get_with_refresh(
+        client,
+        session,
+        "/v1/ai/models",
+    )?)
+    .map_err(|_| CoreError::Llm("服务器返回了无法识别的模型目录".into()))?;
+    if catalog.models.is_empty()
+        || !catalog
+            .models
+            .iter()
+            .any(|model| model.id == catalog.default_model && model.is_default)
+    {
+        return Err(CoreError::Llm("服务器模型目录缺少默认模型".into()));
+    }
+    let usage =
+        serde_json::from_value::<CloudUsage>(get_with_refresh(client, session, "/v1/ai/usage")?)
+            .map_err(|_| CoreError::Llm("服务器返回了无法识别的额度统计".into()))?;
+    Ok(CloudAccountState { catalog, usage })
+}
+
 /// A [`Reasoner`] backed by the account proxy instead of a direct vendor key.
 /// Interior mutability because token rotation happens mid-`&self` call.
 pub struct AccountReasoner {
@@ -587,6 +706,9 @@ impl Reasoner for AccountReasoner {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::sync::Mutex;
+
+    static ACCOUNT_CONFIG_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn session_roundtrip_and_harmony_shape_compat() {
@@ -681,6 +803,7 @@ mod tests {
 
     #[test]
     fn expired_access_token_refreshes_once_and_retries() {
+        let _env_guard = ACCOUNT_CONFIG_TEST_LOCK.lock().unwrap();
         // 会话文件落到临时目录，避免测试写进仓库工作区。
         let dir = std::env::temp_dir().join(format!("solum-account-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -713,6 +836,120 @@ mod tests {
         assert_eq!(persisted.access_token, "access-2");
         std::env::remove_var("SOLUM_ACCOUNT_CONFIG");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    struct StateFake {
+        calls: RefCell<Vec<String>>,
+        omit_default: bool,
+    }
+
+    impl AccountHttp for StateFake {
+        fn post_json(
+            &self,
+            url: &str,
+            _access_token: Option<&str>,
+            _body: Value,
+        ) -> std::result::Result<Value, AccountHttpError> {
+            self.calls.borrow_mut().push(url.to_string());
+            Ok(json!({
+                "access_token": "access-2",
+                "refresh_token": "refresh-2",
+                "user": {
+                    "id": "9d4df1be-9f7b-4a3a-b986-ec920d2df60e",
+                    "username": "u"
+                }
+            }))
+        }
+
+        fn get_json(
+            &self,
+            url: &str,
+            access_token: &str,
+        ) -> std::result::Result<Value, AccountHttpError> {
+            self.calls.borrow_mut().push(url.to_string());
+            if access_token == "access-1" {
+                return Err(AccountHttpError::Unauthorized);
+            }
+            if url.ends_with("/v1/ai/models") {
+                let models = if self.omit_default {
+                    json!([{ "id": "mimo-v2.5-pro", "is_default": false }])
+                } else {
+                    json!([
+                        { "id": "mimo-v2.5", "is_default": true },
+                        { "id": "mimo-v2.5-pro", "is_default": false }
+                    ])
+                };
+                return Ok(json!({
+                    "default_model": "mimo-v2.5",
+                    "models": models,
+                    "custom_models_enabled": true
+                }));
+            }
+            Ok(json!({
+                "plan": "standard",
+                "custom_models_enabled": true,
+                "monthly_request_limit": 1000,
+                "requests_used": 7,
+                "requests_remaining": 993,
+                "reset_at": "2026-09-01T00:00:00.000Z",
+                "success_count": 6,
+                "failure_count": 1,
+                "fallback_count": 1,
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150,
+                "latest_request": null
+            }))
+        }
+    }
+
+    fn state_test_session() -> AccountSession {
+        AccountSession {
+            server_url: "https://cloud.example.com".into(),
+            user_id: "9d4df1be-9f7b-4a3a-b986-ec920d2df60e".into(),
+            username: "u".into(),
+            access_token: "access-1".into(),
+            refresh_token: "refresh-1".into(),
+            model: DEFAULT_CLOUD_MODEL.into(),
+        }
+    }
+
+    #[test]
+    fn cloud_state_refreshes_once_then_reads_catalog_and_usage() {
+        let _env_guard = ACCOUNT_CONFIG_TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("solum-account-state-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SOLUM_ACCOUNT_CONFIG", dir.join("solum-account.json"));
+        let fake = StateFake {
+            calls: RefCell::new(Vec::new()),
+            omit_default: false,
+        };
+        let mut session = state_test_session();
+        let state = cloud_account_state_with_client(&fake, &mut session).unwrap();
+        assert_eq!(session.access_token, "access-2");
+        assert_eq!(state.catalog.models.len(), 2);
+        assert_eq!(state.usage.requests_remaining, 993);
+        let calls = fake.calls.borrow();
+        assert!(calls[0].ends_with("/v1/ai/models"));
+        assert!(calls[1].ends_with("/v1/auth/refresh"));
+        assert!(calls[2].ends_with("/v1/ai/models"));
+        assert!(calls[3].ends_with("/v1/ai/usage"));
+        std::env::remove_var("SOLUM_ACCOUNT_CONFIG");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cloud_state_rejects_a_catalog_without_its_default_model() {
+        let fake = StateFake {
+            calls: RefCell::new(Vec::new()),
+            omit_default: true,
+        };
+        let mut session = state_test_session();
+        session.access_token = "access-2".into();
+        assert!(cloud_account_state_with_client(&fake, &mut session)
+            .unwrap_err()
+            .to_string()
+            .contains("缺少默认模型"));
     }
 
     #[test]

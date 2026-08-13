@@ -172,6 +172,18 @@ function validateModel(value, fallback) {
   return model;
 }
 
+function parseModelCatalog(defaultModel, allowedModels) {
+  const fallback = validateModel(defaultModel, 'mimo-v2.5');
+  const models = [fallback];
+  for (const candidate of String(allowedModels || '').split(',')) {
+    const trimmed = candidate.trim();
+    if (!trimmed) continue;
+    const model = validateModel(trimmed, fallback);
+    if (!models.includes(model)) models.push(model);
+  }
+  return Object.freeze({ defaultModel: fallback, models: Object.freeze(models) });
+}
+
 function validateMessages(value) {
   if (!Array.isArray(value) || value.length === 0 || value.length > 16) {
     throw new HttpError(400, 'invalid_messages');
@@ -206,6 +218,9 @@ function buildConfig(overrides = {}) {
     mimoApiKey: process.env.MIMO_API_KEY || '',
     mimoBaseUrl: process.env.MIMO_BASE_URL || 'https://token-plan-cn.xiaomimimo.com/v1',
     defaultModel: process.env.SOLUM_DEFAULT_MODEL || 'mimo-v2.5',
+    allowedModels: process.env.SOLUM_ALLOWED_MODELS || 'mimo-v2.5,mimo-v2.5-pro',
+    standardPlan: process.env.SOLUM_STANDARD_PLAN || 'standard',
+    standardMonthlyRequestLimit: Number(process.env.SOLUM_STANDARD_MONTHLY_REQUEST_LIMIT || 1000),
     allowedOrigins: process.env.SOLUM_ALLOWED_ORIGINS || '',
     poolMax: Number(process.env.SOLUM_DB_POOL_MAX || 10),
     blobRetentionDays: Number(process.env.SOLUM_SYNC_RETENTION_DAYS || 30),
@@ -225,6 +240,14 @@ function buildConfig(overrides = {}) {
     throw new Error('retention days must be whole non-negative values');
   }
   validateModel(config.defaultModel, 'mimo-v2.5');
+  config.modelCatalog = parseModelCatalog(config.defaultModel, config.allowedModels);
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(config.standardPlan)) {
+    throw new Error('SOLUM_STANDARD_PLAN must be a short identifier');
+  }
+  if (!Number.isInteger(config.standardMonthlyRequestLimit) ||
+    config.standardMonthlyRequestLimit < 1 || config.standardMonthlyRequestLimit > 10000000) {
+    throw new Error('SOLUM_STANDARD_MONTHLY_REQUEST_LIMIT must be between 1 and 10000000');
+  }
   config.allowedOrigins = parseAllowedOrigins(config.allowedOrigins);
   return config;
 }
@@ -290,49 +313,238 @@ async function cleanExpiredData(pool, config) {
   await pool.query('delete from auth.refresh_tokens where expires_at<=now()');
 }
 
-async function proxyCompletion(req, res, config) {
+async function ensureEntitlement(client, tenantId, config) {
+  await client.query(
+    `insert into ai.entitlements(tenant_id,plan,monthly_request_limit)
+     values($1,$2,$3) on conflict(tenant_id) do nothing`,
+    [tenantId, config.standardPlan, config.standardMonthlyRequestLimit]
+  );
+  const selected = await client.query(
+    'select plan,monthly_request_limit,custom_models_enabled from ai.entitlements where tenant_id=$1',
+    [tenantId]
+  );
+  return selected.rows[0];
+}
+
+function usageProjection(entitlement, row = {}) {
+  const limit = Number(entitlement.monthly_request_limit);
+  const used = Number(row.request_count || 0);
+  const periodStart = row.period_start ? new Date(row.period_start) : new Date();
+  const resetAt = new Date(Date.UTC(periodStart.getUTCFullYear(), periodStart.getUTCMonth() + 1, 1));
+  return {
+    plan: entitlement.plan,
+    custom_models_enabled: entitlement.custom_models_enabled !== false,
+    monthly_request_limit: limit,
+    requests_used: used,
+    requests_remaining: Math.max(0, limit - used),
+    reset_at: resetAt.toISOString(),
+    success_count: Number(row.success_count || 0),
+    failure_count: Number(row.failure_count || 0),
+    fallback_count: Number(row.fallback_count || 0),
+    prompt_tokens: Number(row.prompt_tokens || 0),
+    completion_tokens: Number(row.completion_tokens || 0),
+    total_tokens: Number(row.total_tokens || 0),
+  };
+}
+
+async function readAiUsage(pool, tenantId, config) {
+  return withTenant(pool, tenantId, async (client) => {
+    const entitlement = await ensureEntitlement(client, tenantId, config);
+    const selected = await client.query(
+      `select period_start,request_count,success_count,failure_count,fallback_count,
+              prompt_tokens,completion_tokens,total_tokens
+       from ai.usage_monthly
+       where tenant_id=$1 and period_start=date_trunc('month',now())::date`, [tenantId]
+    );
+    const recent = await client.query(
+      `select request_id,requested_model,effective_model,status,fallback_occurred,fallback_reason,
+              upstream_latency_ms,created_at,completed_at
+       from ai.usage_events where tenant_id=$1 order by created_at desc limit 1`, [tenantId]
+    );
+    return { ...usageProjection(entitlement, selected.rows[0]), latest_request: recent.rows[0] || null };
+  });
+}
+
+async function reserveAiRequest(pool, tenantId, requestedModel, config) {
+  return withTenant(pool, tenantId, async (client) => {
+    const entitlement = await ensureEntitlement(client, tenantId, config);
+    const requestedAllowed = config.modelCatalog.models.includes(requestedModel);
+    const canUseRequested = requestedAllowed &&
+      (requestedModel === config.modelCatalog.defaultModel || entitlement.custom_models_enabled);
+    const effectiveModel = canUseRequested ? requestedModel : config.modelCatalog.defaultModel;
+    const fallbackReason = canUseRequested ? null :
+      (requestedAllowed ? 'custom_models_disabled' : 'model_not_allowed');
+    await client.query(
+      `insert into ai.usage_monthly(tenant_id,period_start)
+       values($1,date_trunc('month',now())::date) on conflict(tenant_id,period_start) do nothing`,
+      [tenantId]
+    );
+    const reserved = await client.query(
+      `update ai.usage_monthly usage set request_count=request_count+1,updated_at=now()
+       from ai.entitlements entitlement
+       where usage.tenant_id=$1 and usage.period_start=date_trunc('month',now())::date
+         and entitlement.tenant_id=usage.tenant_id
+         and usage.request_count<entitlement.monthly_request_limit
+       returning usage.period_start,usage.request_count,usage.success_count,usage.failure_count,
+                 usage.fallback_count,usage.prompt_tokens,usage.completion_tokens,usage.total_tokens`,
+      [tenantId]
+    );
+    if (reserved.rowCount !== 1) throw new HttpError(429, 'ai_quota_exhausted');
+    const requestId = crypto.randomUUID();
+    await client.query(
+      `insert into ai.usage_events(request_id,tenant_id,period_start,requested_model,effective_model,
+                                   fallback_occurred,fallback_reason)
+       values($1,$2,date_trunc('month',now())::date,$3,$4,$5,$6)`,
+      [requestId, tenantId, requestedModel, effectiveModel, fallbackReason !== null, fallbackReason]
+    );
+    return {
+      requestId, requestedModel, effectiveModel, fallbackReason,
+      quota: usageProjection(entitlement, reserved.rows[0]),
+    };
+  });
+}
+
+async function finalizeAiRequest(pool, tenantId, reservation, outcome) {
+  return withTenant(pool, tenantId, async (client) => {
+    const rawTokens = outcome.usage || {};
+    const tokenCount = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 2147483647 ?
+      value : 0;
+    const tokens = {
+      prompt_tokens: tokenCount(rawTokens.prompt_tokens),
+      completion_tokens: tokenCount(rawTokens.completion_tokens),
+      total_tokens: tokenCount(rawTokens.total_tokens),
+    };
+    const updated = await client.query(
+      `update ai.usage_events set status=$3,effective_model=$4,fallback_occurred=$5,
+              fallback_reason=$6,upstream_latency_ms=$7,prompt_tokens=$8,completion_tokens=$9,
+              total_tokens=$10,completed_at=now()
+       where tenant_id=$1 and request_id=$2 and status='pending' returning period_start`,
+      [tenantId, reservation.requestId, outcome.status, outcome.effectiveModel,
+        outcome.fallbackReason !== null, outcome.fallbackReason, outcome.latencyMs,
+        tokens.prompt_tokens, tokens.completion_tokens, tokens.total_tokens]
+    );
+    if (updated.rowCount !== 1) return;
+    await client.query(
+      `update ai.usage_monthly set
+         success_count=success_count+$3,
+         failure_count=failure_count+$4,
+         fallback_count=fallback_count+$5,
+         prompt_tokens=prompt_tokens+$6,
+         completion_tokens=completion_tokens+$7,
+         total_tokens=total_tokens+$8,updated_at=now()
+       where tenant_id=$1 and period_start=$2`,
+      [tenantId, updated.rows[0].period_start, outcome.status === 'succeeded' ? 1 : 0,
+        outcome.status === 'succeeded' ? 0 : 1, outcome.fallbackReason === null ? 0 : 1,
+        tokens.prompt_tokens || 0, tokens.completion_tokens || 0, tokens.total_tokens || 0]
+    );
+  });
+}
+
+function aiResponseHeaders(reservation, effectiveModel, fallbackReason) {
+  return {
+    'X-Solum-Request-Id': reservation.requestId,
+    'X-Solum-Requested-Model': reservation.requestedModel,
+    'X-Solum-Effective-Model': effectiveModel,
+    'X-Solum-Fallback': fallbackReason === null ? 'false' : 'true',
+    'X-Solum-Fallback-Reason': fallbackReason || 'none',
+    'X-Solum-Quota-Limit': String(reservation.quota.monthly_request_limit),
+    'X-Solum-Quota-Used': String(reservation.quota.requests_used),
+    'X-Solum-Quota-Remaining': String(reservation.quota.requests_remaining),
+    'X-Solum-Quota-Reset': reservation.quota.reset_at,
+  };
+}
+
+async function requestUpstream(config, body, model, wantStream) {
+  const startedAt = Date.now();
+  try {
+    const response = await fetch(`${config.mimoBaseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.mimoApiKey}` },
+      body: JSON.stringify({ ...body, model }),
+      signal: AbortSignal.timeout(wantStream ? 300000 : 60000),
+    });
+    return { response, latencyMs: Date.now() - startedAt };
+  } catch {
+    return { response: null, latencyMs: Date.now() - startedAt };
+  }
+}
+
+async function proxyCompletion(req, res, pool, tenantId, config) {
   if (!config.mimoApiKey) throw new HttpError(503, 'ai_not_configured');
   const body = await readJson(req);
   const wantStream = body.stream === true;
+  const requestedModel = validateModel(body.model, config.defaultModel);
   const upstreamBody = {
-    model: validateModel(body.model, config.defaultModel),
     messages: validateMessages(body.messages),
     stream: wantStream,
   };
   if (typeof body.temperature === 'number') upstreamBody.temperature = body.temperature;
   if (Number.isInteger(body.max_tokens) && body.max_tokens > 0) upstreamBody.max_tokens = body.max_tokens;
-  let upstream;
-  try {
-    upstream = await fetch(`${config.mimoBaseUrl.replace(/\/+$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.mimoApiKey}` },
-      body: JSON.stringify(upstreamBody),
-      signal: AbortSignal.timeout(wantStream ? 300000 : 60000),
+  const reservation = await reserveAiRequest(pool, tenantId, requestedModel, config);
+  let effectiveModel = reservation.effectiveModel;
+  let fallbackReason = reservation.fallbackReason;
+  let attempt = await requestUpstream(config, upstreamBody, effectiveModel, wantStream);
+  let totalLatency = attempt.latencyMs;
+  if ((!attempt.response || !attempt.response.ok) && effectiveModel !== config.modelCatalog.defaultModel) {
+    if (attempt.response && attempt.response.body) await attempt.response.body.cancel().catch(() => {});
+    fallbackReason = attempt.response ? `upstream_http_${attempt.response.status}` : 'upstream_unavailable';
+    effectiveModel = config.modelCatalog.defaultModel;
+    attempt = await requestUpstream(config, upstreamBody, effectiveModel, wantStream);
+    totalLatency += attempt.latencyMs;
+  }
+  const upstream = attempt.response;
+  if (!upstream || !upstream.ok) {
+    if (upstream && upstream.body) await upstream.body.cancel().catch(() => {});
+    await finalizeAiRequest(pool, tenantId, reservation, {
+      status: 'failed', effectiveModel, fallbackReason, latencyMs: totalLatency,
     });
-  } catch {
     throw new HttpError(502, 'upstream_unavailable');
   }
-  if (!upstream.ok) throw new HttpError(502, 'upstream_unavailable');
+  const responseHeaders = aiResponseHeaders(reservation, effectiveModel, fallbackReason);
   if (wantStream) {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
+      ...responseHeaders,
     });
     try {
       for await (const chunk of upstream.body) res.write(chunk);
     } catch {
+      await finalizeAiRequest(pool, tenantId, reservation, {
+        status: 'interrupted', effectiveModel, fallbackReason, latencyMs: totalLatency,
+      });
       res.destroy();
       return;
     }
+    await finalizeAiRequest(pool, tenantId, reservation, {
+      status: 'succeeded', effectiveModel, fallbackReason, latencyMs: totalLatency,
+    });
     res.end();
     return;
   }
-  const response = await upstream.text();
+  let response;
+  try {
+    response = await upstream.text();
+  } catch {
+    await finalizeAiRequest(pool, tenantId, reservation, {
+      status: 'interrupted', effectiveModel, fallbackReason, latencyMs: totalLatency,
+    });
+    throw new HttpError(502, 'upstream_interrupted');
+  }
+  let usage;
+  try {
+    const parsed = JSON.parse(response);
+    if (parsed && parsed.usage && typeof parsed.usage === 'object') usage = parsed.usage;
+  } catch { /* Preserve an upstream-compatible response even when usage is absent. */ }
+  await finalizeAiRequest(pool, tenantId, reservation, {
+    status: 'succeeded', effectiveModel, fallbackReason, latencyMs: totalLatency, usage,
+  });
   res.writeHead(200, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
+    ...responseHeaders,
   });
   res.end(response);
 }
@@ -384,6 +596,10 @@ async function createPostgresServer(overrides = {}) {
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Device');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
+      res.setHeader('Access-Control-Expose-Headers',
+        'X-Solum-Request-Id, X-Solum-Requested-Model, X-Solum-Effective-Model, ' +
+        'X-Solum-Fallback, X-Solum-Fallback-Reason, X-Solum-Quota-Limit, ' +
+        'X-Solum-Quota-Used, X-Solum-Quota-Remaining, X-Solum-Quota-Reset');
     }
     if (req.method === 'OPTIONS') {
       if (typeof origin !== 'string' || !config.allowedOrigins.has(origin)) {
@@ -403,7 +619,7 @@ async function createPostgresServer(overrides = {}) {
         name: 'Solum Center',
         api_base: '/',
         registration: config.registrationMode,
-        features: ['account', 'sync', 'alerts', 'devices'],
+        features: ['account', 'ai', 'ai_quota', 'sync', 'alerts', 'devices'],
       });
     }
 
@@ -511,9 +727,26 @@ async function createPostgresServer(overrides = {}) {
       return json(res, 200, { status: 'ok' });
     }
 
+    if (req.method === 'GET' && url.pathname === '/v1/ai/models') {
+      const tenantId = authenticate(req);
+      const usage = await readAiUsage(pool, tenantId, config);
+      return json(res, 200, {
+        default_model: config.modelCatalog.defaultModel,
+        models: config.modelCatalog.models.map((id) => ({
+          id, is_default: id === config.modelCatalog.defaultModel,
+        })),
+        custom_models_enabled: usage.custom_models_enabled,
+      });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/v1/ai/usage') {
+      const tenantId = authenticate(req);
+      return json(res, 200, await readAiUsage(pool, tenantId, config));
+    }
+
     if (req.method === 'POST' && url.pathname === '/v1/ai/chat/completions') {
-      authenticate(req);
-      return proxyCompletion(req, res, config);
+      const tenantId = authenticate(req);
+      return proxyCompletion(req, res, pool, tenantId, config);
     }
 
     if (req.method === 'POST' && url.pathname === '/v1/push') {
@@ -828,4 +1061,6 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createPostgresServer, verifyAccessToken, withTenant };
+module.exports = {
+  createPostgresServer, verifyAccessToken, withTenant, parseModelCatalog, usageProjection,
+};

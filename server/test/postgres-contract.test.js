@@ -7,7 +7,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
-const { verifyAccessToken, withTenant } = require('../src/postgres-server');
+const {
+  verifyAccessToken, withTenant, parseModelCatalog, usageProjection,
+} = require('../src/postgres-server');
 const { loadLegacy } = require('../scripts/import-legacy-sqlite');
 
 const root = path.join(__dirname, '..');
@@ -15,7 +17,7 @@ const root = path.join(__dirname, '..');
 test('PostgreSQL schema forces RLS on every tenant-owned table', () => {
   const sql = fs.readFileSync(path.join(root, 'db', 'init', '01-schema.sql'), 'utf8');
   for (const table of ['sync.devices', 'sync.blobs', 'sync.preferences', 'sync.alerts',
-    'vault.key_envelopes']) {
+    'vault.key_envelopes', 'ai.entitlements', 'ai.usage_monthly', 'ai.usage_events']) {
     assert.match(sql, new RegExp(`alter table ${table.replace('.', '\\.')}` +
       ' enable row level security;', 'i'));
     assert.match(sql, new RegExp(`alter table ${table.replace('.', '\\.')}` +
@@ -23,7 +25,38 @@ test('PostgreSQL schema forces RLS on every tenant-owned table', () => {
   }
   assert.match(sql, /current_setting\('app\.current_tenant_id', true\)/);
   assert.match(sql, /create index if not exists blobs_tenant_seq_idx\s+on sync\.blobs \(tenant_id, seq\)/i);
+  assert.match(sql, /create index if not exists usage_events_tenant_created_idx\s+on ai\.usage_events \(tenant_id, created_at desc\)/i);
   assert.doesNotMatch(sql, /grant all/i);
+});
+
+test('AI model catalog always retains one validated default and removes duplicates', () => {
+  const catalog = parseModelCatalog('mimo-v2.5', 'mimo-v2.5-pro,mimo-v2.5, custom/model');
+  assert.equal(catalog.defaultModel, 'mimo-v2.5');
+  assert.deepEqual(catalog.models, ['mimo-v2.5', 'mimo-v2.5-pro', 'custom/model']);
+  assert.throws(() => parseModelCatalog('bad model', ''), /invalid_model/);
+});
+
+test('AI usage projection is server-authoritative and never reports negative remaining quota', () => {
+  const usage = usageProjection(
+    { plan: 'standard', monthly_request_limit: 10, custom_models_enabled: false },
+    { period_start: '2026-08-01', request_count: 12, success_count: 8, failure_count: 4 }
+  );
+  assert.equal(usage.plan, 'standard');
+  assert.equal(usage.custom_models_enabled, false);
+  assert.equal(usage.requests_used, 12);
+  assert.equal(usage.requests_remaining, 0);
+  assert.equal(usage.reset_at, '2026-09-01T00:00:00.000Z');
+});
+
+test('AI quota reservation is a conditional atomic update before the usage event insert', () => {
+  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  assert.match(source, /usage\.request_count<entitlement\.monthly_request_limit/);
+  assert.match(source, /if \(reserved\.rowCount !== 1\) throw new HttpError\(429, 'ai_quota_exhausted'\)/);
+  assert.ok(source.indexOf('request_count=request_count+1') <
+    source.indexOf('insert into ai.usage_events'));
+  assert.match(source, /effectiveModel !== config\.modelCatalog\.defaultModel/);
+  assert.match(source, /X-Solum-Effective-Model/);
+  assert.match(source, /response = await upstream\.text\(\);[\s\S]+status: 'interrupted'/);
 });
 
 test('tenant transaction sets a local database context and always clears it by commit or rollback', async () => {
