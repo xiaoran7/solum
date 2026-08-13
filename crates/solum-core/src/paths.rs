@@ -37,6 +37,48 @@ pub fn app_data_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
+/// Private root for one authenticated account. `user_id` must be the
+/// immutable UUID issued by solum-cloud, never a username supplied by a
+/// client. Keeping validation here prevents path traversal even if a corrupt
+/// session file reaches a caller that forgot to normalize it first.
+pub fn account_profile_dir(base: &std::path::Path, user_id: &str) -> Option<PathBuf> {
+    if !crate::account::is_valid_user_id(user_id) {
+        return None;
+    }
+    let dir = base.join("profiles").join(user_id);
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Resolve a file for an authenticated account before publishing that account
+/// as the active session. Login uses this to prepare/recover the new profile
+/// while every background worker is still bound to the old identity.
+pub fn account_profile_file(user_id: &str, name: &str) -> Option<PathBuf> {
+    if name.is_empty() || std::path::Path::new(name).components().count() != 1 {
+        return None;
+    }
+    let account_file = crate::account::AccountSession::path();
+    let base = account_file.parent()?;
+    account_profile_dir(base, user_id).map(|dir| dir.join(name))
+}
+
+/// The authenticated account's private root, if the device-global session has
+/// a stable UUID. Legacy username-only sessions deliberately remain guest.
+pub fn active_account_profile_dir() -> Option<PathBuf> {
+    let base = app_data_dir()?;
+    let session = crate::account::AccountSession::load()?;
+    account_profile_dir(&base, session.stable_user_id()?)
+}
+
+/// Resolve a business-data/config file inside the active account profile.
+/// Guest keeps the historical app-data path so existing local installs are not
+/// silently reassigned to whichever account logs in first.
+pub fn resolve_profile_with_adoption(name: &str) -> PathBuf {
+    active_account_profile_dir()
+        .map(|dir| dir.join(name))
+        .unwrap_or_else(|| resolve_with_adoption(name))
+}
+
 fn platform_base() -> Option<PathBuf> {
     let var = |k: &str| {
         std::env::var_os(k)
@@ -117,6 +159,30 @@ mod tests {
         assert!(
             !p.exists(),
             "resolution must not create the file, only the directory"
+        );
+    }
+
+    #[test]
+    fn account_profiles_accept_only_server_uuid_shape() {
+        let base =
+            std::env::temp_dir().join(format!("solum-profile-path-test-{}", std::process::id()));
+        let id = "9d4df1be-9f7b-4a3a-b986-ec920d2df60e";
+        let dir = account_profile_dir(&base, id).expect("valid profile path");
+        assert_eq!(dir, base.join("profiles").join(id));
+        assert!(dir.is_dir());
+        let other = account_profile_dir(&base, "6ea64c69-0531-45cb-b585-500c5f479fd8")
+            .expect("second profile path");
+        assert_ne!(dir.join("solum.sqlite"), other.join("solum.sqlite"));
+        assert!(account_profile_dir(&base, "../alice").is_none());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn profile_resolver_keeps_guest_compatible_without_a_session() {
+        let resolved = resolve_profile_with_adoption("solum-profile-resolver-test.json");
+        assert_eq!(
+            resolved.file_name().and_then(|name| name.to_str()),
+            Some("solum-profile-resolver-test.json")
         );
     }
 }

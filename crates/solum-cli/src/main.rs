@@ -1,4 +1,4 @@
-//! pa — a headless CLI that drives the solum-core closed loop.
+//! solum — a headless CLI that drives the solum-core closed loop.
 //!
 //! This is the Phase 1 "demo" surface from ARCHITECTURE.md §6: it lets you feed
 //! natural language in, see events extracted and reminders scheduled, inspect
@@ -50,7 +50,7 @@ enum Cmd {
     Dismiss { id: i64 },
     /// Reschedule an event by id: `reschedule 3 明天下午4点`（自然语言时间，
     /// 相对 --now 解析；提醒按规则表重排）。自然语言路径走
-    /// `pa add "把明天的会改到下午4点"`。
+    /// `solum add "把明天的会改到下午4点"`。
     Reschedule { id: i64, time: Vec<String> },
     /// Snooze a reminder: ring again N minutes from `--now`（待触发的顺延，
     /// 已触发的重新拉响；已取消的不会被复活）。
@@ -253,7 +253,7 @@ fn main() -> Result<()> {
     }
     let db = match &cli.db {
         Some(p) => p.clone(),
-        None => solum_core::paths::resolve_with_adoption("solum.sqlite")
+        None => solum_core::paths::resolve_profile_with_adoption("solum.sqlite")
             .to_string_lossy()
             .into_owned(),
     };

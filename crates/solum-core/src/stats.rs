@@ -1,4 +1,4 @@
-//! Offline data review (ARCHITECTURE.md §6 Phase 6 D2, `pa stats`).
+//! Offline data review (ARCHITECTURE.md §6 Phase 6 D2, `solum stats`).
 //!
 //! Pure aggregation over already-fetched rows — no cloud, no writes. Two jobs:
 //! 1. Show the real distributions so the user can固化 the importance rule

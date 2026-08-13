@@ -55,7 +55,7 @@ impl SnippetLayer {
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub layer: SnippetLayer,
-    /// Row id in its own table — provenance for `pa recall` display (F12).
+    /// Row id in its own table — provenance for `solum recall` display (F12).
     pub id: i64,
     pub content: String,
     pub created_at: NaiveDateTime,

@@ -1,12 +1,13 @@
 //! Solum 独立账号：鉴权自建 solum-cloud AI 代理（`server/`，与 Solum Harmony 共用同一契约）。
 //!
-//! 账号只做一件事——替「直连厂商 API Key」提供另一条云端通路：登录后请求发往
-//! `{server}/v1/ai/chat/completions`，第三方 API Key 只存在于服务端环境变量。
-//! 登录**不**上传本机数据库，与多设备同步（sync.rs）完全无关。
+//! 登录后 AI 请求发往 `{server}/v1/ai/chat/completions`，第三方 API Key 只存在于
+//! 服务端环境变量；登录动作本身不上传本机数据库。同一短期 access token 也供同步
+//! relay 验证租户身份，但同步正文仍由独立的设备端密钥加密。
 //!
-//! 会话落盘 `solum-account.json`（gitignore）：`server_url` / `username` /
-//! `access_token` / `refresh_token`，与鸿蒙版 `solum-account.json` 同形；本仓
-//! 额外多存一个 `model` 字段（鸿蒙版模型名另存），读旧形状文件时按默认模型补齐。
+//! 会话落盘 `solum-account.json`（gitignore）：`server_url` / `user_id` /
+//! `username` / `access_token` / `refresh_token`。`user_id` 是服务端生成且不可变的
+//! 身份主键；用户名只用于登录和展示，绝不能再充当本地目录或中继租户主键。
+//! 旧会话没有 `user_id` 时仍可用于 AI 刷新，但不会被当作已隔离的数据身份。
 //! 密码只用于登录请求本身，绝不落盘。
 
 use std::path::PathBuf;
@@ -38,6 +39,10 @@ fn default_cloud_model() -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountSession {
     pub server_url: String,
+    /// Immutable server-side user id (UUID). Empty only for a legacy session
+    /// created before per-account local storage existed.
+    #[serde(default)]
+    pub user_id: String,
     pub username: String,
     pub access_token: String,
     pub refresh_token: String,
@@ -56,6 +61,12 @@ impl AccountSession {
 
     fn normalize(&mut self) -> Result<()> {
         self.server_url = normalize_server_url(&self.server_url)?;
+        self.user_id = self.user_id.trim().to_ascii_lowercase();
+        if !self.user_id.is_empty() && !is_valid_user_id(&self.user_id) {
+            return Err(CoreError::Invalid(
+                "solum-account.json 的 user_id 不是有效 UUID".into(),
+            ));
+        }
         self.username = self.username.trim().to_string();
         self.access_token = self.access_token.trim().to_string();
         self.refresh_token = self.refresh_token.trim().to_string();
@@ -100,6 +111,22 @@ impl AccountSession {
     pub fn masked_summary(&self) -> String {
         format!("{} @ {} · {}", self.username, self.server_url, self.model)
     }
+
+    /// Stable identity used for local profiles and remote tenant selection.
+    /// Legacy sessions deliberately return `None`: falling back to username
+    /// here would recreate the account-rename/collision bug this field fixes.
+    pub fn stable_user_id(&self) -> Option<&str> {
+        (!self.user_id.is_empty()).then_some(self.user_id.as_str())
+    }
+}
+
+pub fn is_valid_user_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(i, byte)| match i {
+            8 | 13 | 18 | 23 => *byte == b'-',
+            _ => byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase(),
+        })
 }
 
 /// Same policy as [`crate::net::validate_endpoint`]: HTTPS everywhere, plain
@@ -143,8 +170,14 @@ fn parse_auth_response(
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
         .unwrap_or(fallback_username);
+    let user_id = value
+        .get("user")
+        .and_then(|u| u.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let mut session = AccountSession {
         server_url: server_url.to_string(),
+        user_id: user_id.to_string(),
         username: username.to_string(),
         access_token: field("access_token").to_string(),
         refresh_token: field("refresh_token").to_string(),
@@ -223,6 +256,13 @@ impl AccountHttp for HttpAccountClient {
 fn map_http_error(error: ureq::Error) -> AccountHttpError {
     match error {
         ureq::Error::Status(401, _) => AccountHttpError::Unauthorized,
+        ureq::Error::Status(400, _) => {
+            AccountHttpError::Other("请求内容不符合服务器要求".to_string())
+        }
+        ureq::Error::Status(403, _) => {
+            AccountHttpError::Other("服务器未开放注册或当前操作无权限".to_string())
+        }
+        ureq::Error::Status(409, _) => AccountHttpError::Other("该账号名已经存在".to_string()),
         ureq::Error::Status(429, _) => {
             AccountHttpError::Other("尝试太频繁，请稍后再试".to_string())
         }
@@ -233,8 +273,12 @@ fn map_http_error(error: ureq::Error) -> AccountHttpError {
     }
 }
 
-/// Log in and persist the session. The password lives only in this request.
-pub fn login(
+/// Authenticate without persisting the session. This lets the app acquire its
+/// sync/profile switch barrier before making the new identity visible to any
+/// background worker.
+fn authenticate_via(
+    route: &str,
+    action: &str,
     server_url: &str,
     username: &str,
     password: &str,
@@ -249,15 +293,52 @@ pub fn login(
     let client = HttpAccountClient::new();
     let response = client
         .post_json(
-            &format!("{server}/v1/auth/login"),
+            &format!("{server}/v1/auth/{route}"),
             None,
             json!({ "username": user, "password": password }),
         )
         .map_err(|e| match e {
             AccountHttpError::Unauthorized => CoreError::Llm("账号或密码不正确".into()),
-            other => CoreError::Llm(format!("登录失败: {other}")),
+            other => CoreError::Llm(format!("{action}失败: {other}")),
         })?;
     let session = parse_auth_response(&response, &server, user, &model)?;
+    if session.stable_user_id().is_none() {
+        return Err(CoreError::Llm(
+            "账号服务器版本过旧：登录结果缺少不可变 user_id，请先升级 solum-cloud".into(),
+        ));
+    }
+    Ok(session)
+}
+
+pub fn authenticate(
+    server_url: &str,
+    username: &str,
+    password: &str,
+    model: &str,
+) -> Result<AccountSession> {
+    authenticate_via("login", "登录", server_url, username, password, model)
+}
+
+/// Create one account in the central Solum service and return its initial
+/// session without publishing it locally. Whether registration is open remains
+/// a server-side deployment policy.
+pub fn register(
+    server_url: &str,
+    username: &str,
+    password: &str,
+    model: &str,
+) -> Result<AccountSession> {
+    authenticate_via("register", "注册", server_url, username, password, model)
+}
+
+/// Log in and persist the session. The password lives only in this request.
+pub fn login(
+    server_url: &str,
+    username: &str,
+    password: &str,
+    model: &str,
+) -> Result<AccountSession> {
+    let session = authenticate(server_url, username, password, model)?;
     session.save()?;
     Ok(session)
 }
@@ -290,12 +371,28 @@ fn refresh_with_client<T: AccountHttp>(
             AccountHttpError::Unauthorized => CoreError::Llm("登录已过期，请重新登录".into()),
             other => CoreError::Llm(format!("刷新登录状态失败: {other}")),
         })?;
-    parse_auth_response(
+    let mut rotated = parse_auth_response(
         &response,
         &session.server_url,
         &session.username,
         &session.model,
-    )
+    )?;
+    match session.stable_user_id() {
+        // A legacy process is still running the guest database. Do not make a
+        // newly returned UUID visible until an explicit login can cross the
+        // app's sync barrier and restart into that account profile.
+        None => rotated.user_id.clear(),
+        Some(expected) if rotated.stable_user_id().is_none() => {
+            rotated.user_id = expected.to_string();
+        }
+        Some(expected) if rotated.stable_user_id() != Some(expected) => {
+            return Err(CoreError::Llm(
+                "账号服务器刷新后返回了不同的 user_id，已拒绝切换身份".into(),
+            ));
+        }
+        Some(_) => {}
+    }
+    Ok(rotated)
 }
 
 /// Rotate an account session through the configured identity server.
@@ -503,6 +600,7 @@ mod tests {
         let session = AccountSession::from_json(harmony).unwrap();
         assert_eq!(session.model, DEFAULT_CLOUD_MODEL);
         assert_eq!(session.username, "tangren");
+        assert_eq!(session.stable_user_id(), None);
         // 本仓写出的形状（含 model）自往返。
         let json = serde_json::to_string(&session).unwrap();
         let back = AccountSession::from_json(&json).unwrap();
@@ -528,6 +626,13 @@ mod tests {
         );
         assert!(normalize_cloud_model("bad model").is_err());
         assert!(normalize_cloud_model(&"x".repeat(101)).is_err());
+    }
+
+    #[test]
+    fn stable_user_id_requires_a_lowercase_uuid() {
+        assert!(is_valid_user_id("9d4df1be-9f7b-4a3a-b986-ec920d2df60e"));
+        assert!(!is_valid_user_id("alice"));
+        assert!(!is_valid_user_id("9D4DF1BE-9F7B-4A3A-B986-EC920D2DF60E"));
     }
 
     #[test]
@@ -557,9 +662,12 @@ mod tests {
             self.calls.borrow_mut().push(url.to_string());
             if url.ends_with("/v1/auth/refresh") {
                 return Ok(json!({
-                    "access_token": "access-2",
-                    "refresh_token": "refresh-2",
-                    "user": { "username": "u" },
+                        "access_token": "access-2",
+                        "refresh_token": "refresh-2",
+                        "user": {
+                            "id": "9d4df1be-9f7b-4a3a-b986-ec920d2df60e",
+                            "username": "u"
+                        },
                 }));
             }
             match access_token {
@@ -582,6 +690,7 @@ mod tests {
         );
         let mut session = AccountSession {
             server_url: "https://cloud.example.com".into(),
+            user_id: "9d4df1be-9f7b-4a3a-b986-ec920d2df60e".into(),
             username: "u".into(),
             access_token: "access-1".into(),
             refresh_token: "refresh-1".into(),
@@ -607,6 +716,24 @@ mod tests {
     }
 
     #[test]
+    fn legacy_refresh_does_not_promote_the_running_guest_profile() {
+        let client = RotatingFake {
+            calls: RefCell::new(Vec::new()),
+        };
+        let legacy = AccountSession {
+            server_url: "https://cloud.example.com".into(),
+            user_id: String::new(),
+            username: "u".into(),
+            access_token: "access-1".into(),
+            refresh_token: "refresh-1".into(),
+            model: DEFAULT_CLOUD_MODEL.into(),
+        };
+        let rotated = refresh_with_client(&client, &legacy).unwrap();
+        assert_eq!(rotated.stable_user_id(), None);
+        assert_eq!(rotated.access_token, "access-2");
+    }
+
+    #[test]
     fn refresh_failure_maps_to_relogin_message() {
         struct AlwaysUnauthorized;
         impl AccountHttp for AlwaysUnauthorized {
@@ -621,7 +748,8 @@ mod tests {
         }
         let mut session = AccountSession {
             server_url: "https://cloud.example.com".into(),
-            username: "u".into(),
+            user_id: "9d4df1be-9f7b-4a3a-b986-ec920d2df60e".into(),
+            username: "refresh-failure-test".into(),
             access_token: "a".into(),
             refresh_token: "r".into(),
             model: DEFAULT_CLOUD_MODEL.into(),

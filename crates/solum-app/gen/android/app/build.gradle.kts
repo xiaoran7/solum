@@ -6,6 +6,8 @@ plugins {
     id("rust")
 }
 
+layout.buildDirectory.set(file(providers.gradleProperty("solumBuildDir").orElse("build").get()))
+
 val tauriProperties = Properties().apply {
     val propFile = file("tauri.properties")
     if (propFile.exists()) {

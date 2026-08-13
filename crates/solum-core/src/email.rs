@@ -237,7 +237,7 @@ impl EmailConfig {
         if let Ok(p) = std::env::var("SOLUM_EMAIL_CONFIG") {
             return p.into();
         }
-        crate::paths::resolve_with_adoption("solum-email.json")
+        crate::paths::resolve_profile_with_adoption("solum-email.json")
     }
 
     pub fn load() -> Option<Self> {

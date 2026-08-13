@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust quality gates
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select stable Rust with quality components
+        shell: pwsh
+        run: |
+          rustup default stable
+          rustup component add rustfmt clippy
+      - name: Formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
+
+  web-and-cloud:
+    name: Frontend and cloud service
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Frontend static checks
+        run: node scripts/check-frontend.mjs
+      - name: Solum Cloud tests
+        working-directory: server
+        run: npm test

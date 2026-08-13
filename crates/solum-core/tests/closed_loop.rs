@@ -137,13 +137,13 @@ fn config_survives_reopen() {
     let db = TempDb::new("config");
     {
         let mut o = Orchestrator::open(db.path()).unwrap();
-        assert!(o.notif_cloud_enabled().unwrap());
+        assert!(!o.notif_cloud_enabled().unwrap());
         o.set_proactivity(
             ProactivityDimension::LifeSuggestions,
             ProactivityLevel::Butler,
         )
         .unwrap();
-        o.set_notif_cloud_enabled(false).unwrap();
+        o.set_notif_cloud_enabled(true).unwrap();
     }
     {
         let o = Orchestrator::open(db.path()).unwrap();
@@ -151,6 +151,6 @@ fn config_survives_reopen() {
             o.proactivity().level(ProactivityDimension::LifeSuggestions),
             ProactivityLevel::Butler
         );
-        assert!(!o.notif_cloud_enabled().unwrap());
+        assert!(o.notif_cloud_enabled().unwrap());
     }
 }

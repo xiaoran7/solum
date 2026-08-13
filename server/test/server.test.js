@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
+const { DatabaseSync } = require('node:sqlite');
 const { createPaServer } = require('../src/server');
 
 async function listen(server) {
@@ -65,6 +66,12 @@ test('login, refresh rotation and fixed-upstream model proxy', async (t) => {
   const session = await login.json();
   assert.ok(session.access_token);
   assert.ok(session.refresh_token);
+  assert.match(session.user.id, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
+  assert.notEqual(session.user.id, session.user.username);
+  const tokenPayload = JSON.parse(Buffer.from(
+    session.access_token.split('.')[0], 'base64url').toString('utf8'));
+  assert.equal(tokenPayload.sub, session.user.id);
+  assert.equal(tokenPayload.username, 'alice');
 
   const completion = await fetch(`${base}/v1/ai/chat/completions`, {
     method: 'POST',
@@ -92,6 +99,7 @@ test('login, refresh rotation and fixed-upstream model proxy', async (t) => {
   assert.equal(refresh.status, 200);
   const rotated = await refresh.json();
   assert.notEqual(rotated.refresh_token, session.refresh_token);
+  assert.equal(rotated.user.id, session.user.id);
 
   const reused = await fetch(`${base}/v1/auth/refresh`, {
     method: 'POST',
@@ -99,6 +107,78 @@ test('login, refresh rotation and fixed-upstream model proxy', async (t) => {
     body: JSON.stringify({ refresh_token: session.refresh_token }),
   });
   assert.equal(reused.status, 401);
+});
+
+test('legacy username-keyed accounts migrate to immutable ids without losing refresh sessions', async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'solum-cloud-legacy-id-'));
+  const dbPath = path.join(temp, 'legacy.db');
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    PRAGMA foreign_keys=ON;
+    CREATE TABLE users (
+      username TEXT PRIMARY KEY,
+      password_hash TEXT NOT NULL,
+      password_salt TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE refresh_tokens (
+      token_hash TEXT PRIMARY KEY,
+      username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX idx_refresh_expiry ON refresh_tokens(expires_at);
+  `);
+  db.prepare('INSERT INTO users VALUES (?, ?, ?, ?)').run('legacy', 'hash', 'salt', 1);
+  db.prepare('INSERT INTO refresh_tokens VALUES (?, ?, ?, ?)')
+    .run('old-token-hash', 'legacy', 4102444800, 1);
+  db.close();
+
+  const app = createPaServer({
+    dbPath, authSecret: 'a'.repeat(64), adminUsername: 'legacy', adminPassword: '',
+  });
+  t.after(() => {
+    app.close();
+    fs.rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  const migrated = new DatabaseSync(dbPath);
+  const user = migrated.prepare('SELECT id, username FROM users').get();
+  const refresh = migrated.prepare('SELECT user_id FROM refresh_tokens').get();
+  assert.match(user.id, /^[0-9a-f-]{36}$/);
+  assert.equal(refresh.user_id, user.id);
+  assert.equal(user.username, 'legacy');
+  migrated.close();
+});
+
+test('an interrupted id-column migration is repaired on the next startup', async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'solum-cloud-partial-id-'));
+  const dbPath = path.join(temp, 'partial.db');
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    CREATE TABLE users (
+      username TEXT PRIMARY KEY, password_hash TEXT NOT NULL,
+      password_salt TEXT NOT NULL, created_at INTEGER NOT NULL, id TEXT
+    );
+    CREATE TABLE refresh_tokens (
+      token_hash TEXT PRIMARY KEY, username TEXT NOT NULL,
+      expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL
+    );
+  `);
+  db.prepare('INSERT INTO users(username, password_hash, password_salt, created_at) VALUES (?, ?, ?, ?)')
+    .run('partial', 'hash', 'salt', 1);
+  db.close();
+
+  const app = createPaServer({
+    dbPath, authSecret: 'a'.repeat(64), adminUsername: 'partial', adminPassword: '',
+  });
+  t.after(() => {
+    app.close();
+    fs.rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  const repaired = new DatabaseSync(dbPath);
+  assert.match(repaired.prepare('SELECT id FROM users').get().id, /^[0-9a-f-]{36}$/);
+  assert.ok(repaired.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_users_id'").get());
+  repaired.close();
 });
 
 test('CORS allows only configured dashboard origins', async (t) => {

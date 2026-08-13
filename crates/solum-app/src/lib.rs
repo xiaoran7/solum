@@ -210,6 +210,9 @@ fn sync_notification_pipeline(
 #[derive(Serialize)]
 struct AppInfo {
     db_path: String,
+    /// `guest` or the immutable account UUID. The WebView uses the same value
+    /// to partition chat/UI/IndexedDB state that never enters SQLite.
+    local_profile_id: String,
     system_now: String,
     /// e.g. "https://… · mimo-v2.5 · key:…zju9"; `None` = offline mode.
     llm: Option<String>,
@@ -219,6 +222,7 @@ struct AppInfo {
 fn app_info(state: State<AppState>) -> CmdResult<AppInfo> {
     Ok(AppInfo {
         db_path: state.db_path.clone(),
+        local_profile_id: active_local_profile_id(),
         system_now: Local::now()
             .naive_local()
             .format("%Y-%m-%dT%H:%M")
@@ -230,13 +234,13 @@ fn app_info(state: State<AppState>) -> CmdResult<AppInfo> {
 // ---- cloud LLM settings (§3.6; provider survey in docs/LLM-PROVIDERS.md) ----
 
 /// The JSON file the settings UI reads/writes. Matches `LlmConfig::load`'s
-/// fallback: `SOLUM_LLM_CONFIG` if set (mobile setup points it at app-data),
-/// else `./solum-llm.json` (desktop cwd).
+/// fallback: explicit `SOLUM_LLM_CONFIG` first, then the active account profile
+/// (or the historical app-data path for guest).
 fn llm_config_file() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("SOLUM_LLM_CONFIG") {
         return p.into();
     }
-    solum_core::paths::resolve_with_adoption("solum-llm.json")
+    solum_core::paths::resolve_profile_with_adoption("solum-llm.json")
 }
 
 /// Soulous uses the same local-only config convention as the LLM. On mobile
@@ -452,35 +456,82 @@ fn account_status_get() -> CmdResult<AccountStatus> {
     }
 }
 
-/// Log in against a self-hosted solum-cloud (`server/`) and hot-swap the
-/// running reasoner to the account proxy. The password exists only inside
-/// this call. Async so the network round-trip never freezes the UI thread.
+async fn account_auth(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    server_url: String,
+    username: String,
+    password: String,
+    model: String,
+    register: bool,
+) -> CmdResult<String> {
+    let session = tauri::async_runtime::spawn_blocking(move || {
+        let session = if register {
+            solum_core::account::register(&server_url, &username, &password, &model)
+        } else {
+            solum_core::account::authenticate(&server_url, &username, &password, &model)
+        }
+        .map_err(|e| e.to_string())?;
+        let user_id = session
+            .stable_user_id()
+            .ok_or_else(|| "账号服务器未返回不可变 user_id".to_string())?;
+        let sync_path = solum_core::paths::account_profile_file(user_id, "solum-sync.json")
+            .ok_or_else(|| "无法创建账号专属同步配置目录".to_string())?;
+        // Prepare the target account before it becomes globally active. The
+        // first device creates a random master key; later devices recover it
+        // from the opaque server envelope with this one-shot login password.
+        solum_core::sync::provision_account_sync(&session, &password, &sync_path)
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>(session)
+    })
+    .await
+    .map_err(|e| format!("登录线程失败: {e}"))??;
+    // Do not publish the new token until the old profile's sync store is
+    // exclusively held. A ticker already in flight either finishes under the
+    // old identity or blocks here; it can never pair this new token with the
+    // old SQLite database.
+    let _sync_switch_guard = state.sync_store.lock().map_err(|e| e.to_string())?;
+    session.save().map_err(|e| e.to_string())?;
+    // The authenticated account owns a different SQLite/WebView/config
+    // partition. A process restart is the smallest atomic boundary: every
+    // connection, cache, ticker and in-memory chat context closes before the
+    // new profile opens. Hot-swapping only the reasoner would leave the old
+    // user's database live under the new token.
+    app.restart()
+}
+
+/// Log in against a self-hosted solum-cloud (`server/`), prepare the target
+/// profile, publish it behind the old profile's sync barrier, then restart.
 #[tauri::command]
 async fn account_login(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
     server_url: String,
     username: String,
     password: String,
     model: String,
 ) -> CmdResult<String> {
-    let session = tauri::async_runtime::spawn_blocking(move || {
-        solum_core::account::login(&server_url, &username, &password, &model)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("登录线程失败: {e}"))??;
-    let summary = format!("账号 · {}", session.masked_summary());
-    lock!(state).set_reasoner(Box::new(solum_core::account::AccountReasoner::new(session)));
-    if let Ok(mut g) = state.llm_summary.lock() {
-        *g = Some(summary.clone());
-    }
-    Ok(summary)
+    account_auth(state, app, server_url, username, password, model, false).await
 }
 
-/// Local sign-out first-class: best-effort server-side revocation, then the
-/// reasoner falls back to the direct-key config (if any) or fully offline.
+/// Register once in the central account database, then enter the exact same
+/// profile-switch and recovery flow as a normal login.
 #[tauri::command]
-async fn account_logout(state: State<'_, AppState>) -> CmdResult<String> {
+async fn account_register(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    server_url: String,
+    username: String,
+    password: String,
+    model: String,
+) -> CmdResult<String> {
+    account_auth(state, app, server_url, username, password, model, true).await
+}
+
+/// Local sign-out first-class: best-effort server-side revocation, then restart
+/// into the guest profile (whose reasoner may use a direct-key config).
+#[tauri::command]
+async fn account_logout(_state: State<'_, AppState>, app: tauri::AppHandle) -> CmdResult<String> {
     if let Some(session) = solum_core::account::AccountSession::load() {
         let _ = tauri::async_runtime::spawn_blocking(move || {
             solum_core::account::logout(&session);
@@ -489,23 +540,7 @@ async fn account_logout(state: State<'_, AppState>) -> CmdResult<String> {
     } else {
         solum_core::account::AccountSession::delete_file();
     }
-    match solum_core::llm::LlmConfig::load() {
-        Some(cfg) => {
-            let summary = cfg.masked_summary();
-            lock!(state).set_reasoner(Box::new(solum_core::llm::LlmReasoner::new(cfg)));
-            if let Ok(mut g) = state.llm_summary.lock() {
-                *g = Some(summary.clone());
-            }
-            Ok(format!("已退出登录；云端改走直连配置（{summary}）"))
-        }
-        None => {
-            lock!(state).clear_reasoner();
-            if let Ok(mut g) = state.llm_summary.lock() {
-                *g = None;
-            }
-            Ok("已退出登录；云端对话已关闭，本机功能不受影响".to_string())
-        }
-    }
+    app.restart()
 }
 
 /// Change which model the proxy asks upstream for (login stays untouched).
@@ -525,7 +560,7 @@ fn account_model_save(state: State<AppState>, model: String) -> CmdResult<String
     Ok(summary)
 }
 
-// ---- 首启隐私门 + 应用内隐私政策（自 PA-harmony 回移）----------------------
+// ---- 首启隐私门 + 应用内隐私政策（自 Solum Harmony 回移）----------------------
 
 #[derive(Serialize)]
 struct PrivacyConsentStatus {
@@ -578,7 +613,35 @@ fn privacy_consent_decline(_app: tauri::AppHandle) {
     std::process::exit(0);
 }
 
-// ---- 多入口采集（capture 领域层，自 PA-harmony 回移）------------------------
+/// Request OS notification delivery only after the user has accepted the
+/// in-app privacy policy. Notification-listener access remains separate.
+#[tauri::command]
+fn notification_permission_request(app: tauri::AppHandle) -> CmdResult<bool> {
+    #[cfg(mobile)]
+    {
+        use tauri_plugin_notification::PermissionState;
+        if !matches!(
+            app.notification().permission_state(),
+            Ok(PermissionState::Granted)
+        ) {
+            app.notification()
+                .request_permission()
+                .map_err(|e| e.to_string())?;
+        }
+        return app
+            .notification()
+            .permission_state()
+            .map(|state| matches!(state, PermissionState::Granted))
+            .map_err(|e| e.to_string());
+    }
+    #[cfg(not(mobile))]
+    {
+        let _ = app;
+        Ok(true)
+    }
+}
+
+// ---- 多入口采集（capture 领域层，自 Solum Harmony 回移）------------------------
 
 #[derive(Serialize)]
 struct CaptureDraftView {
@@ -1444,16 +1507,6 @@ fn event_reschedule(
         ev.title,
         solum_core::model::fmt_ts(&ev.start),
         stored.len()
-    ))
-}
-
-/// The cancel confirmation tap: delete the event and its reminders.
-#[tauri::command]
-fn event_cancel(state: State<AppState>, id: i64) -> CmdResult<String> {
-    let ev = lock!(state).cancel_event(id).map_err(core_err)?;
-    Ok(format!(
-        "已取消「{}」并删除其提醒（事件不可恢复）",
-        ev.title
     ))
 }
 
@@ -2458,13 +2511,13 @@ fn convert_raw_sample(r: solum_health_connect::RawSample) -> Option<HealthSample
 // ---- sync (F17 §3.8) ---------------------------------------------------------------
 
 /// The JSON file the settings UI reads/writes. Matches `SyncConfig::load`'s
-/// fallback: `SOLUM_SYNC_CONFIG` if set (mobile setup points it at app-data),
-/// else `./solum-sync.json` (desktop cwd, adopted into app-data).
+/// fallback: explicit `SOLUM_SYNC_CONFIG` first, then the active account profile
+/// (or the historical app-data path for guest).
 fn sync_config_file() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("SOLUM_SYNC_CONFIG") {
         return p.into();
     }
-    solum_core::paths::resolve_with_adoption("solum-sync.json")
+    solum_core::paths::resolve_profile_with_adoption("solum-sync.json")
 }
 
 /// Everything the settings form needs — never the password, and not the
@@ -2499,14 +2552,18 @@ fn sync_config_get(state: State<AppState>) -> CmdResult<SyncConfigSettings> {
         .as_ref()
         .map(|session| session.username.clone())
         .unwrap_or_default();
+    let account_server_url = account
+        .as_ref()
+        .map(|session| session.server_url.clone())
+        .unwrap_or_default();
     let account_logged_in = account.is_some();
     let Some(v) = parsed else {
         return Ok(SyncConfigSettings {
             configured: false,
             format: "none",
             path: path_str,
-            url: String::new(),
-            username: String::new(),
+            url: account_server_url,
+            username: account_username,
             account_logged_in,
             device_id,
         });
@@ -2551,8 +2608,8 @@ fn sync_config_get(state: State<AppState>) -> CmdResult<SyncConfigSettings> {
             configured: false,
             format: "none",
             path: path_str,
-            url: String::new(),
-            username: String::new(),
+            url: account_server_url,
+            username: account_username,
             account_logged_in,
             device_id,
         })
@@ -2562,36 +2619,42 @@ fn sync_config_get(state: State<AppState>) -> CmdResult<SyncConfigSettings> {
 #[derive(Deserialize)]
 struct SyncSaveArgs {
     url: String,
-    /// Empty -> reuse the already-derived key from an account-format file.
+    /// Account mode no longer accepts a separate password. Kept in the IPC
+    /// shape so older frontends fail closed instead of deserializing badly.
     #[serde(default)]
     password: String,
 }
 
-/// Persist `{url,key}` and return a status line for a toast. Account tokens
-/// remain in `solum-account.json`; the encryption password is derived here and
-/// never written to disk.
+/// Validate the auto-managed `{url,key}` account sync configuration and return
+/// a status line for a toast. Account tokens remain in `solum-account.json`;
+/// neither the login password nor a separate sync password is written here.
 #[tauri::command]
 fn sync_config_save(
     state: State<AppState>,
     app: tauri::AppHandle,
     cfg: SyncSaveArgs,
 ) -> CmdResult<String> {
-    let url = solum_core::net::validate_endpoint(&cfg.url, "同步服务器 url").map_err(core_err)?;
     let account = solum_core::account::AccountSession::load()
         .ok_or_else(|| "请先在“云端接入”登录 Solum 账号".to_string())?;
+    // Account access tokens are origin-bound by policy. A configurable relay
+    // URL would turn a typo or edited config into credential exfiltration.
+    let requested_url = cfg.url.trim().trim_end_matches('/');
+    if !requested_url.is_empty() && requested_url != account.server_url {
+        return Err("账号同步与登录服务必须使用同一个地址".into());
+    }
+    let url = account.server_url.clone();
     let password = cfg.password.trim().to_string();
-    let key = if password.is_empty() {
-        std::fs::read_to_string(sync_config_file())
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .filter(|v| v.get("token").is_none() && v.get("username").is_none())
-            .and_then(|v| v.get("key").and_then(|p| p.as_str()).map(String::from))
-            .unwrap_or_default()
-    } else {
-        solum_core::sync::derive_sync_key(&account.username, &password).map_err(core_err)?
-    };
+    if !password.is_empty() {
+        return Err("同步主密钥已由账号登录自动恢复，不再接受单独的同步密码".into());
+    }
+    let key = std::fs::read_to_string(sync_config_file())
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .filter(|v| v.get("token").is_none() && v.get("username").is_none())
+        .and_then(|v| v.get("key").and_then(|p| p.as_str()).map(String::from))
+        .unwrap_or_default();
     if key.is_empty() {
-        return Err("请填写同步加密密码（没有已保存的密钥可沿用）".into());
+        return Err("账号同步密钥尚未建立，请退出后重新登录以自动恢复".into());
     }
 
     let json = serde_json::to_string_pretty(&serde_json::json!({
@@ -3351,6 +3414,9 @@ fn resolve_db_path(#[cfg_attr(desktop, allow(unused_variables))] app: &tauri::Ap
     #[cfg(mobile)]
     if let Ok(dir) = app.path().app_data_dir() {
         let _ = std::fs::create_dir_all(&dir);
+        if let Some(profile) = account_profile_root(&dir) {
+            return profile.join("solum.sqlite").to_string_lossy().into_owned();
+        }
         let current = dir.join("solum.sqlite");
         report_legacy_adoption(&dir.join("pa.sqlite"), &current);
         return current.to_string_lossy().into_owned();
@@ -3369,9 +3435,42 @@ fn resolve_db_path(#[cfg_attr(desktop, allow(unused_variables))] app: &tauri::Ap
         std::path::Path::new("pa.sqlite"),
         std::path::Path::new("solum.sqlite"),
     );
+    let base = solum_core::paths::app_data_dir();
+    if let Some(profile) = base.as_deref().and_then(account_profile_root) {
+        return profile.join("solum.sqlite").to_string_lossy().into_owned();
+    }
     solum_core::paths::resolve_with_adoption("solum.sqlite")
         .to_string_lossy()
         .into_owned()
+}
+
+fn active_local_profile_id() -> String {
+    solum_core::account::AccountSession::load()
+        .and_then(|session| session.stable_user_id().map(str::to_owned))
+        .unwrap_or_else(|| "guest".to_string())
+}
+
+fn account_profile_root(base: &std::path::Path) -> Option<std::path::PathBuf> {
+    let session = solum_core::account::AccountSession::load()?;
+    solum_core::paths::account_profile_dir(base, session.stable_user_id()?)
+}
+
+/// Set a profile-scoped config path while preserving a path explicitly supplied
+/// by the operator. The marker is inherited by `app.restart()`, allowing paths
+/// created by Solum itself to follow the newly selected profile on next boot.
+fn set_managed_profile_config(
+    variable: &str,
+    marker: &str,
+    profile_dir: Option<&std::path::Path>,
+    filename: &str,
+) {
+    let managed = std::env::var(marker).as_deref() == Ok("1");
+    if !managed && std::env::var_os(variable).is_some() {
+        return;
+    }
+    let Some(dir) = profile_dir else { return };
+    std::env::set_var(variable, dir.join(filename));
+    std::env::set_var(marker, "1");
 }
 
 /// Adoption failing must not stop the app from starting — a fresh store is a
@@ -3393,56 +3492,50 @@ pub fn run() {
         .plugin(solum_health_connect::init())
         .plugin(solum_alarm::init())
         .setup(|app| {
-            let db_path = resolve_db_path(app);
-            // Mobile has no meaningful cwd, so the default "./solum-llm.json"
-            // lookup can never hit: point the config path at the app-data dir
-            // (next to the SQLite file) instead. Push the gitignored file there
-            // once (debug builds: `adb push` + `run-as cp`). Desktop behavior
-            // is unchanged; an explicit SOLUM_LLM_CONFIG always wins.
-            #[cfg(mobile)]
-            if std::env::var("SOLUM_LLM_CONFIG").is_err() {
-                if let Some(dir) = std::path::Path::new(&db_path).parent() {
-                    std::env::set_var("SOLUM_LLM_CONFIG", dir.join("solum-llm.json"));
-                }
-            }
-            #[cfg(mobile)]
-            if std::env::var("SOLUM_SOULOUS_CONFIG").is_err() {
-                if let Some(dir) = std::path::Path::new(&db_path).parent() {
-                    std::env::set_var("SOLUM_SOULOUS_CONFIG", dir.join("solum-soulous.json"));
-                }
-            }
-            #[cfg(mobile)]
-            if std::env::var("SOLUM_EMAIL_CONFIG").is_err() {
-                if let Some(dir) = std::path::Path::new(&db_path).parent() {
-                    std::env::set_var("SOLUM_EMAIL_CONFIG", dir.join("solum-email.json"));
-                }
-            }
-            // Same gap as the three above until this fix (2026-07-22): sync's
-            // config had no mobile-aware path, only `SOLUM_SYNC_URL/TOKEN/KEY`
-            // or a cwd-relative `solum-sync.json` — neither resolvable on
-            // Android, so multi-device sync could not be configured there at
-            // all. `adb push`/`run-as cp` a `solum-sync.json` into this same
-            // app-data dir to bind a phone, same as the LLM config above.
-            #[cfg(mobile)]
-            if std::env::var("SOLUM_SYNC_CONFIG").is_err() {
-                if let Some(dir) = std::path::Path::new(&db_path).parent() {
-                    std::env::set_var("SOLUM_SYNC_CONFIG", dir.join("solum-sync.json"));
-                }
-            }
-            // Account session file follows the same mobile-aware convention as
-            // the other credential files above.
+            // The account session is device-global because it decides which
+            // local profile to open. Point mobile at app-data before resolving
+            // the database; doing this afterwards would always open `guest`.
             #[cfg(mobile)]
             if std::env::var("SOLUM_ACCOUNT_CONFIG").is_err() {
-                if let Some(dir) = std::path::Path::new(&db_path).parent() {
+                if let Ok(dir) = app.path().app_data_dir() {
                     std::env::set_var("SOLUM_ACCOUNT_CONFIG", dir.join("solum-account.json"));
                 }
             }
+            let db_path = resolve_db_path(app);
+            let profile_dir = std::path::Path::new(&db_path).parent();
+            // Every business config follows the selected SQLite profile. The
+            // managed marker lets an app.restart() recalculate our own env
+            // override without replacing an operator-supplied path.
+            set_managed_profile_config(
+                "SOLUM_LLM_CONFIG",
+                "SOLUM_LLM_CONFIG_MANAGED",
+                profile_dir,
+                "solum-llm.json",
+            );
+            set_managed_profile_config(
+                "SOLUM_SOULOUS_CONFIG",
+                "SOLUM_SOULOUS_CONFIG_MANAGED",
+                profile_dir,
+                "solum-soulous.json",
+            );
+            set_managed_profile_config(
+                "SOLUM_EMAIL_CONFIG",
+                "SOLUM_EMAIL_CONFIG_MANAGED",
+                profile_dir,
+                "solum-email.json",
+            );
+            set_managed_profile_config(
+                "SOLUM_SYNC_CONFIG",
+                "SOLUM_SYNC_CONFIG_MANAGED",
+                profile_dir,
+                "solum-sync.json",
+            );
             // Consent is device-local too. Android has no usable working
             // directory, so it needs the same app-data injection as the
             // database and credential files above.
             #[cfg(mobile)]
             if std::env::var("SOLUM_PRIVACY_CONSENT").is_err() {
-                if let Some(dir) = std::path::Path::new(&db_path).parent() {
+                if let Ok(dir) = app.path().app_data_dir() {
                     std::env::set_var(
                         "SOLUM_PRIVACY_CONSENT",
                         dir.join("solum-privacy-consent.json"),
@@ -3512,19 +3605,8 @@ pub fn run() {
                     eprintln!("[notification-intelligence] foreground service: {error}");
                 }
             }
-            // Android 13+ requires a runtime POST_NOTIFICATIONS grant; ask once
-            // at startup so the ticker's notifications can get through. Denial
-            // is fine — in-window surfaces still show everything (F16 spirit).
-            #[cfg(mobile)]
-            {
-                use tauri_plugin_notification::PermissionState;
-                if !matches!(
-                    app.notification().permission_state(),
-                    Ok(PermissionState::Granted)
-                ) {
-                    let _ = app.notification().request_permission();
-                }
-            }
+            // POST_NOTIFICATIONS is requested by the frontend only after the
+            // user accepts the in-app privacy policy.
             let handle = app.handle().clone();
             std::thread::spawn(move || ticker(handle));
             Ok(())
@@ -3611,11 +3693,13 @@ pub fn run() {
             llm_config_test,
             account_status_get,
             account_login,
+            account_register,
             account_logout,
             account_model_save,
             privacy_consent_status,
             privacy_consent_accept,
             privacy_consent_decline,
+            notification_permission_request,
             capture_entry_points,
             capture_inbox_list,
             capture_inbox_add,
@@ -3636,7 +3720,6 @@ pub fn run() {
             fact_update,
             export_data,
             event_reschedule,
-            event_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Solum");

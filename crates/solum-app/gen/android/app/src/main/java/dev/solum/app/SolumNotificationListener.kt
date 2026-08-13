@@ -227,7 +227,7 @@ class SolumNotificationListener : NotificationListenerService() {
 
     private fun isAllowed(packageName: String): Boolean {
         return try {
-            val policy = File(dataDir, "notif-policy.json")
+            val policy = activeProfileFile("notif-policy.json")
             if (!policy.isFile) false
             else {
                 val packages = JSONObject(policy.readText()).optJSONArray("allowed_packages")
@@ -235,6 +235,18 @@ class SolumNotificationListener : NotificationListenerService() {
             }
         } catch (_: Exception) {
             false
+        }
+    }
+
+    private fun activeProfileFile(name: String): File {
+        val account = File(dataDir, "solum-account.json")
+        val userId = runCatching {
+            JSONObject(account.readText()).optString("user_id").trim().lowercase()
+        }.getOrDefault("")
+        return if (Regex("^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$").matches(userId)) {
+            File(File(File(dataDir, "profiles"), userId), name)
+        } else {
+            File(dataDir, name)
         }
     }
 }

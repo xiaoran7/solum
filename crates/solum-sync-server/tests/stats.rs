@@ -13,6 +13,8 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
 const AUTH_SECRET: &str = "test-auth-secret-that-is-at-least-32-bytes";
+const ALICE_ID: &str = "9d4df1be-9f7b-4a3a-b986-ec920d2df60e";
+const BOB_ID: &str = "6ea64c69-0531-45cb-b585-500c5f479fd8";
 
 struct Server {
     child: Child,
@@ -64,14 +66,14 @@ fn spawn(token: &str, db: &std::path::Path) -> Server {
     Server { child, base }
 }
 
-fn account_token(username: &str) -> String {
+fn account_token(subject: &str) -> String {
     let expires_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
         + 3600;
     let payload = URL_SAFE_NO_PAD
-        .encode(serde_json::json!({"sub":username,"exp":expires_at,"nonce":"test"}).to_string());
+        .encode(serde_json::json!({"sub":subject,"exp":expires_at,"nonce":"test"}).to_string());
     let mut mac = Hmac::<Sha256>::new_from_slice(AUTH_SECRET.as_bytes()).unwrap();
     mac.update(payload.as_bytes());
     format!(
@@ -83,7 +85,7 @@ fn account_token(username: &str) -> String {
 fn spawn_accounts(db: &std::path::Path, legacy_token: Option<&str>) -> Server {
     let port = free_port();
     let addr = format!("127.0.0.1:{port}");
-    let alice = account_token("alice");
+    let alice = account_token(ALICE_ID);
     let mut command = Command::new(env!("CARGO_BIN_EXE_solum-sync-server"));
     command
         .env("SOLUM_AUTH_SECRET", AUTH_SECRET)
@@ -284,8 +286,14 @@ fn account_tenants_cannot_read_or_deduplicate_each_other() {
     std::fs::create_dir_all(&dir).unwrap();
     let db = dir.join("tenants.sqlite");
     let srv = spawn_accounts(&db, None);
-    let alice = account_token("alice");
-    let bob = account_token("bob");
+    let alice = account_token(ALICE_ID);
+    let bob = account_token(BOB_ID);
+    let mutable_name_subject = account_token("alice");
+    let rejected = ureq::get(&format!("{}/v1/stats", srv.base))
+        .set("Authorization", &format!("Bearer {mutable_name_subject}"))
+        .call()
+        .unwrap_err();
+    assert!(matches!(rejected, ureq::Error::Status(401, _)));
 
     for (token, device, body) in [
         (&alice, "alice-phone", b"alice-secret".as_slice()),
@@ -333,7 +341,7 @@ fn account_tenants_cannot_read_or_deduplicate_each_other() {
         .unwrap()
         .into_json()
         .unwrap();
-    assert_eq!(bob_stats["tenant"], "bob");
+    assert_eq!(bob_stats["tenant"], BOB_ID);
     assert_eq!(bob_stats["total_blobs"], 1);
     assert_eq!(bob_stats["devices"][0]["device"], "bob-phone");
 
@@ -374,7 +382,7 @@ fn existing_single_tenant_rows_migrate_only_to_legacy() {
             .unwrap();
     assert_eq!(legacy_pull["blobs"].as_array().unwrap().len(), 1);
 
-    let alice = account_token("alice");
+    let alice = account_token(ALICE_ID);
     let alice_pull: serde_json::Value =
         ureq::get(&format!("{}/v1/pull?since=0&device=new-device", srv.base))
             .set("Authorization", &format!("Bearer {alice}"))

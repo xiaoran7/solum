@@ -839,7 +839,7 @@
   #modal .fine { margin-top: 10px; font-size: .8125rem; color: var(--muted); }
   #modal .btns { display: flex; justify-content: flex-end; gap: 10px; }
 
-  /* ---- 首启隐私门（自 PA-harmony 回移）----
+  /* ---- 首启隐私门（自 Solum Harmony 回移）----
      不是 modal 的一种皮肤：它没有遮罩点击关闭、没有 Esc、没有取消路径。
      未同意时应用不该被使用，所以它铺满视口并盖过所有层级。 */
   #privacyGate {
@@ -2326,7 +2326,7 @@
         <p class="desc" id="descPrivacy" hidden>通知上云只控制「要不要把通知交给云端 AI 服务商」，不影响你自己设备之间的同步（那条链路端到端加密、发往你自建的服务器，始终开启）。聊天记录原文、人格、审计日志和穿戴逐条采样仍只留在本地。</p>
       </div></div>
       <div class="block">
-        <h3>通知上云 <span class="bnote">默认开启</span></h3>
+        <h3>通知上云 <span class="bnote">默认关闭</span></h3>
         <label class="switchrow" for="notifCloud">
           <span class="switch"><input id="notifCloud" type="checkbox" aria-describedby="notifCloudHint" /><span class="track"></span><span class="knob"></span></span>
           允许通知内容作为云端 AI 的上下文（设备间同步不受影响）
@@ -2390,7 +2390,7 @@
       </details>
     </div></section>
 
-    <!-- 数据入口（多入口采集，自 PA-harmony 回移） -->
+    <!-- 数据入口（多入口采集，自 Solum Harmony 回移） -->
     <section class="view" id="view-capture"><div class="vwrap">
       <div class="vhead"><div class="vt">
         <h2>数据入口 <button class="qmark" type="button" aria-expanded="false" aria-controls="descCapture" aria-label="说明"></button></h2>
@@ -2417,20 +2417,18 @@
     <section class="view" id="view-sync"><div class="vwrap">
       <div class="vhead"><div class="vt">
         <h2>同步 <button class="qmark" type="button" aria-expanded="false" aria-controls="descSync" aria-label="说明"></button></h2>
-        <p class="desc" id="descSync" hidden>Solum 账号决定同步数据属于谁，中继只保存端到端密文。同步加密密码只在本机派生密钥，不会发送到账号服务器或同步中继。</p>
+        <p class="desc" id="descSync" hidden>登录账号后自动建立或恢复端到端加密主密钥。中心服务只保存不可读密文与密钥信封，无法读取你的日程、记忆或人格画像。</p>
       </div></div>
       <div id="syncConfigStatus" style="margin-bottom:18px;"></div>
       <div class="block">
-        <h3>同步连接 <span class="bnote">账号身份与加密密钥相互独立</span></h3>
+        <h3>同步连接 <span class="bnote">同账号自动恢复，账号之间严格隔离</span></h3>
         <div class="formcol">
           <div class="field"><label>关联账号</label><div id="syncAccountIdentity" class="statusline"><span class="sdot"></span><span class="t">尚未登录 Solum 账号</span></div></div>
-          <div class="field"><label for="syncUrl">同步中继地址</label>
-            <input type="text" id="syncUrl" placeholder="https://your-relay.example" autocomplete="off" spellcheck="false" /></div>
-          <div class="field"><label for="syncPassword">同步加密密码</label>
-            <input type="password" id="syncPassword" placeholder="首次保存必填" autocomplete="new-password" />
-            <span class="hint">每台设备填写同一密码才能解密彼此的数据。密码不会保存，只保存派生后的加密密钥。</span></div>
+          <div class="field"><label for="syncUrl">统一服务地址</label>
+            <input type="text" id="syncUrl" readonly /></div>
+          <div class="field"><span class="hint">同步地址与登录服务强制同源；新设备登录后会自动解开账号密钥信封，无需再填写一套同步密码。</span></div>
           <div class="btnrow">
-            <button class="btn primary" id="syncSaveBtn">保存</button>
+            <button class="btn primary" id="syncSaveBtn">校验连接配置</button>
           </div>
           <div id="syncConfigOut"></div>
         </div>
@@ -2546,17 +2544,16 @@
         </div>
       </div>
       <details class="fold" id="accountFold">
-        <summary>账号登录 <span class="bnote">自建 solum-cloud 代理 · 登录期间优先于直连</span></summary>
+        <summary>Solum 中心账号 <span class="bnote">一个账号连接手机、电脑与通知</span></summary>
         <div class="fold-body">
         <p class="hint" style="margin:0 0 14px;max-width:66ch;">
-          登录你自建的 solum-cloud（仓库 <code>server/</code>，与鸿蒙版共用）后，云端请求改经代理转发，
-          第三方 API Key 只存在服务端。密码仅用于本次登录请求、不落盘，本机只保存访问/刷新令牌
-          （<code>solum-account.json</code>）；登录只鉴权云端 AI，不上传本机数据库。</p>
+          注册或登录 Solum 中心后，手机通知、端到端加密同步与云端能力都归到同一账号。
+          密码仅用于本次验证与本机解封同步密钥，不会明文落盘；中心只保存账号信息和设备端产生的密文。</p>
         <div id="accountStatus" style="margin-bottom:14px;"></div>
         <div class="formcol">
           <div id="accountLoginForm">
-            <div class="field"><label for="accountServer">服务器地址</label>
-              <input type="text" id="accountServer" placeholder="https://your-solum-cloud.example" autocomplete="off" spellcheck="false" /></div>
+            <div class="field" hidden><label for="accountServer">中心地址</label>
+              <input type="text" id="accountServer" value="https://solumsync.tannerlab.xyz" autocomplete="off" spellcheck="false" /></div>
             <div class="fieldrow">
               <div class="field"><label for="accountUser">账号</label>
                 <input type="text" id="accountUser" autocomplete="off" spellcheck="false" /></div>
@@ -2569,6 +2566,7 @@
             <datalist id="accountModels"></datalist></div>
           <div class="btnrow">
             <button class="btn primary" id="accountLoginBtn">登录</button>
+            <button class="btn" id="accountRegisterBtn">注册</button>
             <button class="btn" id="accountModelBtn" hidden>保存模型</button>
             <button class="btn" id="accountLogoutBtn" hidden>退出登录</button>
           </div>
@@ -2709,7 +2707,7 @@
   </div>
 </div>
 
-<!-- 首启隐私门：needs_consent 时才 .open（自 PA-harmony 回移） -->
+<!-- 首启隐私门：needs_consent 时才 .open（自 Solum Harmony 回移） -->
 <div id="privacyGate" role="dialog" aria-modal="true" aria-labelledby="privacyGateTitle">
   <div class="pg-inner">
     <h2 id="privacyGateTitle"></h2>
@@ -2794,7 +2792,8 @@ const $ = (id) => document.getElementById(id);
 
 /* UI 状态只留在本机 WebView：导航位置、滚动位置和对话草稿。
    不写邮件字段、搜索关键词、通知正文或任何账号/密钥。 */
-const UI_STATE_KEY = "solum.ui-state.v1";
+let localProfileId = "guest";
+let UI_STATE_KEY = "solum.ui-state.v1";
 const UI_STATE_VERSION = 1;
 function safeLocalGet(key) {
   try { return localStorage.getItem(key); } catch (_) { return null; }
@@ -2995,6 +2994,7 @@ $("simClock").addEventListener("change", refreshAll);
 async function initClock() {
   try {
     const info = await invoke("app_info");
+    selectLocalProfile(info.local_profile_id);
     $("simClock").value = info.system_now;
     $("dbPath").textContent = info.db_path;
     $("dbPath").title = info.db_path;
@@ -3130,7 +3130,6 @@ async function refreshSyncConfig() {
   identity.appendChild(el("span", { class: `sdot${s.account_logged_in ? " ok" : ""}` }));
   identity.appendChild(el("span", { class: "t", text: s.account_logged_in ? `已登录 ${s.username}` : "尚未登录，请先到“云端接入”登录" }));
   $("syncSaveBtn").disabled = !s.account_logged_in;
-  $("syncPassword").placeholder = s.format === "account" ? "已保存密钥，留空则沿用" : "首次保存必填";
   if (syncFormSeeded) return;
   syncFormSeeded = true;
   $("syncUrl").value = s.url;
@@ -3139,13 +3138,12 @@ async function refreshSyncConfig() {
 $("syncSaveBtn").addEventListener("click", async () => {
   const cfg = {
     url: $("syncUrl").value.trim(),
-    password: $("syncPassword").value,
+    password: "",
   };
   if (!/^https?:\/\//.test(cfg.url)) return toast("同步服务器地址需要以 http(s):// 开头", "danger");
   $("syncSaveBtn").disabled = true;
   try {
     const summary = await invoke("sync_config_save", { cfg });
-    $("syncPassword").value = "";
     toast(summary, "ok");
     syncFormSeeded = false;
     await refreshSyncConfig();
@@ -3286,7 +3284,7 @@ $("modalOk").addEventListener("click", async () => {
 // 后端每次只接收当前会话最后四个已完成的闲聊回合，继续遵守最小上下文边界。
 // 名字停留在改名前的 pa.*：这是 localStorage 的键，改了等于把用户已有的
 // 会话记录全部孤立掉，而它对用户完全不可见。别当作改名遗漏"修"掉。
-const CHAT_SESSIONS_KEY = "pa.chat-sessions.v1";
+let CHAT_SESSIONS_KEY = "pa.chat-sessions.v1";
 const CHAT_MAX_SESSIONS = 40;
 const CHAT_MAX_MESSAGES = 240;
 const CHAT_MAX_MESSAGE_CHARS = 12_000;
@@ -3294,6 +3292,26 @@ const CHAT_MAX_MESSAGE_CHARS = 12_000;
 // 40 × 240 × 12k 把整个 UI 状态一起顶出配额。优先保留最近会话与最近消息。
 const CHAT_STORAGE_BUDGET_CHARS = 2_400_000;
 let chatSessions = loadChatSessions();
+
+function profiledStorageName(base, profileId) {
+  return profileId === "guest" ? base : `${base}.${profileId}`;
+}
+
+function selectLocalProfile(value) {
+  const candidate = String(value || "guest").toLowerCase();
+  const profileId = candidate === "guest" || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(candidate)
+    ? candidate : "guest";
+  if (profileId === localProfileId) return;
+  localProfileId = profileId;
+  UI_STATE_KEY = profiledStorageName("solum.ui-state.v1", profileId);
+  CHAT_SESSIONS_KEY = profiledStorageName("pa.chat-sessions.v1", profileId);
+  DOCUMENT_DB_NAME = profiledStorageName("pa-local-documents-v1", profileId);
+  uiState = loadUiState();
+  chatSessions = loadChatSessions();
+  navLastView = { ...uiState.navLastView };
+  viewScrollPositions = new Map(Object.entries(uiState.scroll || {})
+    .map(([view, top]) => [view, Number(top) || 0]));
+}
 
 function newChatSession() {
   return {
@@ -3840,12 +3858,14 @@ const GENUI_DISPATCH = {
     toast(msg, "ok");
     refreshAgenda(); refreshNotifs(); refreshToday();
   },
-  // 危险按钮只是入口收窄后的确认面：按钮上写明了事件名与时间，点按即确认。
-  event_cancel: async (a) => {
-    const msg = await invoke("event_cancel", { id: a.id });
-    toast(msg, "ok");
-    refreshAll();
-  },
+  event_cancel: (a) => guardedDestructive({
+    tool: "event_cancel",
+    args: { event_id: a.id },
+    title: "人工确认：取消日程",
+    confirmLabel: "确认取消",
+    note: "确认后签发一次性令牌，并绑定当前日程标题、时间和提醒数量。",
+    onDone: async (ok) => { if (ok) await refreshAll(); },
+  }),
   routine_set_active: async (a) => {
     await invoke("routine_set_active", { id: a.id, active: a.active, now: nowParam() });
     toast(a.active ? "固定提醒已启用" : "固定提醒已暂停", "ok");
@@ -4478,7 +4498,7 @@ async function refreshWidgets() {
 /* ============================== 本地资料工作台 ============================== */
 // 浏览器的 IndexedDB 保存文件二进制，避免把 PDF/文档误塞进同步数据库或云端。
 // 同上：IndexedDB 库名，改名会让已上传的 PDF/文档整批读不回来。保持不动。
-const DOCUMENT_DB_NAME = "pa-local-documents-v1";
+let DOCUMENT_DB_NAME = "pa-local-documents-v1";
 const DOCUMENT_STORE = "documents";
 const DOCUMENT_MAX_BYTES = 20 * 1024 * 1024;
 const DOCUMENT_MAX_COUNT = 30;
@@ -5824,7 +5844,7 @@ async function refreshPrivacy() {
   refreshPrivacyPolicy();
 }
 
-/* ---------------- 首启隐私门 + 应用内隐私政策（自 PA-harmony 回移） ----------------
+/* ---------------- 首启隐私门 + 应用内隐私政策（自 Solum Harmony 回移） ----------------
    门与政策页共用同一份 Rust 常量，不在前端另写一份文案——两处措辞漂移过一次就
    再也说不清「用户当时同意的是哪一版」。 */
 let privacyDoc = null;
@@ -5912,6 +5932,9 @@ $("privacyGateAcceptBtn").addEventListener("click", async (event) => {
     $("privacyGate").classList.remove("open");
     document.body.style.overflow = "";
     refreshPrivacyPolicy();
+    // Ask for OS notification delivery only after the in-app policy gate is
+    // accepted; denial leaves the local UI usable.
+    try { await invokePrivacyCommand("notification_permission_request", 8000); } catch (_) { }
   } catch (e) {
     // 写盘失败必须留在门里：放行等于产生一次没有记录的同意。
     setPrivacyGateStatus(`无法保存：${String(e)}。请重试。`, false);
@@ -5945,7 +5968,7 @@ $("privacyGateDeclineBtn").addEventListener("click", async (event) => {
   }
 });
 
-/* ---------------- 数据入口（多入口采集，自 PA-harmony 回移） ---------------- */
+/* ---------------- 数据入口（多入口采集，自 Solum Harmony 回移） ---------------- */
 // 可用=绿；待接入/需配套端=中性描边；不支持=同样中性但文案写死"这个平台上没有"，
 // 不用 danger——入口不存在不是错误状态。
 const CAPTURE_AVAIL_KIND = {
@@ -6276,6 +6299,7 @@ const LLM_PRESETS = [
   { id: "custom", label: "自定义端点", base: "", models: [], timeout: 30, temp: "default",
     note: "任何 OpenAI 兼容 /chat/completions 端点均可。" },
 ];
+const SOLUM_CENTER_URL = "https://solumsync.tannerlab.xyz";
 let llmKeyTail = "";   // 已保存密钥的尾巴（空 = 还没存过 key，保存时必填）
 let llmFormSeeded = false; // 表单只在首次加载/保存后回填，refreshAll 不许覆盖正在编辑的内容
 
@@ -6441,6 +6465,7 @@ async function refreshAccount() {
   renderAccountStatus(s);
   $("accountLoginForm").hidden = accountLoggedIn;
   $("accountLoginBtn").hidden = accountLoggedIn;
+  $("accountRegisterBtn").hidden = accountLoggedIn;
   $("accountLogoutBtn").hidden = !accountLoggedIn;
   $("accountModelBtn").hidden = !accountLoggedIn;
   if (accountLoggedIn) $("accountFold").open = true;
@@ -6452,30 +6477,46 @@ async function refreshAccount() {
   if (s.logged_in) {
     $("accountServer").value = s.server_url;
     $("accountUser").value = s.username;
+  } else {
+    $("accountServer").value = SOLUM_CENTER_URL;
   }
   $("accountModel").value = s.model || "mimo-v2.5";
 }
 
-$("accountLoginBtn").addEventListener("click", async () => {
-  const serverUrl = $("accountServer").value.trim();
+async function submitAccount(command, action) {
+  const serverUrl = $("accountServer").value.trim() || SOLUM_CENTER_URL;
   const username = $("accountUser").value.trim();
   const password = $("accountPass").value;
-  if (!serverUrl) return toast("请填写服务器地址", "danger");
   if (!username || !password) return toast("请填写账号和密码", "danger");
+  if (command === "account_register" && password.length < 12) {
+    return toast("注册密码至少需要 12 个字符", "danger");
+  }
   $("accountLoginBtn").disabled = true;
+  $("accountRegisterBtn").disabled = true;
   try {
-    const summary = await invoke("account_login", {
+    const summary = await invoke(command, {
       serverUrl, username, password, model: $("accountModel").value.trim(),
     });
-    $("accountPass").value = ""; // 密码只用于这一次请求，界面也不留
-    toast("已登录，云端改走账号代理", "ok");
+    $("accountPass").value = ""; // 密码只用于本次登录与本地解封，界面也不留
+    toast(action === "注册" ? "账号已创建，正在进入专属空间" : "已登录，云端改走账号代理", "ok");
     $("llmDot").className = "sdot ok";
     $("llmText").textContent = "云端在线";
     $("llmRow").title = summary;
     accountFormSeeded = false;
     refreshAccount(); refreshCloud(); refreshSyncConfig(); refreshSyncStatus();
   } catch (e) { toast(String(e), "danger"); }
-  finally { $("accountLoginBtn").disabled = false; }
+  finally {
+    $("accountLoginBtn").disabled = false;
+    $("accountRegisterBtn").disabled = false;
+  }
+}
+
+$("accountLoginBtn").addEventListener("click", async () => {
+  await submitAccount("account_login", "登录");
+});
+
+$("accountRegisterBtn").addEventListener("click", async () => {
+  await submitAccount("account_register", "注册");
 });
 
 $("accountLogoutBtn").addEventListener("click", async () => {
@@ -7078,8 +7119,8 @@ const UTILITY_GROUPS = [
   SETTINGS_GROUP,
 ];
 const GROUPS = [...PRIMARY_GROUPS, ...UTILITY_GROUPS];
-const navLastView = { ...uiState.navLastView };
-const viewScrollPositions = new Map(Object.entries(uiState.scroll || {}).map(([view, top]) => [view, Number(top) || 0]));
+let navLastView = { ...uiState.navLastView };
+let viewScrollPositions = new Map(Object.entries(uiState.scroll || {}).map(([view, top]) => [view, Number(top) || 0]));
 let currentView = "";
 function groupOfView(view) {
   for (const g of GROUPS) {
@@ -7486,16 +7527,20 @@ if (window.__TAURI__ && window.__TAURI__.event) {
 }
 
 /* ============================== 启动 ============================== */
-renderChatSessions();
-renderActiveChatSession();
-restoreCurrentChatDraft();
-syncChatContext().catch(() => { /* static preview has no IPC; sending stays guarded */ });
-const initialView = $("view-" + uiState.lastView) ? uiState.lastView : "chat";
-showView(initialView, { refresh: false, animate: false });
-initClock().then(() => refreshAll({ progress: true }));
-refreshNotifAccess();
-// 隐私门最后挂：它盖在所有已渲染内容之上，不需要也不应该阻塞其余初始化。
+// 隐私门先挂在最上层；其余初始化仍可在后面进行。
 initPrivacyGate();
+// 先从 Rust 取得本地 profile id，再读取 Web Storage/IndexedDB。否则账号用户
+// 启动时会短暂渲染 guest 的聊天记录，而且 pagehide 还可能把错误分区写回。
+initClock().then(() => {
+  renderChatSessions();
+  renderActiveChatSession();
+  restoreCurrentChatDraft();
+  syncChatContext().catch(() => { /* static preview has no IPC; sending stays guarded */ });
+  const initialView = $("view-" + uiState.lastView) ? uiState.lastView : "chat";
+  showView(initialView, { refresh: false, animate: false });
+  refreshNotifAccess();
+  return refreshAll({ progress: true });
+});
 setInterval(() => { refreshNotifs(); refreshToday(); }, 30000); // 到点角标定期刷新
 window.addEventListener("pagehide", () => {
   if (currentView) {

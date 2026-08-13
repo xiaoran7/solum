@@ -4,3 +4,5 @@ data
 *.db-shm
 *.db-wal
 test
+node_modules
+npm-debug.log*
