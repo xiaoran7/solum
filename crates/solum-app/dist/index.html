@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <meta name="color-scheme" content="light dark" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2318181b'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%23df78a0'/%3E%3C/svg%3E" />
 <title>息壤 — Personal Agent</title>
 <style>
   /* =========================================================================
@@ -128,7 +129,7 @@
   }
   .brand { padding: 2px 10px 18px; display: flex; align-items: baseline; gap: 8px; }
   .brand-mark {
-    font-size: 1.375rem; font-weight: 800; letter-spacing: .01em; line-height: 1;
+    font-size: 1.375rem; font-weight: 800; letter-spacing: 0; line-height: 1;
     color: var(--ink);
   }
   .brand-dot {
@@ -140,7 +141,7 @@
     0%, 100% { box-shadow: 0 0 0 0 rgba(240, 168, 36, .0); }
     50%      { box-shadow: 0 0 8px 1px rgba(240, 168, 36, .55); }
   }
-  .brand-sub { font-size: .75rem; color: var(--muted); letter-spacing: .04em; }
+  .brand-sub { font-size: .75rem; color: var(--muted); letter-spacing: 0; }
 
   #nav { display: flex; flex-direction: column; gap: 2px; }
   .nav-btn {
@@ -260,7 +261,7 @@
     background: var(--bg); padding: 18px 0 12px; margin: 0 0 16px;
   }
   .vhead .vt { flex: 1; min-width: 220px; }
-  .vhead h2 { margin: 0; font-size: 1.5rem; font-weight: 700; letter-spacing: -.015em; }
+  .vhead h2 { margin: 0; font-size: 1.5rem; font-weight: 700; letter-spacing: 0; }
   .vhead .vt { position: relative; }
   /* 说明浮窗：绝对定位悬浮在标题下方，展开/收起都不推动页面布局 */
   .vhead .desc {
@@ -396,7 +397,7 @@
   .dt { width: 100%; border-collapse: collapse; font-size: .875rem; }
   .dt th {
     text-align: left; font-size: .75rem; font-weight: 550; color: var(--muted);
-    padding: 8px 12px; border-bottom: 1px solid var(--line-strong); letter-spacing: .02em;
+    padding: 8px 12px; border-bottom: 1px solid var(--line-strong); letter-spacing: 0;
     white-space: nowrap;
   }
   .dt td { padding: 11px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -576,7 +577,7 @@
     width: 12px; height: 12px; border-radius: 50%; background: var(--accent-fill);
     box-shadow: 0 0 10px 1px rgba(240, 168, 36, .5);
   }
-  #chatEmpty h3 { margin: 0 0 6px; font-size: 1.25rem; font-weight: 700; letter-spacing: -.01em; }
+  #chatEmpty h3 { margin: 0 0 6px; font-size: 1.25rem; font-weight: 700; letter-spacing: 0; }
   #chatEmpty .sub { margin: 0 0 22px; color: var(--muted); font-size: .875rem; max-width: 52ch; }
   .examples { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; max-width: 640px; }
   .example {
@@ -624,7 +625,7 @@
   /* ---- 今日面板 ---- */
   #todayPanel h4 {
     margin: 0 0 10px; font-size: .75rem; font-weight: 600; color: var(--muted);
-    letter-spacing: .06em;
+    letter-spacing: 0;
   }
   #todayPanel .tp-sec { margin-bottom: 28px; }
   .tp-item { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; font-size: .8438rem; }
@@ -1008,7 +1009,7 @@
   }
   body {
     background: color-mix(in srgb, var(--side) 88%, var(--bg));
-    letter-spacing: -.005em;
+    letter-spacing: 0;
   }
   #app {
     grid-template-columns: 248px minmax(0, 1fr);
@@ -1040,7 +1041,7 @@
     font-size: 1.75rem;
     line-height: .95;
     font-weight: 800;
-    letter-spacing: -.055em;
+    letter-spacing: 0;
   }
   .brand-sub {
     display: block;
@@ -1048,7 +1049,7 @@
     font-size: .6875rem;
     line-height: 1;
     color: var(--muted);
-    letter-spacing: .14em;
+    letter-spacing: 0;
     text-transform: uppercase;
   }
   .solum-signal {
@@ -1132,7 +1133,7 @@
     color: var(--faint);
     font-size: .625rem;
     font-weight: 700;
-    letter-spacing: .16em;
+    letter-spacing: 0;
     text-transform: uppercase;
   }
   .utility-btn {
@@ -1212,10 +1213,10 @@
   .vhead h2 {
     width: fit-content;
     position: relative;
-    font-size: clamp(2.35rem, 4vw, 3.25rem);
+    font-size: 1.75rem;
     line-height: .98;
     font-weight: 820;
-    letter-spacing: -.065em;
+    letter-spacing: 0;
   }
   .vhead h2::after,
   .block > h3::after {
@@ -1238,7 +1239,7 @@
   .block > h3 {
     margin-bottom: 18px;
     font-size: 1.25rem;
-    letter-spacing: -.025em;
+    letter-spacing: 0;
   }
   .btn {
     min-height: 44px;
@@ -1375,9 +1376,7 @@
     padding: clamp(26px, 5vh, 56px);
     border: 1px solid var(--line);
     border-radius: var(--r-xl);
-    background:
-      radial-gradient(circle at 78% 20%, color-mix(in srgb, var(--accent-soft) 72%, transparent), transparent 25%),
-      var(--bg);
+    background: var(--bg);
     overflow: hidden;
   }
   #chatEmpty::before {
@@ -1387,7 +1386,7 @@
     color: var(--muted);
     font-size: .75rem;
     font-weight: 700;
-    letter-spacing: .18em;
+    letter-spacing: 0;
   }
   #chatEmpty .lamp {
     position: absolute;
@@ -1411,9 +1410,9 @@
   #chatEmpty h3 {
     max-width: 8em;
     margin: 0 0 16px;
-    font-size: clamp(2.2rem, 5vw, 4.5rem);
+    font-size: 2rem;
     line-height: .98;
-    letter-spacing: -.07em;
+    letter-spacing: 0;
   }
   #chatEmpty .sub {
     max-width: 57ch;
@@ -1452,7 +1451,7 @@
   .composer {
     border-top: 0;
     padding: 12px 26px 20px;
-    background: linear-gradient(transparent, var(--bg) 24%);
+    background: var(--bg);
   }
   .composer form {
     max-width: 850px;
@@ -1476,7 +1475,7 @@
   #todayPanel h4 {
     color: var(--ink);
     font-size: .8125rem;
-    letter-spacing: .12em;
+    letter-spacing: 0;
   }
   .tp-item {
     margin-bottom: 8px;
@@ -1495,7 +1494,7 @@
     border-radius: 28px;
   }
   #privacyGate .pg-inner { width: 760px; }
-  #privacyGate h2 { font-size: 2rem; letter-spacing: -.04em; }
+  #privacyGate h2 { font-size: 1.75rem; letter-spacing: 0; }
   #privacyGate .pg-body { border-radius: 24px; padding: 22px 24px; }
   #toast { border-radius: 999px; }
   .signal-button {
@@ -1522,23 +1521,21 @@
     padding: clamp(24px, 5vw, 48px);
     border: 1px solid var(--line);
     border-radius: var(--r-xl);
-    background:
-      radial-gradient(circle at 88% 12%, color-mix(in srgb, var(--accent-soft) 72%, transparent), transparent 24%),
-      var(--bg);
+    background: var(--bg);
   }
   .search-kicker {
     margin-bottom: 30px;
     color: var(--muted);
     font-size: .75rem;
     font-weight: 750;
-    letter-spacing: .18em;
+    letter-spacing: 0;
   }
   .search-question {
     max-width: 8em;
     margin: 0 0 28px;
-    font-size: clamp(2.15rem, 4.4vw, 4rem);
+    font-size: 2rem;
     line-height: .98;
-    letter-spacing: -.065em;
+    letter-spacing: 0;
   }
   .search-form {
     display: grid;
@@ -1594,7 +1591,7 @@
   .search-index-head h3 {
     margin: 0;
     font-size: 1.3rem;
-    letter-spacing: -.025em;
+    letter-spacing: 0;
   }
   #globalSearchCount {
     color: var(--muted);
@@ -1696,7 +1693,7 @@
     }
     #mHeader .brand-mark {
       font-size: 1.4rem !important;
-      letter-spacing: -.05em;
+      letter-spacing: 0;
     }
     #mHeader .solum-signal {
       width: 32px;
@@ -1745,7 +1742,7 @@
     }
     .mobile-tools-head strong {
       font-size: .75rem;
-      letter-spacing: .14em;
+      letter-spacing: 0;
     }
     .mobile-tools-grid {
       display: grid;
@@ -1806,7 +1803,7 @@
       padding: 34px 0 20px;
       margin-bottom: 18px;
     }
-    .vhead h2 { font-size: clamp(2.2rem, 11vw, 3rem); }
+    .vhead h2 { font-size: 1.5rem; }
     .vactions { width: 100%; }
     .vactions .btn.primary { flex: 1; }
     .block { margin-bottom: 38px; }
@@ -1885,7 +1882,7 @@
   :lang(zh-CN) .vhead h2,
   :lang(zh-CN) .search-question,
   :lang(zh-CN) #chatEmpty h3 {
-    letter-spacing: -.035em;
+    letter-spacing: 0;
   }
   .hint,
   .desc,
@@ -1985,6 +1982,208 @@
       transform: none;
     }
   }
+
+  /* 0.2.2 account shell and operational typography. */
+  :root {
+    --r-sm: 4px;
+    --r-md: 6px;
+    --r-lg: 8px;
+    --r-xl: 8px;
+  }
+  * { letter-spacing: 0 !important; }
+  #app { grid-template-columns: 240px minmax(0, 1fr); }
+  #sidebar { padding: 20px 14px 14px; }
+  .brand { padding: 2px 10px 22px; }
+  #nav { gap: 4px; }
+  .nav-btn {
+    min-height: 44px;
+    padding: 9px 11px;
+    border-radius: 6px;
+  }
+  .nav-btn.active { box-shadow: none; }
+  .nav-btn.active::after { border-radius: 2px; }
+  .side-tools { padding-top: 16px; }
+  .side-tools-label { font-size: .75rem; text-transform: none; }
+  .utility-btn { border-radius: 6px; min-height: 40px; }
+  .utility-btn.locked { color: var(--faint); }
+  .utility-lock { margin-left: auto; display: inline-grid; color: var(--muted); }
+  .locked-entry { color: var(--muted); }
+  .menu-lock { display: inline-grid; color: var(--muted); }
+  .seg button.locked-tab { color: var(--faint); }
+  .seg button.locked-tab .ic { margin-left: 5px; vertical-align: -2px; }
+  .identity-strip {
+    width: 100%;
+    min-height: 58px;
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--ink);
+    background: var(--bg);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .identity-strip:hover { border-color: var(--line-strong); background: var(--inset); }
+  .identity-avatar {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    color: var(--ink);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-line);
+    font-size: .8125rem;
+    font-weight: 750;
+  }
+  .identity-copy { min-width: 0; display: grid; gap: 1px; }
+  .identity-copy strong,
+  .identity-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .identity-copy strong { font-size: .8125rem; }
+  .identity-copy small { color: var(--muted); font-size: .75rem; }
+  .identity-action { color: var(--muted); font-size: .75rem; }
+  .side-foot { padding-inline: 4px; }
+  #banners,
+  #subnavWrap { padding-inline: max(24px, calc((100% - 1120px) / 2)); }
+  section.view { padding-inline: max(24px, calc((100% - 1120px) / 2)); }
+  .vhead { padding: 30px 0 18px; margin-bottom: 22px; backdrop-filter: none; }
+  .vhead h2 { font-size: 1.75rem; line-height: 1.2; font-weight: 760; }
+  .vhead h2::after,
+  .block > h3::after { display: none; }
+  .block { margin-bottom: 36px; }
+  .block > h3 { font-size: 1.125rem; }
+  .btn,
+  .btn.sm,
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea { border-radius: 6px; }
+  .btn.primary { box-shadow: none; }
+  .seg { border-radius: 8px; }
+  .seg button { border-radius: 5px; }
+  .banner,
+  .digest,
+  .doc-drop,
+  .gc-card,
+  .nav-menu-item,
+  .tscroll,
+  .nav-menu,
+  details.fold,
+  .tp-item,
+  .session-item { border-radius: 8px; }
+  #chatEmpty {
+    padding: 34px;
+    border-radius: 8px;
+    background: var(--bg);
+    box-shadow: none;
+  }
+  #chatEmpty h3 { font-size: 2rem; line-height: 1.18; }
+  .composer form,
+  #sendBtn,
+  #globalSearchInput,
+  #globalSearchBtn { border-radius: 8px; }
+  #drawer { border-radius: 0; }
+  #modal,
+  #privacyGate .pg-body { border-radius: 8px; }
+  #toast { border-radius: 8px; }
+  .search-hero {
+    padding: 32px;
+    border-radius: 8px;
+    background: var(--bg);
+  }
+  .search-question { max-width: 14em; font-size: 2rem; line-height: 1.2; }
+  .search-result,
+  .search-quick { border-radius: 8px; }
+  .search-result-type { padding: 0; border-radius: 0; background: transparent; }
+
+  #accountGate {
+    position: fixed;
+    inset: 0;
+    z-index: 61;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    overflow: auto;
+    background: color-mix(in srgb, var(--bg) 92%, var(--ink));
+  }
+  #accountGate[hidden] { display: none; }
+  .account-gate-shell {
+    width: min(960px, 100%);
+    min-height: min(640px, calc(100dvh - 48px));
+    display: grid;
+    grid-template-columns: minmax(0, 1.08fr) minmax(360px, .92fr);
+    overflow: hidden;
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    background: var(--bg);
+    box-shadow: var(--shadow-xl);
+  }
+  .account-gate-context {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 36px;
+    padding: 42px;
+    background: var(--ink);
+    color: var(--bg);
+  }
+  .account-gate-brand { display: flex; align-items: center; gap: 10px; font-size: 1.25rem; font-weight: 800; }
+  .account-gate-kicker { margin: 0 0 12px; color: color-mix(in srgb, var(--bg) 68%, transparent); font-size: .8125rem; }
+  .account-gate-context h1 { margin: 0 0 20px; font-size: 2.25rem; line-height: 1.2; }
+  .account-gate-context > div > p:last-child { max-width: 34em; margin: 0; color: color-mix(in srgb, var(--bg) 72%, transparent); line-height: 1.75; }
+  .account-privacy-note { display: grid; grid-template-columns: 24px 1fr; gap: 12px; align-items: start; }
+  .account-privacy-note span:last-child { display: grid; gap: 3px; }
+  .account-privacy-note small { color: color-mix(in srgb, var(--bg) 62%, transparent); line-height: 1.55; }
+  .account-gate-panel { position: relative; display: flex; flex-direction: column; justify-content: center; padding: 42px; }
+  .account-gate-close { position: absolute; top: 18px; right: 18px; }
+  .account-gate-heading p { margin: 0 0 8px; color: var(--muted); font-size: .8125rem; }
+  .account-gate-heading h2 { margin: 0 0 24px; font-size: 1.75rem; }
+  .account-mode-switch { display: grid; grid-template-columns: 1fr 1fr; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
+  .account-mode-switch button { min-height: 42px; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; font: inherit; cursor: pointer; }
+  .account-mode-switch button[aria-selected="true"] { border-bottom-color: var(--ink); color: var(--ink); font-weight: 700; }
+  .account-gate-form { display: grid; gap: 9px; }
+  .account-gate-form label { margin-top: 5px; color: var(--ink-2); font-size: .8125rem; font-weight: 650; }
+  .account-gate-form .btn { margin-top: 10px; }
+  .account-gate-status { min-height: 20px; margin: 0; color: var(--danger); font-size: .8125rem; }
+  .account-gate-divider { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; margin: 10px 0; color: var(--muted); font-size: .75rem; }
+  .account-gate-divider::before,
+  .account-gate-divider::after { content: ""; height: 1px; background: var(--line); }
+  .account-guest-btn { width: 100%; justify-content: center; }
+  .account-gate-foot { margin: 14px 0 0; color: var(--muted); font-size: .75rem; line-height: 1.55; }
+  .account-gate-open { overflow: hidden; }
+
+  @media (max-width: 899px) {
+    #mHeader { padding: calc(12px + var(--sat)) 16px 11px; border-bottom: 1px solid var(--line); backdrop-filter: none; }
+    #mHeader .brand-mark { font-size: 1.25rem !important; }
+    .signal-button { width: 40px; height: 40px; border-radius: 6px; }
+    .signal-button .identity-avatar { width: 32px; height: 32px; }
+    #mobileTools { left: 12px; right: 12px; bottom: calc(72px + var(--sab)); border-radius: 8px; backdrop-filter: none; }
+    .mobile-tools-head { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
+    .mobile-tools-head > span { min-width: 0; display: grid; }
+    .mobile-tools-head small { color: var(--muted); font-size: .75rem; }
+    #mobileTools .utility-btn { min-height: 52px; border-radius: 6px; }
+    #tabbar { margin: 0; padding: 4px 8px calc(4px + var(--sab)); border-width: 1px 0 0; border-radius: 0; box-shadow: none; backdrop-filter: none; }
+    .tab-btn { min-height: 56px; border-radius: 6px; }
+    section.view { padding-inline: 16px; }
+    #banners,
+    #subnavWrap { padding-inline: 16px; }
+    .vhead { padding: 24px 0 16px; }
+    .vhead h2 { font-size: 1.5rem; }
+    #chatEmpty { padding: 24px; border-radius: 8px; }
+    #chatEmpty h3 { max-width: 10em; font-size: 1.75rem; }
+    .search-hero { padding: 24px; }
+    .search-question { font-size: 1.75rem; }
+    #accountGate { place-items: start center; padding: 12px; }
+    .account-gate-shell { min-height: 0; grid-template-columns: 1fr; }
+    .account-gate-context { padding: 28px 24px 24px; gap: 24px; }
+    .account-gate-context h1 { font-size: 1.75rem; }
+    .account-gate-context h1 br { display: none; }
+    .account-privacy-note { display: none; }
+    .account-gate-panel { padding: 28px 24px; }
+  }
 </style>
 </head>
 <body>
@@ -2000,9 +2199,14 @@
     </div>
     <nav id="nav" aria-label="主导航"></nav>
     <nav class="side-tools" id="utilityNav" aria-label="工具入口">
-      <span class="side-tools-label">Utilities</span>
+      <span class="side-tools-label">完整能力</span>
     </nav>
     <div class="side-foot">
+      <button class="identity-strip" id="accountShellBtn" type="button" aria-label="打开账户">
+        <span class="identity-avatar" id="accountShellAvatar">访</span>
+        <span class="identity-copy"><strong id="accountShellLabel">访客空间</strong><small id="accountShellMeta">本地模式</small></span>
+        <span class="identity-action" id="accountShellAction">登录</span>
+      </button>
       <div class="foot-row" id="llmRow" title="云端推理状态">
         <span class="sdot" id="llmDot"></span><span id="llmText">…</span>
       </div>
@@ -2029,14 +2233,15 @@
     <div class="grow"></div>
     <span class="due-pill" id="duePillM" title="到点未触发的提醒数"></span>
     <button class="btn icon" id="syncBtnM" style="display:none;" title="立即同步" aria-label="立即同步"></button>
-    <button class="signal-button" id="mobileToolsBtn" type="button" aria-label="打开工具入口" aria-haspopup="dialog" aria-expanded="false">
-      <span class="solum-signal" aria-hidden="true"></span>
+    <button class="signal-button" id="mobileToolsBtn" type="button" aria-label="打开账户与工具" aria-haspopup="dialog" aria-expanded="false">
+      <span class="identity-avatar" id="accountShellAvatarM">访</span>
     </button>
   </header>
   <div id="mobileToolsMask" hidden></div>
   <aside id="mobileTools" role="dialog" aria-modal="true" aria-label="Solum 工具" hidden>
     <div class="mobile-tools-head">
-      <strong>更多工具</strong>
+      <span><strong id="mobileAccountLabel">访客空间</strong><small id="mobileAccountMeta">本地模式</small></span>
+      <button class="btn sm" id="mobileAccountBtn" type="button">登录</button>
       <button class="btn icon" id="mobileToolsClose" type="button" aria-label="关闭工具入口"></button>
     </div>
     <div class="mobile-tools-grid" id="mobileToolsGrid"></div>
@@ -2323,15 +2528,24 @@
     <section class="view" id="view-privacy"><div class="vwrap">
       <div class="vhead"><div class="vt">
         <h2>隐私 <button class="qmark" type="button" aria-expanded="false" aria-controls="descPrivacy" aria-label="说明"></button></h2>
-        <p class="desc" id="descPrivacy" hidden>通知上云只控制「要不要把通知交给云端 AI 服务商」，不影响你自己设备之间的同步（那条链路端到端加密、发往你自建的服务器，始终开启）。聊天记录原文、人格、审计日志和穿戴逐条采样仍只留在本地。</p>
+        <p class="desc" id="descPrivacy" hidden>通知上云只控制「要不要把通知交给云端 AI 服务商」。注册或登录后才会启用多设备同步；同步内容端到端加密并发往你选择的 Solum 服务。聊天记录原文、人格、审计日志和穿戴逐条采样仍只留在本地。</p>
       </div></div>
+      <div class="block" id="privacyAccountLock" hidden>
+        <h3>账号内隐私能力</h3>
+        <div class="statusline">
+          <span class="sdot"></span>
+          <span class="t">登录后配置通知上云、应用白名单和端到端加密同步。</span>
+          <button class="btn sm" type="button" id="privacyAccountBtn">登录或注册</button>
+        </div>
+      </div>
+      <div id="privacyAccountControls">
       <div class="block">
         <h3>通知上云 <span class="bnote">默认关闭</span></h3>
         <label class="switchrow" for="notifCloud">
           <span class="switch"><input id="notifCloud" type="checkbox" aria-describedby="notifCloudHint" /><span class="track"></span><span class="knob"></span></span>
-          允许通知内容作为云端 AI 的上下文（设备间同步不受影响）
+          允许通知内容作为云端 AI 的上下文
         </label>
-        <p class="hint" id="notifCloudHint" style="margin:8px 0 0;max-width:66ch;">开启后，通知文本可作为聊天记忆检索的上下文发送给你配置的 AI 服务商，也会在设备间同步。通知可能包含联系人、机构等第三方内容。关闭只影响之后新捕获的通知；已发送或同步的历史无法撤回。</p>
+        <p class="hint" id="notifCloudHint" style="margin:8px 0 0;max-width:66ch;">登录并开启后，通知文本可作为聊天记忆检索的上下文发送给你配置的 AI 服务商，也会进入账号的加密同步。通知可能包含联系人、机构等第三方内容。关闭只影响之后新捕获的通知；已发送或同步的历史无法撤回。</p>
         <p class="hint" id="notifCloudState" style="margin:8px 0 0;"></p>
       </div>
       <details class="fold" open>
@@ -2380,6 +2594,7 @@
         </div>
         </div>
       </details>
+      </div>
       <details class="fold" id="privacyPolicyFold">
         <summary>完整隐私政策 <span class="bnote" id="privacyPolicyMeta"></span></summary>
         <div class="fold-body">
@@ -2694,6 +2909,46 @@
     </div>
   </div>
 </aside>
+
+<!-- 身份工作区：隐私同意后首次三选一；受限入口也统一回到这里。 -->
+<div id="accountGate" role="dialog" aria-modal="true" aria-labelledby="accountGateTitle" hidden>
+  <div class="account-gate-shell">
+    <section class="account-gate-context">
+      <div class="account-gate-brand">Solum <span class="sdot amber"></span></div>
+      <div>
+        <p class="account-gate-kicker">你的私人工作空间</p>
+        <h1 id="accountGateTitle">先决定数据<br />从哪里开始</h1>
+        <p>访客模式保留真实的本地记录、计划、记忆和搜索。注册后再打开云端推理、加密同步与手机通知。</p>
+      </div>
+      <div class="account-privacy-note">
+        <span id="accountGatePrivacyIcon"></span>
+        <span><strong>本地优先</strong><small>聊天原文、人格与审计记录不会进入中心库。</small></span>
+      </div>
+    </section>
+    <section class="account-gate-panel">
+      <button class="btn icon account-gate-close" id="accountGateClose" type="button" aria-label="关闭账户面板" title="关闭" hidden></button>
+      <div class="account-gate-heading">
+        <p id="accountGateReason">登录完整使用 Solum</p>
+        <h2 id="accountGateModeTitle">欢迎回来</h2>
+      </div>
+      <div class="account-mode-switch" role="tablist" aria-label="账户方式">
+        <button type="button" role="tab" id="accountGateLoginTab" aria-selected="true">登录</button>
+        <button type="button" role="tab" id="accountGateRegisterTab" aria-selected="false">注册</button>
+      </div>
+      <div class="account-gate-form">
+        <label for="accountGateUser">账号</label>
+        <input type="text" id="accountGateUser" autocomplete="username" placeholder="输入账号" spellcheck="false" />
+        <label for="accountGatePass">密码</label>
+        <input type="password" id="accountGatePass" autocomplete="current-password" placeholder="至少 12 个字符" />
+        <button class="btn primary" id="accountGateSubmit" type="button">登录</button>
+        <p class="account-gate-status" id="accountGateStatus" role="alert" aria-live="polite"></p>
+      </div>
+      <div class="account-gate-divider"><span>或</span></div>
+      <button class="btn account-guest-btn" id="accountGuestBtn" type="button">继续使用访客模式</button>
+      <p class="account-gate-foot">访客数据保存在这台设备的独立空间，登录后不会自动混入账号空间。</p>
+    </section>
+  </div>
+</div>
 
 <!-- 通用确认模态 -->
 <div id="modalMask">
@@ -3706,6 +3961,10 @@ async function sendChat(text) {
   if (!text) return;
   // 「今日简报」是只读投影，不该落进闲聊意图（欢迎屏 chip 之外的唯一入口）。
   if (/^(刷新)?(今日|每日)简报$/.test(text)) {
+    if (!accountLoggedIn) {
+      requireAccount("登录后生成包含建议与跨设备信息的今日简报");
+      return;
+    }
     addMsg("user", [text]);
     recordChatMessage("user", text);
     await refreshDailyBrief();
@@ -3810,9 +4069,14 @@ for (const [k, text] of EXAMPLES) {
     onclick: () => { $("chatInput").value = text; $("chatInput").focus(); },
   }, [tag(k, k === "高危指令" ? "danger" : "plain"), el("span", { text })]));
 }
-$("examples").appendChild(el("button", {
-  class: "example", type: "button", onclick: () => refreshDailyBrief(),
-}, [tag("今日简报", "accent"), el("span", { text: "刷新今日简报" })]));
+const dailyBriefExample = el("button", {
+  class: "example", type: "button", onclick: () => accountLoggedIn
+    ? refreshDailyBrief()
+    : requireAccount("登录后生成包含建议与跨设备信息的今日简报"),
+}, [tag("今日简报", "accent"), el("span", { text: "刷新今日简报" })]);
+dailyBriefExample.dataset.requiresAccount = "true";
+dailyBriefExample.appendChild(el("span", { class: "utility-lock", title: "登录后可用" }, icon("lock", 14)));
+$("examples").appendChild(dailyBriefExample);
 
 function dailyBriefText(brief) {
   const events = (brief.events_today || []).map((e) => `${fmtDTText(e.start)} ${e.title}`);
@@ -4659,6 +4923,10 @@ function drawerShowPane(pane) {
   if (pane === "documents") refreshDocuments(); else refreshWidgets();
 }
 function openDrawer(pane) {
+  if (!accountLoggedIn) {
+    requireAccount(pane === "documents" ? "登录后使用本地资料工作台" : "登录后创建和管理个人组件");
+    return false;
+  }
   if (!$("drawer").classList.contains("open")) {
     drawerOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     $("drawerMask").classList.add("open");
@@ -4667,6 +4935,7 @@ function openDrawer(pane) {
     $("drawerClose").focus();
   }
   drawerShowPane(pane);
+  return true;
 }
 function closeDrawer() {
   if (!$("drawer").classList.contains("open")) return;
@@ -4698,7 +4967,7 @@ $("composerPlus").appendChild(icon("plus", 18));
     el("span", null, [el("span", { text: label }), el("span", { class: "mhint", text: hint })]),
   ]);
   $("composerMenu").append(
-    menuItem("plus", "上传资料", "PDF / 文档，仅保存在本机", () => $("documentInput").click()),
+    menuItem("plus", "上传资料", "PDF / 文档，仅保存在本机", () => accountLoggedIn ? $("documentInput").click() : requireAccount("登录后使用本地资料工作台")),
     menuItem("folder", "资料库", "已上传的本地资料", () => openDrawer("documents")),
     menuItem("doc", "组件库", "自定义组件与制作起点", () => openDrawer("widgets")),
   );
@@ -4747,7 +5016,9 @@ async function refreshAgenda() {
   try {
     const [evs, soulous] = await Promise.all([
       invoke("agenda", { now: nowParam() }),
-      invoke("soulous_config_get", { now: nowParam() }),
+      accountLoggedIn
+        ? invoke("soulous_config_get", { now: nowParam() })
+        : Promise.resolve({ push_schedule_events: false }),
     ]);
     const outboundEnabled = Boolean(soulous.push_schedule_events);
     box.textContent = "";
@@ -5068,8 +5339,12 @@ async function refreshLedger() {
   const box = $("ledgerBox"), outboundBox = $("soulousOutboundLedger"), notificationBox = $("notificationLedger");
   try {
     const [rows, routines, soulous, notificationIntelligence] = await Promise.all([
-      invoke("ledger"), invoke("routines"), invoke("soulous_config_get", { now: nowParam() }),
-      invoke("notif_intelligence_status"),
+      invoke("ledger"),
+      accountLoggedIn ? invoke("routines") : Promise.resolve([]),
+      accountLoggedIn
+        ? invoke("soulous_config_get", { now: nowParam() })
+        : Promise.resolve({ push_schedule_events: false }),
+      accountLoggedIn ? invoke("notif_intelligence_status") : Promise.resolve(null),
     ]);
     const routineById = new Map(routines.map((routine) => [routine.id, routine]));
     const outboundEnabled = Boolean(soulous.push_schedule_events);
@@ -5082,7 +5357,12 @@ async function refreshLedger() {
         ? "正在流向 Soulous：息壤 日程事件（逐次确认）"
         : "没有 息壤 数据正在流向 Soulous" }),
     ]));
-    renderNotificationLedger(notificationBox, notificationIntelligence);
+    if (accountLoggedIn) {
+      renderNotificationLedger(notificationBox, notificationIntelligence);
+    } else if (notificationBox) {
+      notificationBox.textContent = "";
+      notificationBox.appendChild(emptyBox("lock", "登录后查看通知智能记录", "访客的本地记忆台账仍可正常查看和编辑。"));
+    }
     box.textContent = "";
     if (!rows.length) {
       box.appendChild(emptyBox("memory", "记忆台账为空", "对话、事件、提醒、行为都会以可删的形式沉淀在这里。"));
@@ -5831,12 +6111,24 @@ $("notifBatchNowBtn").addEventListener("click", async () => {
 async function refreshPrivacy() {
   const toggle = $("notifCloud");
   const state = $("notifCloudState");
+  if (!accountLoggedIn) {
+    $("privacyAccountLock").hidden = false;
+    $("privacyAccountControls").hidden = true;
+    toggle.checked = false;
+    toggle.disabled = true;
+    state.textContent = "登录后可配置通知上云、通知智能和账号内的端到端加密同步。";
+    refreshPrivacyPolicy();
+    return;
+  }
+  $("privacyAccountLock").hidden = true;
+  $("privacyAccountControls").hidden = false;
+  toggle.disabled = false;
   try {
     const enabled = await invoke("notif_cloud_get");
     toggle.checked = Boolean(enabled);
     state.textContent = enabled
-      ? "当前开启：之后捕获的通知可被 recall 选作云端 AI 的上下文。设备间同步始终进行。"
-      : "当前关闭：之后捕获的通知不发往云端 AI，也不进入 recall。设备间同步不受影响，照常进行。";
+      ? "当前开启：之后捕获的通知可被 recall 选作云端 AI 的上下文，并进入账号的端到端加密同步。"
+      : "当前关闭：之后捕获的通知不发往云端 AI，也不进入 recall；账号的其他可同步数据不受影响。";
   } catch (e) {
     state.textContent = String(e);
   }
@@ -5913,6 +6205,8 @@ function setPrivacyGateStatus(message, pending) {
   status.textContent = message;
   status.classList.toggle("pending", Boolean(pending));
 }
+$("privacyAccountBtn").addEventListener("click", () =>
+  requireAccount("登录后配置通知上云、应用白名单和端到端加密同步"));
 
 function invokePrivacyCommand(command, timeoutMs) {
   let timer = null;
@@ -5935,6 +6229,9 @@ $("privacyGateAcceptBtn").addEventListener("click", async (event) => {
     // Ask for OS notification delivery only after the in-app policy gate is
     // accepted; denial leaves the local UI usable.
     try { await invokePrivacyCommand("notification_permission_request", 8000); } catch (_) { }
+    if (!accountLoggedIn && !guestChoiceMade()) {
+      openAccountGate("隐私设置已保存，现在选择使用方式", { dismissible: false, allowGuest: true });
+    }
   } catch (e) {
     // 写盘失败必须留在门里：放行等于产生一次没有记录的同意。
     setPrivacyGateStatus(`无法保存：${String(e)}。请重试。`, false);
@@ -6177,7 +6474,7 @@ $("guardReqBtn").addEventListener("click", async () => {
 let notifAccessDismissed = false;
 let notifBanner = null;
 async function refreshNotifAccess() {
-  if (notifAccessDismissed) return;
+  if (notifAccessDismissed || !accountLoggedIn) return;
   try {
     const enabled = await invoke("notif_access_status");
     if (enabled) { if (notifBanner) { notifBanner.remove(); notifBanner = null; } return; }
@@ -6209,7 +6506,7 @@ async function refreshToday() {
     const [due, evs, sugg, allEvents] = await Promise.all([
       invoke("due", { now: nowParam() }),
       invoke("agenda", { now: nowParam() }),
-      invoke("suggestions"),
+      accountLoggedIn ? invoke("suggestions") : Promise.resolve([]),
       invoke("all_events"),
     ]);
     const evTitle = {};
@@ -6252,7 +6549,12 @@ async function refreshToday() {
     const tpS = $("tpSuggest");
     tpS.textContent = "";
     const pend = sugg.filter((s) => s.status === "pending");
-    if (pend.length) {
+    if (!accountLoggedIn) {
+      tpS.appendChild(el("button", {
+        class: "btn sm", type: "button", text: "登录后开启主动建议",
+        onclick: () => requireAccount("登录后让 Solum 根据日程与行为主动给出建议"),
+      }));
+    } else if (pend.length) {
       for (const s of pend.slice(0, 3)) {
         tpS.appendChild(el("div", { class: "tp-item" }, [
           el("span", { class: "sdot hollow" }),
@@ -6444,6 +6746,79 @@ $("llmTestBtn").addEventListener("click", async () => {
 /* ============================== 账号登录（设置 → 云端，solum-cloud 代理） ============================== */
 let accountLoggedIn = false;
 let accountFormSeeded = false; // 同 llm 表单：只首次 seed，refreshAll 不覆盖正在编辑的值
+let accountGateMode = "login";
+const GUEST_CHOICE_KEY = "solum.guest-choice.v1";
+const GUEST_ALLOWED_VIEWS = new Set(["chat", "agenda", "notifs", "ledger", "journal", "search", "settings", "privacy"]);
+const GUEST_ALLOWED_REFRESHERS = new Set([
+  refreshAgenda, refreshNotifs, refreshJournal, refreshLedger, refreshPrivacy, refreshToday,
+]);
+
+function guestChoiceMade() {
+  try { return localStorage.getItem(GUEST_CHOICE_KEY) === "guest"; } catch (_) { return false; }
+}
+
+function setAccountGateMode(mode) {
+  accountGateMode = mode === "register" ? "register" : "login";
+  const registering = accountGateMode === "register";
+  $("accountGateLoginTab").setAttribute("aria-selected", registering ? "false" : "true");
+  $("accountGateRegisterTab").setAttribute("aria-selected", registering ? "true" : "false");
+  $("accountGateModeTitle").textContent = registering ? "创建你的空间" : "欢迎回来";
+  $("accountGateSubmit").textContent = registering ? "注册并进入" : "登录";
+  $("accountGatePass").autocomplete = registering ? "new-password" : "current-password";
+  $("accountGateStatus").textContent = "";
+}
+
+function openAccountGate(reason, options) {
+  if (accountLoggedIn) return;
+  options = options || {};
+  $("accountGateReason").textContent = reason || "登录完整使用 Solum";
+  $("accountGateClose").hidden = !options.dismissible;
+  $("accountGuestBtn").hidden = !options.allowGuest;
+  $("accountGate").hidden = false;
+  document.body.classList.add("account-gate-open");
+  requestAnimationFrame(() => {
+    const shell = $("accountGate").querySelector(".account-gate-shell");
+    if (!motionPreference.matches && shell && typeof shell.animate === "function") {
+      shell.animate([
+        { opacity: 0, transform: "translateY(18px) scale(.992)" },
+        { opacity: 1, transform: "translateY(0) scale(1)" },
+      ], { duration: 420, easing: "cubic-bezier(.22,1,.36,1)" });
+    }
+    $("accountGateUser").focus();
+  });
+}
+
+function closeAccountGate() {
+  $("accountGate").hidden = true;
+  document.body.classList.remove("account-gate-open");
+  $("accountGateStatus").textContent = "";
+}
+
+function requireAccount(reason) {
+  if (accountLoggedIn) return true;
+  closeMobileTools();
+  openAccountGate(reason || "这项能力需要 Solum 账号", { dismissible: true, allowGuest: false });
+  return false;
+}
+
+function renderShellIdentity(s) {
+  const loggedIn = !!s.logged_in;
+  const name = loggedIn ? s.username : "访客空间";
+  const meta = loggedIn ? "已连接 · 自动同步" : "仅保存在本机";
+  const avatar = loggedIn ? String(s.username || "S").slice(0, 1).toUpperCase() : "访";
+  $("accountShellLabel").textContent = name;
+  $("accountShellMeta").textContent = meta;
+  $("accountShellAction").textContent = loggedIn ? "管理" : "登录";
+  $("accountShellAvatar").textContent = avatar;
+  $("accountShellAvatarM").textContent = avatar;
+  $("mobileAccountLabel").textContent = name;
+  $("mobileAccountMeta").textContent = meta;
+  $("mobileAccountBtn").textContent = loggedIn ? "管理" : "登录";
+  document.body.dataset.account = loggedIn ? "member" : "guest";
+  document.querySelectorAll(".utility-btn[data-requires-account='true']").forEach((button) => {
+    button.classList.toggle("locked", !loggedIn);
+  });
+}
 
 function renderAccountStatus(s) {
   const box = $("accountStatus");
@@ -6454,7 +6829,7 @@ function renderAccountStatus(s) {
       el("span", { class: "t", text: `已登录：${s.username} @ ${s.server_url} · ${s.model}` }),
     ]));
     box.appendChild(el("div", { class: "hint", style: "margin:4px 0 0 16px;",
-      text: "登录期间云端走账号代理，上方直连配置暂不生效；退出登录后自动回落。" }));
+      text: "登录期间云端走账号代理；退出后回到纯本地访客空间。" }));
   }
 }
 
@@ -6462,6 +6837,7 @@ async function refreshAccount() {
   let s;
   try { s = await invoke("account_status_get"); } catch (_) { return; }
   accountLoggedIn = !!s.logged_in;
+  renderShellIdentity(s);
   renderAccountStatus(s);
   $("accountLoginForm").hidden = accountLoggedIn;
   $("accountLoginBtn").hidden = accountLoggedIn;
@@ -6510,6 +6886,61 @@ async function submitAccount(command, action) {
     $("accountRegisterBtn").disabled = false;
   }
 }
+
+async function submitAccountGate() {
+  const username = $("accountGateUser").value.trim();
+  const password = $("accountGatePass").value;
+  const registering = accountGateMode === "register";
+  if (!username || !password) {
+    $("accountGateStatus").textContent = "请填写账号和密码。";
+    return;
+  }
+  if (registering && password.length < 12) {
+    $("accountGateStatus").textContent = "注册密码至少需要 12 个字符。";
+    return;
+  }
+  $("accountGateSubmit").disabled = true;
+  $("accountGateSubmit").textContent = registering ? "正在创建…" : "正在登录…";
+  $("accountGateStatus").textContent = "正在建立你的加密空间…";
+  try {
+    await invoke(registering ? "account_register" : "account_login", {
+      serverUrl: SOLUM_CENTER_URL,
+      username,
+      password,
+      model: "mimo-v2.5",
+    });
+    $("accountGatePass").value = "";
+    $("accountGateStatus").textContent = "身份已确认，正在进入账号空间…";
+  } catch (e) {
+    $("accountGateStatus").textContent = String(e);
+    $("accountGateSubmit").disabled = false;
+    $("accountGateSubmit").textContent = registering ? "注册并进入" : "登录";
+  }
+}
+
+$("accountGatePrivacyIcon").appendChild(icon("lock", 20));
+$("accountGateClose").appendChild(icon("x", 18));
+$("accountGateLoginTab").addEventListener("click", () => setAccountGateMode("login"));
+$("accountGateRegisterTab").addEventListener("click", () => setAccountGateMode("register"));
+$("accountGateSubmit").addEventListener("click", submitAccountGate);
+$("accountGatePass").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); submitAccountGate(); }
+});
+$("accountGateClose").addEventListener("click", closeAccountGate);
+$("accountGuestBtn").addEventListener("click", () => {
+  try { localStorage.setItem(GUEST_CHOICE_KEY, "guest"); } catch (_) { }
+  closeAccountGate();
+  toast("已进入访客空间，数据只保存在本机", "ok");
+});
+$("accountShellBtn").addEventListener("click", () => {
+  if (accountLoggedIn) showView("cloud");
+  else openAccountGate("登录后连接所有设备与完整能力", { dismissible: true, allowGuest: false });
+});
+$("mobileAccountBtn").addEventListener("click", () => {
+  closeMobileTools();
+  if (accountLoggedIn) showView("cloud");
+  else openAccountGate("登录后连接所有设备与完整能力", { dismissible: true, allowGuest: false });
+});
 
 $("accountLoginBtn").addEventListener("click", async () => {
   await submitAccount("account_login", "登录");
@@ -7131,9 +7562,16 @@ function groupOfView(view) {
 }
 // 设置目录页（多级导航一级页）：图标 + 名称 + 一句说明 + 右箭头
 for (const [v, label, ic, desc] of SETTINGS_GROUP.sub) {
-  $("settingsMenu").appendChild(el("button", { class: "nav-menu-item", type: "button", onclick: () => showView(v) }, [
+  const guestAllowed = GUEST_ALLOWED_VIEWS.has(v);
+  $("settingsMenu").appendChild(el("button", {
+    class: "nav-menu-item" + (guestAllowed ? "" : " locked-entry"),
+    type: "button",
+    "data-requires-account": guestAllowed ? "false" : "true",
+    onclick: () => showView(v),
+  }, [
     icon(ic, 20),
     el("div", null, [el("div", { class: "nm", text: label }), el("div", { class: "nd", text: desc })]),
+    guestAllowed ? null : el("span", { class: "menu-lock", title: "登录后可用" }, icon("lock", 15)),
     el("span", { class: "chev" }, icon("chev", 16)),
   ]));
 }
@@ -7151,10 +7589,10 @@ for (const g of PRIMARY_GROUPS) {
   ]));
 }
 const TOOL_ENTRIES = [
-  { label: "邮箱", icon: "mail", group: "mail", action: () => showView("email") },
+  { label: "邮箱", icon: "mail", group: "mail", requiresAccount: true, action: () => showView("email") },
   { label: "设置", icon: "settings", group: "settings", action: () => showView("settings") },
-  { label: "资料", icon: "doc", action: () => openDrawer("documents") },
-  { label: "组件", icon: "folder", action: () => openDrawer("widgets") },
+  { label: "资料", icon: "doc", requiresAccount: true, action: () => accountLoggedIn ? openDrawer("documents") : requireAccount("登录后使用本地资料工作台") },
+  { label: "组件", icon: "folder", requiresAccount: true, action: () => accountLoggedIn ? openDrawer("widgets") : requireAccount("登录后创建和管理个人组件") },
 ];
 function closeMobileTools() {
   $("mobileTools").hidden = true;
@@ -7168,12 +7606,16 @@ function openMobileTools() {
   requestAnimationFrame(() => $("mobileTools").querySelector("button")?.focus());
 }
 function makeUtilityButton(entry) {
-  return el("button", {
+  const button = el("button", {
     class: "utility-btn",
     type: "button",
     "data-group": entry.group,
+    "data-label": entry.label,
+    "data-requires-account": entry.requiresAccount ? "true" : "false",
     onclick: () => { closeMobileTools(); entry.action(); },
   }, [icon(entry.icon, 18), el("span", { text: entry.label })]);
+  if (entry.requiresAccount) button.appendChild(el("span", { class: "utility-lock", title: "登录后可用" }, icon("lock", 14)));
+  return button;
 }
 for (const entry of TOOL_ENTRIES) {
   $("utilityNav").appendChild(makeUtilityButton(entry));
@@ -7314,6 +7756,10 @@ dataMotionObserver.observe($("main"), { childList: true, subtree: true });
 function showView(view, options) {
   options = options || {};
   if (!$("view-" + view)) view = "chat";
+  if (!accountLoggedIn && !GUEST_ALLOWED_VIEWS.has(view)) {
+    requireAccount(`“${groupOfView(view).label}”中的完整能力需要登录`);
+    return false;
+  }
   if (currentView && currentView !== view) {
     const currentPanel = $("view-" + currentView);
     if (currentPanel) {
@@ -7355,18 +7801,19 @@ function showView(view, options) {
     $("subnavWrap").classList.remove("hide");
     for (const [v, label] of group.views) {
       const panel = $("view-" + v);
+      const lockedForGuest = !accountLoggedIn && !GUEST_ALLOWED_VIEWS.has(v);
       if (panel) {
         panel.setAttribute("role", "tabpanel");
         panel.setAttribute("aria-labelledby", "tab-" + v);
       }
       sn.appendChild(el("button", {
-        id: "tab-" + v, "data-view": v, type: "button", class: v === view ? "active" : "", text: label, role: "tab",
+        id: "tab-" + v, "data-view": v, type: "button", class: (v === view ? "active" : "") + (lockedForGuest ? " locked-tab" : ""), role: "tab",
         "aria-selected": v === view ? "true" : "false",
         "aria-controls": "view-" + v,
         tabindex: v === view ? "0" : "-1",
         onclick: () => showView(v),
         onkeydown: handleSubnavKeydown,
-      }));
+      }, [el("span", { text: label }), lockedForGuest ? icon("lock", 13) : null]));
     }
   } else {
     $("subnavWrap").classList.add("hide");
@@ -7387,6 +7834,7 @@ function showView(view, options) {
     clearTimeout(globalSearchTimer);
     globalSearchTimer = setTimeout(runGlobalSearch, options.refresh === false ? 120 : 360);
   }
+  return true;
 }
 
 const VIEW_REFRESHERS = {
@@ -7449,7 +7897,10 @@ async function refreshAll(options) {
   const view = currentView || "chat";
   if (options && options.progress) beginRouteRefresh(view);
   try {
-    await Promise.allSettled(refreshers.map((refresh) => Promise.resolve().then(refresh)));
+    const activeRefreshers = accountLoggedIn
+      ? refreshers
+      : refreshers.filter((refresh) => GUEST_ALLOWED_REFRESHERS.has(refresh));
+    await Promise.allSettled(activeRefreshers.map((refresh) => Promise.resolve().then(refresh)));
     if (currentView === "search") runGlobalSearch();
   } finally {
     if (options && options.progress) endRouteRefresh(view);
@@ -7527,19 +7978,25 @@ if (window.__TAURI__ && window.__TAURI__.event) {
 }
 
 /* ============================== 启动 ============================== */
-// 隐私门先挂在最上层；其余初始化仍可在后面进行。
-initPrivacyGate();
+// 隐私门判定必须先完成；身份选择只能出现在同意之后。
+const privacyGateReady = initPrivacyGate();
 // 先从 Rust 取得本地 profile id，再读取 Web Storage/IndexedDB。否则账号用户
 // 启动时会短暂渲染 guest 的聊天记录，而且 pagehide 还可能把错误分区写回。
-initClock().then(() => {
+initClock().then(async () => {
+  await privacyGateReady;
+  await refreshAccount();
   renderChatSessions();
   renderActiveChatSession();
   restoreCurrentChatDraft();
   syncChatContext().catch(() => { /* static preview has no IPC; sending stays guarded */ });
-  const initialView = $("view-" + uiState.lastView) ? uiState.lastView : "chat";
+  const requestedView = $("view-" + uiState.lastView) ? uiState.lastView : "chat";
+  const initialView = accountLoggedIn || GUEST_ALLOWED_VIEWS.has(requestedView) ? requestedView : "chat";
   showView(initialView, { refresh: false, animate: false });
   refreshNotifAccess();
-  return refreshAll({ progress: true });
+  await refreshAll({ progress: true });
+  if (!accountLoggedIn && !guestChoiceMade() && !$("privacyGate").classList.contains("open")) {
+    openAccountGate("登录完整使用 Solum，或先从本地访客空间开始", { dismissible: false, allowGuest: true });
+  }
 });
 setInterval(() => { refreshNotifs(); refreshToday(); }, 30000); // 到点角标定期刷新
 window.addEventListener("pagehide", () => {

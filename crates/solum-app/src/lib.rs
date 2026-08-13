@@ -115,6 +115,32 @@ type CmdResult<T> = Result<T, String>;
 /// like the sync cursors it sits beside — a poll position is not memory.
 const HEALTH_SINCE_KEY: &str = "health_poll_since_ms";
 
+fn require_full_account() -> CmdResult<()> {
+    if solum_core::account::AccountSession::load().is_some() {
+        Ok(())
+    } else {
+        Err("这项完整能力需要先注册或登录 Solum 账号".into())
+    }
+}
+
+fn tool_requires_full_account(tool: &str) -> bool {
+    matches!(
+        tool,
+        "email_send"
+            | "soulous_push_event"
+            | "widget_delete"
+            | "widget_record_delete"
+            | "persona_clear"
+    )
+}
+
+fn require_tool_account(tool: &str) -> CmdResult<()> {
+    if tool_requires_full_account(tool) {
+        require_full_account()?;
+    }
+    Ok(())
+}
+
 fn parse_now(now: Option<String>) -> CmdResult<NaiveDateTime> {
     let Some(s) = now.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
         // Zero out sub-minute noise like solum-cli does: otherwise derived event
@@ -193,6 +219,12 @@ fn sync_notification_pipeline(
     app: &tauri::AppHandle,
     config: &NotificationIntelligenceConfig,
 ) -> CmdResult<()> {
+    if solum_core::account::AccountSession::load().is_none() {
+        return app
+            .notif_access()
+            .stop_pipeline()
+            .map_err(|e| e.to_string());
+    }
     let relay_alerts_configured = solum_core::sync::SyncConfig::load().is_some();
     if config.allowed_packages.is_empty() && !relay_alerts_configured {
         app.notif_access()
@@ -296,6 +328,7 @@ struct LlmSettings {
 
 #[tauri::command]
 fn llm_config_get() -> CmdResult<LlmSettings> {
+    require_full_account()?;
     let path = llm_config_file().to_string_lossy().into_owned();
     match solum_core::llm::LlmConfig::load() {
         Some(c) => Ok(LlmSettings {
@@ -368,6 +401,9 @@ fn resolve_llm_args(a: LlmSaveArgs) -> CmdResult<solum_core::llm::LlmConfig> {
 /// masked summary for the status footer.
 #[tauri::command]
 fn llm_config_save(state: State<AppState>, cfg: LlmSaveArgs) -> CmdResult<String> {
+    if solum_core::account::AccountSession::load().is_none() {
+        return Err("完整云端能力需要先注册或登录 Solum 账号".into());
+    }
     let c = resolve_llm_args(cfg)?;
     let json = serde_json::to_string_pretty(&c).map_err(|e| e.to_string())?;
     let path = llm_config_file();
@@ -376,18 +412,11 @@ fn llm_config_save(state: State<AppState>, cfg: LlmSaveArgs) -> CmdResult<String
     }
     solum_core::fsatomic::write_atomic(&path, &json).map_err(|e| e.to_string())?;
     let summary = c.masked_summary();
-    // 账号登录时账号代理优先（对齐鸿蒙 0.2.0 的模式）：直连配置照常保存，
-    // 但不抢走正在运行的账号 reasoner——退出登录后自动回落到这份配置。
-    if solum_core::account::AccountSession::load().is_some() {
-        return Ok(format!(
-            "{summary}（已保存；当前账号登录优先，退出登录后生效）"
-        ));
-    }
-    lock!(state).set_reasoner(Box::new(solum_core::llm::LlmReasoner::new(c)));
-    if let Ok(mut g) = state.llm_summary.lock() {
-        *g = Some(summary.clone());
-    }
-    Ok(summary)
+    // Direct vendor settings remain importable for advanced account users,
+    // but the authenticated account proxy owns the running reasoner. Logging
+    // out always returns to offline guest mode.
+    let _ = state;
+    Ok(format!("{summary}（已保存；当前账号代理保持生效）"))
 }
 
 #[derive(Serialize)]
@@ -400,6 +429,9 @@ struct LlmTestResult {
 /// up-to-`timeout_secs` blocking HTTP call never freezes the UI thread.
 #[tauri::command]
 async fn llm_config_test(cfg: LlmSaveArgs) -> CmdResult<LlmTestResult> {
+    if solum_core::account::AccountSession::load().is_none() {
+        return Err("测试云端连接前请先注册或登录 Solum 账号".into());
+    }
     let c = resolve_llm_args(cfg)?;
     tauri::async_runtime::spawn_blocking(move || {
         use solum_core::extract::Reasoner;
@@ -529,7 +561,7 @@ async fn account_register(
 }
 
 /// Local sign-out first-class: best-effort server-side revocation, then restart
-/// into the guest profile (whose reasoner may use a direct-key config).
+/// into the offline guest profile. Legacy direct-key files never activate it.
 #[tauri::command]
 async fn account_logout(_state: State<'_, AppState>, app: tauri::AppHandle) -> CmdResult<String> {
     if let Some(session) = solum_core::account::AccountSession::load() {
@@ -732,6 +764,7 @@ struct SoulousSettings {
 
 #[tauri::command]
 fn soulous_config_get(state: State<AppState>, now: Option<String>) -> CmdResult<SoulousSettings> {
+    require_full_account()?;
     let now = parse_now(now)?;
     let path = soulous_config_file().to_string_lossy().into_owned();
     let cache = lock!(state).soulous_status(now).map_err(core_err)?;
@@ -805,6 +838,7 @@ fn resolve_soulous_args(args: SoulousSaveArgs) -> CmdResult<solum_core::soulous:
 
 #[tauri::command]
 fn soulous_config_save(args: SoulousSaveArgs) -> CmdResult<String> {
+    require_full_account()?;
     let config = resolve_soulous_args(args)?;
     config.save_to(&soulous_config_file()).map_err(core_err)?;
     Ok(config.masked_summary())
@@ -826,6 +860,7 @@ async fn soulous_pull(
     state: State<'_, AppState>,
     now: Option<String>,
 ) -> CmdResult<SoulousPullResp> {
+    require_full_account()?;
     let now = parse_now(now)?;
     let orch = state.orch.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -862,6 +897,7 @@ fn read_email_config() -> CmdResult<EmailConfig> {
 }
 
 fn email_account_from_config(account_id: &str) -> CmdResult<EmailAccount> {
+    require_full_account()?;
     read_email_config()?
         .account(account_id)
         .cloned()
@@ -877,6 +913,7 @@ struct EmailSettings {
 
 #[tauri::command]
 fn email_config_get() -> CmdResult<EmailSettings> {
+    require_full_account()?;
     let config = read_email_config()?;
     Ok(EmailSettings {
         configured: !config.accounts.is_empty(),
@@ -1015,6 +1052,7 @@ fn resolve_email_account(
 
 #[tauri::command]
 fn email_config_save(args: EmailAccountSaveArgs) -> CmdResult<EmailSettings> {
+    require_full_account()?;
     let mut config = read_email_config()?;
     let account = resolve_email_account(args, &config)?;
     if let Some(slot) = config
@@ -1036,6 +1074,7 @@ fn email_config_save(args: EmailAccountSaveArgs) -> CmdResult<EmailSettings> {
 
 #[tauri::command]
 fn email_config_remove(account_id: String) -> CmdResult<EmailSettings> {
+    require_full_account()?;
     let mut config = read_email_config()?;
     let before = config.accounts.len();
     config.accounts.retain(|account| account.id != account_id);
@@ -1180,6 +1219,7 @@ struct EmailOAuthBegin {
 
 #[tauri::command]
 fn email_oauth_begin(state: State<AppState>, account_id: String) -> CmdResult<EmailOAuthBegin> {
+    require_full_account()?;
     let account = email_account_from_config(&account_id)?;
     let (redirect_uri, receiver) = start_email_oauth_callback()?;
     let start = solum_core::email::oauth_start(&account, &redirect_uri).map_err(core_err)?;
@@ -1217,6 +1257,7 @@ async fn email_oauth_poll(
     state: State<'_, AppState>,
     session_id: String,
 ) -> CmdResult<EmailOAuthPoll> {
+    require_full_account()?;
     let session = state
         .email_oauth
         .lock()
@@ -1353,6 +1394,7 @@ fn widget_confirm_preview(
     preview_id: String,
     now: Option<String>,
 ) -> CmdResult<solum_core::widget::WidgetDefinition> {
+    require_full_account()?;
     let now = parse_now(now)?;
     lock!(state)
         .confirm_widget_preview(&preview_id, now)
@@ -1361,6 +1403,7 @@ fn widget_confirm_preview(
 
 #[tauri::command]
 fn widget_discard_preview(state: State<AppState>, preview_id: String) -> CmdResult<()> {
+    require_full_account()?;
     lock!(state)
         .discard_widget_preview(&preview_id)
         .map_err(core_err)
@@ -1368,6 +1411,7 @@ fn widget_discard_preview(state: State<AppState>, preview_id: String) -> CmdResu
 
 #[tauri::command]
 fn widget_defs(state: State<AppState>) -> CmdResult<Vec<solum_core::widget::WidgetDefinition>> {
+    require_full_account()?;
     lock!(state).widget_definitions().map_err(core_err)
 }
 
@@ -1376,6 +1420,7 @@ fn widget_records(
     state: State<AppState>,
     widget_id: i64,
 ) -> CmdResult<Vec<solum_core::widget::WidgetRecord>> {
+    require_full_account()?;
     lock!(state).widget_records(widget_id).map_err(core_err)
 }
 
@@ -1388,6 +1433,7 @@ fn widget_add_field(
     field: solum_core::widget::WidgetField,
     now: Option<String>,
 ) -> CmdResult<solum_core::widget::WidgetDefinition> {
+    require_full_account()?;
     let now = parse_now(now)?;
     lock!(state)
         .add_widget_field(widget_id, &field, now)
@@ -1402,6 +1448,7 @@ fn widget_import_events(
     limit: usize,
     now: Option<String>,
 ) -> CmdResult<solum_core::widget::WidgetImportOutcome> {
+    require_full_account()?;
     let now = parse_now(now)?;
     lock!(state)
         .import_events_into_widget(widget_id, limit, now)
@@ -1415,6 +1462,7 @@ fn widget_promote_record(
     record_id: i64,
     now: Option<String>,
 ) -> CmdResult<solum_core::model::Event> {
+    require_full_account()?;
     let now = parse_now(now)?;
     lock!(state)
         .promote_widget_record(widget_id, record_id, now)
@@ -1429,6 +1477,7 @@ fn widget_record_create(
     data: serde_json::Value,
     now: Option<String>,
 ) -> CmdResult<solum_core::widget::WidgetRecord> {
+    require_full_account()?;
     let now = parse_now(now)?;
     lock!(state)
         .add_widget_record(widget_id, data, now)
@@ -1442,6 +1491,7 @@ fn widget_record_update(
     record_id: i64,
     data: serde_json::Value,
 ) -> CmdResult<solum_core::widget::WidgetRecord> {
+    require_full_account()?;
     lock!(state)
         .update_widget_record(widget_id, record_id, data)
         .map_err(core_err)
@@ -1575,6 +1625,7 @@ struct RuleDto {
 
 #[tauri::command]
 fn rules(state: State<AppState>) -> CmdResult<Vec<RuleDto>> {
+    require_full_account()?;
     let o = lock!(state);
     let table = o.rule_table();
     Ok(solum_core::model::EventKind::all()
@@ -1614,6 +1665,7 @@ fn rules_save(
     rule: RuleEdit,
     now: Option<String>,
 ) -> CmdResult<RuleSaveResult> {
+    require_full_account()?;
     let kind = EventKind::from_str(rule.kind.trim()).map_err(core_err)?;
     if rule.leads.is_empty() || rule.leads.len() > 4 {
         return Err("每类事件需要保留 1–4 个提前提醒".into());
@@ -1697,6 +1749,7 @@ struct ProactivityDto {
 
 #[tauri::command]
 fn proactivity_get(state: State<AppState>) -> CmdResult<Vec<ProactivityDto>> {
+    require_full_account()?;
     let o = lock!(state);
     let p = o.proactivity();
     Ok(ProactivityDimension::all()
@@ -1710,6 +1763,7 @@ fn proactivity_get(state: State<AppState>) -> CmdResult<Vec<ProactivityDto>> {
 
 #[tauri::command]
 fn proactivity_set(state: State<AppState>, dimension: String, level: String) -> CmdResult<()> {
+    require_full_account()?;
     let dim: ProactivityDimension = dimension.parse().map_err(core_err)?;
     let lvl: ProactivityLevel = level.parse().map_err(core_err)?;
     lock!(state).set_proactivity(dim, lvl).map_err(core_err)
@@ -1719,11 +1773,13 @@ fn proactivity_set(state: State<AppState>, dimension: String, level: String) -> 
 
 #[tauri::command]
 fn notif_cloud_get(state: State<AppState>) -> CmdResult<bool> {
+    require_full_account()?;
     lock!(state).notif_cloud_enabled().map_err(core_err)
 }
 
 #[tauri::command]
 fn notif_cloud_set(state: State<AppState>, enabled: bool) -> CmdResult<()> {
+    require_full_account()?;
     lock!(state)
         .set_notif_cloud_enabled(enabled)
         .map_err(core_err)
@@ -1758,6 +1814,7 @@ struct NotificationAppDto {
 
 #[tauri::command]
 fn notif_intelligence_apps(app: tauri::AppHandle) -> CmdResult<Vec<NotificationAppDto>> {
+    require_full_account()?;
     let apps = app
         .notif_access()
         .installed_apps()
@@ -1793,6 +1850,7 @@ fn notif_intelligence_status(
     state: State<AppState>,
     app: tauri::AppHandle,
 ) -> CmdResult<NotificationIntelligenceStatus> {
+    require_full_account()?;
     let o = lock!(state);
     Ok(NotificationIntelligenceStatus {
         config: o.notification_intelligence_config().map_err(core_err)?,
@@ -1826,6 +1884,7 @@ fn notif_intelligence_status(
 /// The user has seen the intake-loss notice; stop showing it.
 #[tauri::command]
 fn notif_intelligence_acknowledge_losses(state: State<AppState>) -> CmdResult<()> {
+    require_full_account()?;
     lock!(state).acknowledge_capture_losses().map_err(core_err)
 }
 
@@ -1836,6 +1895,7 @@ fn notif_intelligence_set_app(
     package_name: String,
     enabled: bool,
 ) -> CmdResult<NotificationIntelligenceConfig> {
+    require_full_account()?;
     // Native policy file first, database second.
     //
     // These are two stores of the same decision, and the listener reads only
@@ -1881,6 +1941,7 @@ fn notif_intelligence_set_app_auto_event(
     package_name: String,
     enabled: bool,
 ) -> CmdResult<NotificationIntelligenceConfig> {
+    require_full_account()?;
     let mut o = lock!(state);
     o.set_notification_app_auto_event(&package_name, enabled)
         .map_err(core_err)?;
@@ -1894,6 +1955,7 @@ fn notif_intelligence_auto_event_counts(
     state: State<AppState>,
     now: Option<String>,
 ) -> CmdResult<Vec<(String, i64)>> {
+    require_full_account()?;
     let now = parse_now(now)?;
     lock!(state).auto_event_counts(now).map_err(core_err)
 }
@@ -1903,6 +1965,7 @@ fn notif_intelligence_set_batch_interval(
     state: State<AppState>,
     minutes: u16,
 ) -> CmdResult<NotificationIntelligenceConfig> {
+    require_full_account()?;
     let mut config = lock!(state)
         .notification_intelligence_config()
         .map_err(core_err)?;
@@ -1919,6 +1982,7 @@ fn notif_intelligence_add_priority_rule(
     package_name: Option<String>,
     matcher: String,
 ) -> CmdResult<solum_core::classify::NotificationPriorityRule> {
+    require_full_account()?;
     let matcher = match matcher.as_str() {
         "substring" => solum_core::classify::NotificationMatchKind::Substring,
         "regex" => solum_core::classify::NotificationMatchKind::Regex,
@@ -1931,6 +1995,7 @@ fn notif_intelligence_add_priority_rule(
 
 #[tauri::command]
 fn notif_intelligence_remove_priority_rule(state: State<AppState>, id: String) -> CmdResult<()> {
+    require_full_account()?;
     lock!(state)
         .remove_notification_priority_rule(&id)
         .map_err(core_err)
@@ -1943,6 +2008,7 @@ fn notif_intelligence_set_filter_proposal(
     id: i64,
     accepted: bool,
 ) -> CmdResult<()> {
+    require_full_account()?;
     let config = {
         let o = lock!(state);
         o.set_notification_filter_proposal(id, accepted)
@@ -1963,6 +2029,7 @@ fn notif_intelligence_set_action_proposal(
     accepted: bool,
     now: Option<String>,
 ) -> CmdResult<String> {
+    require_full_account()?;
     lock!(state)
         .resolve_notification_action_proposal(id, accepted, parse_now(now)?)
         .map_err(core_err)
@@ -1974,6 +2041,7 @@ fn notif_intelligence_remove_filter_rule(
     app: tauri::AppHandle,
     id: String,
 ) -> CmdResult<()> {
+    require_full_account()?;
     let config = {
         let o = lock!(state);
         o.remove_notification_filter_rule(&id).map_err(core_err)?;
@@ -1988,6 +2056,7 @@ fn notif_intelligence_remove_filter_rule(
 
 #[tauri::command]
 fn notif_intelligence_restore_capture(state: State<AppState>, id: i64) -> CmdResult<()> {
+    require_full_account()?;
     lock!(state)
         .restore_notification_capture(id)
         .map_err(core_err)
@@ -1999,6 +2068,7 @@ fn notif_intelligence_promote_capture(
     id: i64,
     now: Option<String>,
 ) -> CmdResult<String> {
+    require_full_account()?;
     let now = parse_now(now)?;
     lock!(state)
         .promote_notification_capture(id, now)
@@ -2007,6 +2077,7 @@ fn notif_intelligence_promote_capture(
 
 #[tauri::command]
 fn notif_intelligence_process_now(state: State<AppState>, now: Option<String>) -> CmdResult<usize> {
+    require_full_account()?;
     let now = parse_now(now)?;
     lock!(state)
         .process_notification_batch(now)
@@ -2015,6 +2086,7 @@ fn notif_intelligence_process_now(state: State<AppState>, now: Option<String>) -
 
 #[tauri::command]
 fn notif_pipeline_status(app: tauri::AppHandle) -> CmdResult<solum_notif_access::PipelineStatus> {
+    require_full_account()?;
     app.notif_access()
         .pipeline_status()
         .map_err(|e| e.to_string())
@@ -2022,6 +2094,7 @@ fn notif_pipeline_status(app: tauri::AppHandle) -> CmdResult<solum_notif_access:
 
 #[tauri::command]
 fn notif_pipeline_request_battery_optimization(app: tauri::AppHandle) -> CmdResult<()> {
+    require_full_account()?;
     app.notif_access()
         .request_ignore_battery_optimizations()
         .map_err(|e| e.to_string())
@@ -2029,6 +2102,7 @@ fn notif_pipeline_request_battery_optimization(app: tauri::AppHandle) -> CmdResu
 
 #[tauri::command]
 fn notif_pipeline_open_battery_settings(app: tauri::AppHandle) -> CmdResult<()> {
+    require_full_account()?;
     app.notif_access()
         .open_battery_settings()
         .map_err(|e| e.to_string())
@@ -2036,6 +2110,7 @@ fn notif_pipeline_open_battery_settings(app: tauri::AppHandle) -> CmdResult<()> 
 
 #[tauri::command]
 fn notif_pipeline_open_background_settings(app: tauri::AppHandle) -> CmdResult<()> {
+    require_full_account()?;
     app.notif_access()
         .open_app_background_settings()
         .map_err(|e| e.to_string())
@@ -2079,6 +2154,7 @@ fn guard_run(
     args: String,
     now: Option<String>,
 ) -> CmdResult<GuardRunResp> {
+    require_tool_account(&tool)?;
     let now = parse_now(now)?;
     match lock!(state).run_tool(&tool, &args, None, now) {
         Ok(output) => Ok(GuardRunResp { ok: true, output }),
@@ -2108,6 +2184,7 @@ fn guard_request(
     args: String,
     now: Option<String>,
 ) -> CmdResult<PendingDto> {
+    require_tool_account(&tool)?;
     let now = parse_now(now)?;
     let pending = lock!(state)
         .request_confirmation(&tool, &args, now)
@@ -2132,6 +2209,7 @@ async fn guard_confirm(
     args: String,
     now: Option<String>,
 ) -> CmdResult<GuardRunResp> {
+    require_tool_account(&tool)?;
     let now = parse_now(now)?;
     let orch = state.orch.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -2202,6 +2280,7 @@ fn checkin_resp(question: String) -> CheckinResp {
 /// same automatically on the system clock).
 #[tauri::command]
 fn checkin_now(state: State<AppState>, now: Option<String>) -> CmdResult<Option<CheckinResp>> {
+    require_full_account()?;
     let now = parse_now(now)?;
     Ok(lock!(state)
         .checkin_if_due(now)
@@ -2213,6 +2292,7 @@ fn checkin_now(state: State<AppState>, now: Option<String>) -> CmdResult<Option<
 
 #[tauri::command]
 fn suggestions(state: State<AppState>) -> CmdResult<Vec<Suggestion>> {
+    require_full_account()?;
     lock!(state).suggestions().map_err(core_err)
 }
 
@@ -2222,6 +2302,7 @@ fn suggest_generate(
     days: i64,
     now: Option<String>,
 ) -> CmdResult<Vec<Suggestion>> {
+    require_full_account()?;
     let now = parse_now(now)?;
     lock!(state)
         .generate_suggestions(now, days.clamp(1, 30))
@@ -2238,6 +2319,7 @@ fn suggest_set(
     status: String,
     now: Option<String>,
 ) -> CmdResult<Option<String>> {
+    require_full_account()?;
     // 注入时钟（AGENTS.md 红线）：采纳习惯建议会创建 routine，created_at 驱动
     // 7 天暂停刹车——用真实时钟会让模拟时钟下的演示/验证行为漂移。
     let now = parse_now(now)?;
@@ -2251,6 +2333,7 @@ fn suggest_set(
 
 #[tauri::command]
 fn routines(state: State<AppState>) -> CmdResult<Vec<solum_core::routine::Routine>> {
+    require_full_account()?;
     lock!(state).routines().map_err(core_err)
 }
 
@@ -2261,6 +2344,7 @@ fn routine_set_active(
     active: bool,
     now: Option<String>,
 ) -> CmdResult<()> {
+    require_full_account()?;
     let now = parse_now(now)?;
     lock!(state)
         .set_routine_active(id, active, now)
@@ -2275,6 +2359,7 @@ fn routine_update(
     time_of_day: String,
     now: Option<String>,
 ) -> CmdResult<()> {
+    require_full_account()?;
     let now = parse_now(now)?;
     lock!(state)
         .update_routine(id, &title, &time_of_day, now)
@@ -2284,6 +2369,7 @@ fn routine_update(
 /// D4「一键已完成」：确认某条 routine 今天完成了（落行为日志，按日去重）。
 #[tauri::command]
 fn routine_done(state: State<AppState>, id: i64, now: Option<String>) -> CmdResult<String> {
+    require_full_account()?;
     let now = parse_now(now)?;
     lock!(state).confirm_routine(id, now).map_err(core_err)
 }
@@ -2292,6 +2378,7 @@ fn routine_done(state: State<AppState>, id: i64, now: Option<String>) -> CmdResu
 
 #[tauri::command]
 fn stats(state: State<AppState>, now: Option<String>) -> CmdResult<String> {
+    require_full_account()?;
     let now = parse_now(now)?;
     Ok(lock!(state).stats(now).map_err(core_err)?.render())
 }
@@ -2314,6 +2401,7 @@ async fn review(
     now: Option<String>,
     styled: Option<bool>,
 ) -> CmdResult<ReviewResp> {
+    require_full_account()?;
     let now = parse_now(now)?;
     let from = now - Duration::days(days.clamp(1, 365));
     let styled = styled.unwrap_or(false);
@@ -2340,6 +2428,7 @@ async fn review(
 /// Build today's read-only focus brief for an on-demand UI refresh.
 #[tauri::command]
 fn daily_brief(state: State<AppState>, now: Option<String>) -> CmdResult<solum_core::brief::Brief> {
+    require_full_account()?;
     let now = parse_now(now)?;
     lock!(state).daily_brief(now).map_err(core_err)
 }
@@ -2354,6 +2443,7 @@ struct PersonaDto {
 
 #[tauri::command]
 fn persona_get(state: State<AppState>) -> CmdResult<PersonaDto> {
+    require_full_account()?;
     let o = lock!(state);
     Ok(PersonaDto {
         active: o.persona().cloned(),
@@ -2371,6 +2461,7 @@ fn persona_set(
     note: Option<String>,
     now: Option<String>,
 ) -> CmdResult<PersonaProfile> {
+    require_full_account()?;
     let now = parse_now(now)?;
     let draft = PersonaDraft {
         nickname,
@@ -2396,6 +2487,7 @@ fn persona_import_preview(
     raw: String,
     me: String,
 ) -> CmdResult<ImportPreviewResp> {
+    require_full_account()?;
     let report = lock!(state)
         .preview_persona_import(&raw, &me)
         .map_err(core_err)?;
@@ -2415,6 +2507,7 @@ fn persona_import_save(
     note: Option<String>,
     now: Option<String>,
 ) -> CmdResult<PersonaProfile> {
+    require_full_account()?;
     let now = parse_now(now)?;
     let draft = PersonaDraft {
         nickname,
@@ -2429,6 +2522,7 @@ fn persona_import_save(
 
 #[tauri::command]
 fn persona_rollback(state: State<AppState>, version: i64) -> CmdResult<PersonaProfile> {
+    require_full_account()?;
     lock!(state).rollback_persona(version).map_err(core_err)
 }
 
@@ -2439,6 +2533,7 @@ fn persona_rollback(state: State<AppState>, version: i64) -> CmdResult<PersonaPr
 /// frontend only ever shows the nag banner where it's actually actionable.
 #[tauri::command]
 fn notif_access_status(app: tauri::AppHandle) -> CmdResult<bool> {
+    require_full_account()?;
     app.notif_access().is_enabled().map_err(|e| e.to_string())
 }
 
@@ -2447,6 +2542,7 @@ fn notif_access_status(app: tauri::AppHandle) -> CmdResult<bool> {
 /// for this permission — the user must flip the toggle themselves.
 #[tauri::command]
 fn notif_access_open_settings(app: tauri::AppHandle) -> CmdResult<()> {
+    require_full_account()?;
     app.notif_access()
         .open_settings()
         .map_err(|e| e.to_string())
@@ -2464,6 +2560,7 @@ struct HealthStatusDto {
 
 #[tauri::command]
 fn health_status(app: tauri::AppHandle) -> CmdResult<HealthStatusDto> {
+    require_full_account()?;
     let hc = app.health_connect();
     let available = hc.is_available().map_err(|e| e.to_string())?;
     let granted = if available {
@@ -2477,6 +2574,7 @@ fn health_status(app: tauri::AppHandle) -> CmdResult<HealthStatusDto> {
 /// Launch Health Connect's own grant screen; blocks until the user returns.
 #[tauri::command]
 fn health_request(app: tauri::AppHandle) -> CmdResult<bool> {
+    require_full_account()?;
     app.health_connect()
         .request_permissions()
         .map_err(|e| e.to_string())
@@ -2484,6 +2582,7 @@ fn health_request(app: tauri::AppHandle) -> CmdResult<bool> {
 
 #[tauri::command]
 fn health_samples(state: State<AppState>) -> CmdResult<Vec<HealthSample>> {
+    require_full_account()?;
     lock!(state).health_samples().map_err(core_err)
 }
 
@@ -2540,6 +2639,7 @@ struct SyncConfigSettings {
 
 #[tauri::command]
 fn sync_config_get(state: State<AppState>) -> CmdResult<SyncConfigSettings> {
+    require_full_account()?;
     let path = sync_config_file();
     let path_str = path.to_string_lossy().into_owned();
     let device_id = lock!(state).sync_device_id().map_err(core_err)?;
@@ -2700,7 +2800,11 @@ struct SyncStatusDto {
 
 #[tauri::command]
 fn sync_status(state: State<AppState>) -> CmdResult<SyncStatusDto> {
-    let cfg = solum_core::sync::SyncConfig::load();
+    require_full_account()?;
+    let account_logged_in = solum_core::account::AccountSession::load().is_some();
+    let cfg = account_logged_in
+        .then(solum_core::sync::SyncConfig::load)
+        .flatten();
     let store = state
         .sync_store
         .lock()
@@ -2725,6 +2829,7 @@ fn sync_status(state: State<AppState>) -> CmdResult<SyncStatusDto> {
 /// nothing else can know the data was recovered.
 #[tauri::command]
 fn sync_gap_acknowledge(state: State<AppState>) -> CmdResult<()> {
+    require_full_account()?;
     let store = state
         .sync_store
         .lock()
@@ -2740,6 +2845,9 @@ fn sync_gap_acknowledge(state: State<AppState>) -> CmdResult<()> {
 /// uses; only the cache reload afterwards touches `orch`, and only when the
 /// merge actually changed something. See the `sync_store` field comment.
 fn sync_round(state: &AppState) -> CmdResult<solum_core::sync::SyncOutcome> {
+    if solum_core::account::AccountSession::load().is_none() {
+        return Err("多设备同步需要先注册或登录 Solum 账号".into());
+    }
     let Some(cfg) = solum_core::sync::SyncConfig::load() else {
         return Err("同步未配置，或当前未登录对应的 Solum 账号".into());
     };
@@ -3150,28 +3258,38 @@ fn ticker(app: tauri::AppHandle) {
     loop {
         let now = system_now();
         let state = app.state::<AppState>();
-        let should_emit_daily_brief = state
-            .last_daily_brief_date
-            .lock()
-            .map(|last| daily_brief_is_due(*last, now.date()))
-            .unwrap_or(false);
+        let full_account = solum_core::account::AccountSession::load().is_some();
+        let should_emit_daily_brief = full_account
+            && state
+                .last_daily_brief_date
+                .lock()
+                .map(|last| daily_brief_is_due(*last, now.date()))
+                .unwrap_or(false);
         let (fired_msgs, checkin, fresh, captured, notification_batch, daily_brief) =
             match state.orch.lock() {
                 Ok(mut o) => {
-                    let captured = drain_capture_inbox(&mut o, &state.db_path, now);
-                    let notification_batch = o
-                        .notification_intelligence_config()
-                        .ok()
-                        .filter(|config| {
-                            now.minute()
-                                .is_multiple_of(u32::from(config.batch_interval_minutes))
-                        })
-                        .and_then(|_| o.process_notification_batch(now).ok())
-                        .unwrap_or(0);
-                    // D4: materialize upcoming routine occurrences (today +
-                    // tomorrow) before delivery — they then ride the normal
-                    // reminder pipeline, including the Android alarm mirror below.
-                    let _ = o.materialize_routines(now);
+                    let captured = if full_account {
+                        drain_capture_inbox(&mut o, &state.db_path, now)
+                    } else {
+                        Vec::new()
+                    };
+                    let notification_batch = if full_account {
+                        o.notification_intelligence_config()
+                            .ok()
+                            .filter(|config| {
+                                now.minute()
+                                    .is_multiple_of(u32::from(config.batch_interval_minutes))
+                            })
+                            .and_then(|_| o.process_notification_batch(now).ok())
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    // D4: account routines materialize upcoming occurrences
+                    // before delivery. Guest reminders remain local and manual.
+                    if full_account {
+                        let _ = o.materialize_routines(now);
+                    }
                     let fired = o.fire_due(now).unwrap_or_default();
                     let fired_msgs: Vec<String> = fired
                         .iter()
@@ -3183,8 +3301,14 @@ fn ticker(app: tauri::AppHandle) {
                             format!("「{title}」（提前{}）", n.lead_label)
                         })
                         .collect();
-                    let checkin = o.checkin_if_due(now).ok().flatten();
-                    let fresh = o.auto_generate_suggestions(now).unwrap_or_default();
+                    let checkin = full_account
+                        .then(|| o.checkin_if_due(now).ok().flatten())
+                        .flatten();
+                    let fresh = if full_account {
+                        o.auto_generate_suggestions(now).unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
                     let daily_brief = should_emit_daily_brief.then(|| o.daily_brief(now));
                     (
                         fired_msgs,
@@ -3253,7 +3377,7 @@ fn ticker(app: tauri::AppHandle) {
         // this is a real cross-process call (Health Connect), not a local
         // file read. Desktop's plugin stub is always unavailable, so this is
         // a cheap no-op there (see solum-health-connect::desktop).
-        if tick_count.is_multiple_of(5) {
+        if full_account && tick_count.is_multiple_of(5) {
             let hc = app.health_connect();
             if matches!(hc.is_available(), Ok(true)) && matches!(hc.has_permissions(), Ok(true)) {
                 let since_ms = state.health_since_ms.lock().map(|g| *g).unwrap_or(0);
@@ -3299,7 +3423,7 @@ fn ticker(app: tauri::AppHandle) {
 
         // Background sync (F17): quiet best-effort — failures only log, the
         // local-first store keeps working offline (F16), next tick retries.
-        if tick_count.is_multiple_of(5) {
+        if full_account && tick_count.is_multiple_of(5) {
             match sync_round(&state) {
                 Ok(r) => {
                     if r.applied > 0 {
@@ -3543,19 +3667,14 @@ pub fn run() {
                 }
             }
             let mut orch = Orchestrator::open(&db_path)?;
-            // Cloud reasoner is optional by design (F16): no config → stay offline.
-            // Account proxy (harmony-0.2.0 model) outranks the direct-key config
-            // while a session exists; logging out falls back automatically.
+            // The account proxy is the only cloud path. Guest mode is always
+            // offline even when an older direct-key file remains on disk.
             let llm_summary = if let Some(session) = solum_core::account::AccountSession::load() {
                 let summary = format!("账号 · {}", session.masked_summary());
                 orch.set_reasoner(Box::new(solum_core::account::AccountReasoner::new(session)));
                 Some(summary)
             } else {
-                solum_core::llm::LlmConfig::load().map(|cfg| {
-                    let summary = cfg.masked_summary();
-                    orch.set_reasoner(Box::new(solum_core::llm::LlmReasoner::new(cfg)));
-                    summary
-                })
+                None
             };
             app.manage(AppState {
                 orch: Arc::new(Mutex::new(orch)),
