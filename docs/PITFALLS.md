@@ -2,6 +2,13 @@
 
 > 强制记录：任何调试超过几分钟、走过弯路、被坑过的问题都要写在这里，不管最后是否解决。格式：现象 / 根因 / 解决方式 / 如何避免。
 
+## 2026-08-13：PostgreSQL `SELECT FOR UPDATE` 还需要表级 UPDATE 权限
+
+- **现象**：生产注册、登录均成功，但 `/v1/auth/refresh` 返回 `internal_error`，服务日志为 `permission denied for table refresh_tokens`。
+- **根因**：刷新事务用 `SELECT ... FOR UPDATE` 锁定令牌行；PostgreSQL 除 `SELECT` 外还检查目标表的 `UPDATE` 权限。schema 原先只授予 `SELECT/INSERT/DELETE`，本地 SQLite 测试不会暴露这个 ACL 差异。
+- **解决**：只为 `auth.refresh_tokens` 补 `UPDATE`，不扩大其他表权限，并用 schema 契约测试固定完整的四项权限。
+- **避免**：生产数据库最小权限审计要把行锁当作写权限路径；真实 PostgreSQL 验收必须包含注册、登录、刷新轮换和注销完整闭环，不能只测 health 与登录。
+
 ## 2026-08-13：Windows `git archive` 会把迁移脚本发布为 CRLF
 
 - **现象**：生产镜像构建成功，但迁移容器立即以 `/migrations/00-roles.sh: set: line 2: illegal option` 退出；旧 API 容器仍健康。

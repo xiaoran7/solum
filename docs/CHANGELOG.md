@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+- **solum-cloud 0.6.3（2026-08-13）——PostgreSQL 刷新令牌轮换权限修复。** `auth.refresh_tokens` 的运行角色权限补齐 `UPDATE`，满足 `SELECT ... FOR UPDATE` 在刷新令牌轮换事务中的 PostgreSQL 表级 ACL 要求；仍不授予任何宽泛 `ALL` 权限。新增契约断言，客户端与 Android 包未变化，Solum 仍为 0.2.3 / versionCode 1013。
+
 - **solum-cloud 0.6.2（2026-08-13）——生产迁移与保留期清理修复。** PostgreSQL 运行角色补齐 `sync.alerts` 的租户内 `DELETE` 权限，使既有按账号执行的七天告警清理不再被数据库 ACL 拒绝；`sync.blobs` 继续保留既有租户内删除权限。新增 schema 契约断言，并用仓库 `.gitattributes` 强制所有 shell 脚本为 LF；部署文档明确从仓库根归档 `server`，或为 `HEAD:server` 子树归档关闭 `core.autocrlf`，避免 Windows 发布包把 `00-roles.sh` 转成 CRLF 后被 Alpine `/bin/sh` 拒绝。客户端与 Android 包未变化，Solum 仍为 0.2.3 / versionCode 1013。
   - 验证：生产 PostgreSQL 17 幂等迁移成功，`ai.entitlements`、`ai.usage_monthly`、`ai.usage_events` 均启用并强制 RLS；新 API 容器健康且公网 health/meta、注册、登录、模型目录与额度接口通过。Node 21/21、Rust 全工作区、Clippy `-D warnings`、fmt、前端静态检查、Node 语法检查和 `git diff --check` 通过。生产 `MIMO_API_KEY` 当前为空，真实模型调用返回 `ai_not_configured`，不能将默认 LLM 记为已联通。
 

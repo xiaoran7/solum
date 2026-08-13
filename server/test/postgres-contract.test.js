@@ -29,6 +29,7 @@ test('PostgreSQL schema forces RLS on every tenant-owned table', () => {
   assert.match(sql, /create index if not exists usage_events_tenant_created_idx\s+on ai\.usage_events \(tenant_id, created_at desc\)/i);
   assert.match(sql, /grant select, insert, delete on sync\.blobs to solum_api;/i);
   assert.match(sql, /grant select, insert, delete on sync\.alerts to solum_api;/i);
+  assert.match(sql, /grant select, insert, update, delete on auth\.refresh_tokens to solum_api;/i);
   assert.doesNotMatch(sql, /grant all/i);
 });
 

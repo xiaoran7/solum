@@ -218,7 +218,7 @@ revoke all on all functions in schema sync from public;
 
 grant usage on schema auth, sync, vault, ai to solum_api;
 grant select, insert, update on auth.users to solum_api;
-grant select, insert, delete on auth.refresh_tokens to solum_api;
+grant select, insert, update, delete on auth.refresh_tokens to solum_api;
 grant select, insert, update on sync.devices to solum_api;
 grant select, insert, delete on sync.blobs to solum_api;
 grant select, insert, update on sync.preferences to solum_api;
