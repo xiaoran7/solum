@@ -23,6 +23,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike};
@@ -94,6 +95,25 @@ struct AppState {
     /// 多入口采集的待确认队列（进程内，不落盘——见 `solum_core::capture`）。
     /// 放 `AppState` 而不是全局静态，是因为它的生命周期本来就该跟这个窗口一致。
     capture_inbox: Mutex<solum_core::capture::CaptureInbox>,
+    /// Login, registration and logout all replace the process-wide identity.
+    /// Only one transition may issue or publish tokens at a time.
+    account_transition: AtomicBool,
+}
+
+struct AccountTransitionGuard<'a>(&'a AtomicBool);
+
+impl<'a> AccountTransitionGuard<'a> {
+    fn acquire(flag: &'a AtomicBool) -> CmdResult<Self> {
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self(flag))
+            .map_err(|_| "账号正在切换，请等待当前操作完成".to_string())
+    }
+}
+
+impl Drop for AccountTransitionGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 struct EmailOAuthCallback {
@@ -116,7 +136,7 @@ type CmdResult<T> = Result<T, String>;
 const HEALTH_SINCE_KEY: &str = "health_poll_since_ms";
 
 fn require_full_account() -> CmdResult<()> {
-    if solum_core::account::AccountSession::load().is_some() {
+    if solum_core::account::AccountSession::load_full().is_some() {
         Ok(())
     } else {
         Err("这项完整能力需要先注册或登录 Solum 账号".into())
@@ -219,7 +239,7 @@ fn sync_notification_pipeline(
     app: &tauri::AppHandle,
     config: &NotificationIntelligenceConfig,
 ) -> CmdResult<()> {
-    if solum_core::account::AccountSession::load().is_none() {
+    if solum_core::account::AccountSession::load_full().is_none() {
         return app
             .notif_access()
             .stop_pipeline()
@@ -401,7 +421,7 @@ fn resolve_llm_args(a: LlmSaveArgs) -> CmdResult<solum_core::llm::LlmConfig> {
 /// masked summary for the status footer.
 #[tauri::command]
 fn llm_config_save(state: State<AppState>, cfg: LlmSaveArgs) -> CmdResult<String> {
-    if solum_core::account::AccountSession::load().is_none() {
+    if solum_core::account::AccountSession::load_full().is_none() {
         return Err("完整云端能力需要先注册或登录 Solum 账号".into());
     }
     let c = resolve_llm_args(cfg)?;
@@ -429,7 +449,7 @@ struct LlmTestResult {
 /// up-to-`timeout_secs` blocking HTTP call never freezes the UI thread.
 #[tauri::command]
 async fn llm_config_test(cfg: LlmSaveArgs) -> CmdResult<LlmTestResult> {
-    if solum_core::account::AccountSession::load().is_none() {
+    if solum_core::account::AccountSession::load_full().is_none() {
         return Err("测试云端连接前请先注册或登录 Solum 账号".into());
     }
     let c = resolve_llm_args(cfg)?;
@@ -466,12 +486,25 @@ struct AccountStatus {
     path: String,
 }
 
+async fn revoke_pending_session(session: solum_core::account::AccountSession) {
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        solum_core::account::revoke_remote(&session);
+    })
+    .await;
+}
+
+fn schedule_pending_session_revoke(session: solum_core::account::AccountSession) {
+    let _task = tauri::async_runtime::spawn_blocking(move || {
+        solum_core::account::revoke_remote(&session);
+    });
+}
+
 #[tauri::command]
 async fn account_status_get() -> CmdResult<AccountStatus> {
     let path = solum_core::account::AccountSession::path()
         .to_string_lossy()
         .into_owned();
-    match solum_core::account::AccountSession::load() {
+    match solum_core::account::AccountSession::load_full() {
         Some(mut s) => tauri::async_runtime::spawn_blocking(move || {
             let remote = solum_core::account::cloud_account_state(&mut s);
             let (default_model, model_options, usage, state_error) = match remote {
@@ -537,6 +570,7 @@ async fn account_auth(
     model: String,
     register: bool,
 ) -> CmdResult<String> {
+    let _transition = AccountTransitionGuard::acquire(&state.account_transition)?;
     let session = tauri::async_runtime::spawn_blocking(move || {
         let session = if register {
             solum_core::account::register(&server_url, &username, &password, &model)
@@ -544,16 +578,31 @@ async fn account_auth(
             solum_core::account::authenticate(&server_url, &username, &password, &model)
         }
         .map_err(|e| e.to_string())?;
-        let user_id = session
-            .stable_user_id()
-            .ok_or_else(|| "账号服务器未返回不可变 user_id".to_string())?;
-        let sync_path = solum_core::paths::account_profile_file(user_id, "solum-sync.json")
-            .ok_or_else(|| "无法创建账号专属同步配置目录".to_string())?;
-        // Prepare the target account before it becomes globally active. The
-        // first device creates a random master key; later devices recover it
-        // from the opaque server envelope with this one-shot login password.
-        solum_core::sync::provision_account_sync(&session, &password, &sync_path)
-            .map_err(|e| e.to_string())?;
+        let prepared = (|| {
+            let user_id = session
+                .stable_user_id()
+                .ok_or_else(|| "账号服务器未返回不可变 user_id".to_string())?;
+            let sync_path = solum_core::paths::account_profile_file(user_id, "solum-sync.json")
+                .ok_or_else(|| "无法创建账号专属同步配置目录".to_string())?;
+            // Prepare the target account before it becomes globally active.
+            // The first device creates a random master key; later devices
+            // recover it from the opaque server envelope with this password.
+            solum_core::sync::provision_account_sync(&session, &password, &sync_path)
+                .map_err(|error| error.to_string())
+        })();
+        if let Err(error) = prepared {
+            // Authentication already issued a refresh token. Do not leave that
+            // untracked session alive when the local profile cannot be prepared.
+            solum_core::account::revoke_remote(&session);
+            let message = if register {
+                format!(
+                    "账号已创建，但本机加密空间初始化未完成。请切换到登录并用同一账号密码重试：{error}"
+                )
+            } else {
+                format!("身份验证成功，但本机加密空间初始化失败，请重新登录重试：{error}")
+            };
+            return Err(message);
+        }
         Ok::<_, String>(session)
     })
     .await
@@ -562,8 +611,19 @@ async fn account_auth(
     // exclusively held. A ticker already in flight either finishes under the
     // old identity or blocks here; it can never pair this new token with the
     // old SQLite database.
-    let _sync_switch_guard = state.sync_store.lock().map_err(|e| e.to_string())?;
-    session.save().map_err(|e| e.to_string())?;
+    let _sync_switch_guard = match state.sync_store.lock() {
+        Ok(guard) => guard,
+        Err(error) => {
+            let message = error.to_string();
+            schedule_pending_session_revoke(session);
+            return Err(message);
+        }
+    };
+    if let Err(error) = solum_core::account::publish_session(&session) {
+        drop(_sync_switch_guard);
+        schedule_pending_session_revoke(session);
+        return Err(error.to_string());
+    }
     // The authenticated account owns a different SQLite/WebView/config
     // partition. A process restart is the smallest atomic boundary: every
     // connection, cache, ticker and in-memory chat context closes before the
@@ -603,14 +663,18 @@ async fn account_register(
 /// Local sign-out first-class: best-effort server-side revocation, then restart
 /// into the offline guest profile. Legacy direct-key files never activate it.
 #[tauri::command]
-async fn account_logout(_state: State<'_, AppState>, app: tauri::AppHandle) -> CmdResult<String> {
-    if let Some(session) = solum_core::account::AccountSession::load() {
-        let _ = tauri::async_runtime::spawn_blocking(move || {
-            solum_core::account::logout(&session);
-        })
-        .await;
-    } else {
-        solum_core::account::AccountSession::delete_file();
+async fn account_logout(state: State<'_, AppState>, app: tauri::AppHandle) -> CmdResult<String> {
+    let _transition = AccountTransitionGuard::acquire(&state.account_transition)?;
+    // Keep the selected profile stable until no sync round can still hold its
+    // database, then atomically take the latest rotated token and clear local
+    // identity. Remote revocation is bounded and happens only after local
+    // sign-out can no longer be undone by an old GUI or CLI request.
+    let session = {
+        let _sync_switch_guard = state.sync_store.lock().map_err(|e| e.to_string())?;
+        solum_core::account::take_session().map_err(|e| e.to_string())?
+    };
+    if let Some(session) = session {
+        revoke_pending_session(session).await;
     }
     app.restart()
 }
@@ -618,7 +682,7 @@ async fn account_logout(_state: State<'_, AppState>, app: tauri::AppHandle) -> C
 /// Change which model the proxy asks upstream for (login stays untouched).
 #[tauri::command]
 async fn account_model_save(state: State<'_, AppState>, model: String) -> CmdResult<String> {
-    let Some(mut session) = solum_core::account::AccountSession::load() else {
+    let Some(mut session) = solum_core::account::AccountSession::load_full() else {
         return Err("请先登录账号".into());
     };
     let requested =
@@ -630,22 +694,16 @@ async fn account_model_save(state: State<'_, AppState>, model: String) -> CmdRes
                 if account.catalog.models.iter().any(|item| {
                     item.id == requested
                         && (account.catalog.custom_models_enabled || item.is_default)
-                }) =>
-            {
-                session.model = requested;
-            }
+                }) => {}
             Ok(_) => return Err("这个模型不在 Solum 中心当前允许的目录中".to_string()),
-            Err(_) if requested == solum_core::account::DEFAULT_CLOUD_MODEL => {
-                session.model = requested;
-            }
+            Err(_) if requested == solum_core::account::DEFAULT_CLOUD_MODEL => {}
             Err(error) => {
                 return Err(format!(
                     "暂时无法向中心确认这个模型：{error}。默认模型仍可继续使用"
                 ));
             }
         }
-        session.save().map_err(|e| e.to_string())?;
-        Ok::<_, String>(session)
+        solum_core::account::update_active_model(&session, &requested).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("模型设置线程失败: {e}"))??;
@@ -2712,7 +2770,7 @@ fn sync_config_get(state: State<AppState>) -> CmdResult<SyncConfigSettings> {
     let parsed = raw
         .as_deref()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
-    let account = solum_core::account::AccountSession::load();
+    let account = solum_core::account::AccountSession::load_full();
     let account_username = account
         .as_ref()
         .map(|session| session.username.clone())
@@ -2799,7 +2857,7 @@ fn sync_config_save(
     app: tauri::AppHandle,
     cfg: SyncSaveArgs,
 ) -> CmdResult<String> {
-    let account = solum_core::account::AccountSession::load()
+    let account = solum_core::account::AccountSession::load_full()
         .ok_or_else(|| "请先在“云端接入”登录 Solum 账号".to_string())?;
     // Account access tokens are origin-bound by policy. A configurable relay
     // URL would turn a typo or edited config into credential exfiltration.
@@ -2866,7 +2924,7 @@ struct SyncStatusDto {
 #[tauri::command]
 fn sync_status(state: State<AppState>) -> CmdResult<SyncStatusDto> {
     require_full_account()?;
-    let account_logged_in = solum_core::account::AccountSession::load().is_some();
+    let account_logged_in = solum_core::account::AccountSession::load_full().is_some();
     let cfg = account_logged_in
         .then(solum_core::sync::SyncConfig::load)
         .flatten();
@@ -2910,7 +2968,7 @@ fn sync_gap_acknowledge(state: State<AppState>) -> CmdResult<()> {
 /// uses; only the cache reload afterwards touches `orch`, and only when the
 /// merge actually changed something. See the `sync_store` field comment.
 fn sync_round(state: &AppState) -> CmdResult<solum_core::sync::SyncOutcome> {
-    if solum_core::account::AccountSession::load().is_none() {
+    if solum_core::account::AccountSession::load_full().is_none() {
         return Err("多设备同步需要先注册或登录 Solum 账号".into());
     }
     let Some(cfg) = solum_core::sync::SyncConfig::load() else {
@@ -3323,7 +3381,7 @@ fn ticker(app: tauri::AppHandle) {
     loop {
         let now = system_now();
         let state = app.state::<AppState>();
-        let full_account = solum_core::account::AccountSession::load().is_some();
+        let full_account = solum_core::account::AccountSession::load_full().is_some();
         let should_emit_daily_brief = full_account
             && state
                 .last_daily_brief_date
@@ -3634,13 +3692,13 @@ fn resolve_db_path(#[cfg_attr(desktop, allow(unused_variables))] app: &tauri::Ap
 }
 
 fn active_local_profile_id() -> String {
-    solum_core::account::AccountSession::load()
+    solum_core::account::AccountSession::load_full()
         .and_then(|session| session.stable_user_id().map(str::to_owned))
         .unwrap_or_else(|| "guest".to_string())
 }
 
 fn account_profile_root(base: &std::path::Path) -> Option<std::path::PathBuf> {
-    let session = solum_core::account::AccountSession::load()?;
+    let session = solum_core::account::AccountSession::load_full()?;
     solum_core::paths::account_profile_dir(base, session.stable_user_id()?)
 }
 
@@ -3734,13 +3792,14 @@ pub fn run() {
             let mut orch = Orchestrator::open(&db_path)?;
             // The account proxy is the only cloud path. Guest mode is always
             // offline even when an older direct-key file remains on disk.
-            let llm_summary = if let Some(session) = solum_core::account::AccountSession::load() {
-                let summary = format!("账号 · {}", session.masked_summary());
-                orch.set_reasoner(Box::new(solum_core::account::AccountReasoner::new(session)));
-                Some(summary)
-            } else {
-                None
-            };
+            let llm_summary =
+                if let Some(session) = solum_core::account::AccountSession::load_full() {
+                    let summary = format!("账号 · {}", session.masked_summary());
+                    orch.set_reasoner(Box::new(solum_core::account::AccountReasoner::new(session)));
+                    Some(summary)
+                } else {
+                    None
+                };
             app.manage(AppState {
                 orch: Arc::new(Mutex::new(orch)),
                 db_path: db_path.clone(),
@@ -3765,6 +3824,7 @@ pub fn run() {
                         .expect("sync store opens on the already-migrated db"),
                 ),
                 capture_inbox: Mutex::new(solum_core::capture::CaptureInbox::new()),
+                account_transition: AtomicBool::new(false),
             });
             // The native listener consults this projection before it writes an
             // inbox line. A missing/corrupt file intentionally means capture

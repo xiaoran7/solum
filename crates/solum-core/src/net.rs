@@ -16,40 +16,12 @@
 
 use crate::error::{CoreError, Result};
 
-/// True if `host` (already stripped of scheme, userinfo, path and port) names
-/// this machine.
-fn is_loopback_host(host: &str) -> bool {
-    let host = host.trim().trim_start_matches('[').trim_end_matches(']');
-    if host.eq_ignore_ascii_case("localhost") || host == "::1" {
-        return true;
+fn is_loopback_host(host: url::Host<&str>) -> bool {
+    match host {
+        url::Host::Domain(value) => value.eq_ignore_ascii_case("localhost"),
+        url::Host::Ipv4(value) => value.is_loopback(),
+        url::Host::Ipv6(value) => value.is_loopback(),
     }
-    // 127.0.0.0/8 — any octet form, all of it loopback.
-    let mut parts = host.split('.');
-    let (Some(a), Some(b), Some(c), Some(d), None) = (
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-    ) else {
-        return false;
-    };
-    a == "127"
-        && [b, c, d]
-            .iter()
-            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
-}
-
-/// Host[:port] portion of a URL whose scheme has already been stripped.
-fn authority(rest: &str) -> &str {
-    let rest = rest.split(['/', '?', '#']).next().unwrap_or("");
-    // Strip userinfo (`user:pass@host`) — the host is what follows the last '@'.
-    let rest = rest.rsplit('@').next().unwrap_or(rest);
-    // Strip the port, but not the colons inside a bracketed IPv6 literal.
-    if let Some(close) = rest.find(']') {
-        return &rest[..=close];
-    }
-    rest.split(':').next().unwrap_or(rest)
 }
 
 /// Validate a user-configured endpoint. `what` names the setting for the error
@@ -58,26 +30,32 @@ fn authority(rest: &str) -> &str {
 /// Returns the trimmed URL with any trailing slash removed, so callers can use
 /// this as their single normalization step too.
 pub fn validate_endpoint(url: &str, what: &str) -> Result<String> {
-    let url = url.trim().trim_end_matches('/').to_string();
-    if let Some(rest) = url.strip_prefix("https://") {
-        if authority(rest).is_empty() {
-            return Err(CoreError::Invalid(format!("{what} 缺少主机名")));
-        }
-        return Ok(url);
+    let trimmed = url.trim().trim_end_matches('/');
+    let parsed =
+        url::Url::parse(trimmed).map_err(|_| CoreError::Invalid(format!("{what} 不是有效 URL")))?;
+    let host = parsed
+        .host()
+        .ok_or_else(|| CoreError::Invalid(format!("{what} 缺少主机名")))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(CoreError::Invalid(format!("{what} 不能包含用户名或密码")));
     }
-    if let Some(rest) = url.strip_prefix("http://") {
-        let host = authority(rest);
-        if is_loopback_host(host) {
-            return Ok(url);
-        }
-        return Err(CoreError::Invalid(format!(
-            "{what} 必须使用 https://。明文 http:// 会把密钥和个人内容暴露在网络上，\
-             只有本机地址（localhost / 127.0.0.1 / [::1]）可以例外，当前是 {host}"
-        )));
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(CoreError::Invalid(format!("{what} 不能包含查询参数或片段")));
     }
-    Err(CoreError::Invalid(format!(
-        "{what} 需要以 https:// 开头（本机调试可用 http://localhost）"
-    )))
+    match parsed.scheme() {
+        "https" => Ok(parsed.as_str().trim_end_matches('/').to_string()),
+        "http" if is_loopback_host(host) => Ok(parsed.as_str().trim_end_matches('/').to_string()),
+        "http" => {
+            let host = parsed.host_str().unwrap_or("");
+            Err(CoreError::Invalid(format!(
+                "{what} 必须使用 https://。明文 http:// 会把密钥和个人内容暴露在网络上，\
+                 只有本机地址（localhost / 127.0.0.1 / [::1]）可以例外，当前是 {host}"
+            )))
+        }
+        _ => Err(CoreError::Invalid(format!(
+            "{what} 需要以 https:// 开头（本机调试可用 http://localhost）"
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -106,10 +84,9 @@ mod tests {
 
     #[test]
     fn the_host_is_what_follows_the_userinfo() {
-        // Host here is evil.com; the loopback text is only userinfo → refuse.
+        // API endpoints never need embedded credentials, regardless of host.
         assert!(validate_endpoint("http://127.0.0.1@evil.com", "x").is_err());
-        // …and the mirror image really does target this machine → allow.
-        assert!(validate_endpoint("http://evil.com@127.0.0.1", "x").is_ok());
+        assert!(validate_endpoint("http://evil.com@127.0.0.1", "x").is_err());
     }
 
     #[test]
@@ -128,5 +105,17 @@ mod tests {
     fn other_schemes_are_refused() {
         assert!(validate_endpoint("ftp://x.com", "x").is_err());
         assert!(validate_endpoint("api.example.com", "x").is_err());
+    }
+
+    #[test]
+    fn malformed_hosts_queries_and_fragments_are_refused() {
+        for bad in [
+            "http://127.0.0.999",
+            "http://[::1].evil.example",
+            "https://api.example.com/v1?token=x",
+            "https://api.example.com/v1#fragment",
+        ] {
+            assert!(validate_endpoint(bad, "x").is_err(), "should refuse {bad}");
+        }
     }
 }

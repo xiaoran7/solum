@@ -7,14 +7,20 @@
 //! 会话落盘 `solum-account.json`（gitignore）：`server_url` / `user_id` /
 //! `username` / `access_token` / `refresh_token`。`user_id` 是服务端生成且不可变的
 //! 身份主键；用户名只用于登录和展示，绝不能再充当本地目录或中继租户主键。
-//! 旧会话没有 `user_id` 时仍可用于 AI 刷新，但不会被当作已隔离的数据身份。
+//! 旧会话没有 `user_id` 时必须重新登录，不能参与刷新或账号数据访问。
 //! 密码只用于登录请求本身，绝不落盘。
 
-use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+#[cfg(not(target_os = "android"))]
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+#[cfg(target_os = "android")]
+use std::os::fd::AsRawFd;
 
 use crate::error::{CoreError, Result};
 use crate::extract::Reasoner;
@@ -74,7 +80,8 @@ pub struct CloudAccountState {
 /// The generous timeout covers streaming replies from thinking-mode models
 /// (mirrors the harmony client's 120s read timeout).
 const TIMEOUT_SECS: u64 = 120;
-static ACCOUNT_REFRESH_LOCK: Mutex<()> = Mutex::new(());
+const REVOKE_TIMEOUT_SECS: u64 = 5;
+static ACCOUNT_SESSION_LOCK: Mutex<()> = Mutex::new(());
 
 fn default_cloud_model() -> String {
     DEFAULT_CLOUD_MODEL.to_string()
@@ -115,8 +122,6 @@ impl AccountSession {
             ));
         }
         self.username = self.username.trim().to_string();
-        self.access_token = self.access_token.trim().to_string();
-        self.refresh_token = self.refresh_token.trim().to_string();
         self.model = normalize_cloud_model(&self.model)?;
         if self.username.is_empty() || self.access_token.is_empty() || self.refresh_token.is_empty()
         {
@@ -145,13 +150,16 @@ impl AccountSession {
         Self::from_json(&text).ok()
     }
 
-    pub fn save(&self) -> Result<()> {
-        let json = serde_json::to_string_pretty(self)?;
-        crate::fsatomic::write_atomic(&Self::path(), &json)
+    /// A session may predate immutable account UUIDs. It can be read for a
+    /// controlled migration, but it is not a safe identity boundary for an
+    /// account-scoped local profile.
+    pub fn load_full() -> Option<Self> {
+        Self::load().filter(|session| session.stable_user_id().is_some())
     }
 
-    pub fn delete_file() {
-        let _ = std::fs::remove_file(Self::path());
+    fn save(&self) -> Result<()> {
+        let json = serde_json::to_string_pretty(self)?;
+        crate::fsatomic::write_atomic(&Self::path(), &json)
     }
 
     /// Displayable status line — never the tokens.
@@ -165,6 +173,112 @@ impl AccountSession {
     pub fn stable_user_id(&self) -> Option<&str> {
         (!self.user_id.is_empty()).then_some(self.user_id.as_str())
     }
+}
+
+fn session_lock_path(session_path: &Path) -> PathBuf {
+    let mut value = session_path.as_os_str().to_os_string();
+    value.push(".lock");
+    value.into()
+}
+
+#[cfg(target_os = "android")]
+fn set_session_file_lock(
+    file: &std::fs::File,
+    command: libc::c_int,
+    lock_type: libc::c_short,
+) -> std::io::Result<()> {
+    // Java FileChannel uses POSIX record locks. Ordinary F_SETLKW locks are
+    // process-owned, so Rust and Kotlin threads in the same Android process
+    // would not block one another. Linux OFD locks are fd-owned and explicitly
+    // conflict with POSIX locks even inside one process, giving both runtimes
+    // one real kernel lock on solum-account.json.lock.
+    let mut lock: libc::flock = unsafe { std::mem::zeroed() };
+    lock.l_type = lock_type;
+    lock.l_whence = libc::SEEK_SET as libc::c_short;
+    loop {
+        let result = unsafe { libc::fcntl(file.as_raw_fd(), command, &lock) };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+fn lock_session_file(file: &std::fs::File) -> std::io::Result<()> {
+    set_session_file_lock(file, libc::F_OFD_SETLKW, libc::F_WRLCK as libc::c_short)
+}
+
+#[cfg(target_os = "android")]
+fn unlock_session_file(file: &std::fs::File) -> std::io::Result<()> {
+    set_session_file_lock(file, libc::F_OFD_SETLK, libc::F_UNLCK as libc::c_short)
+}
+
+#[cfg(not(target_os = "android"))]
+fn lock_session_file(file: &std::fs::File) -> std::io::Result<()> {
+    FileExt::lock_exclusive(file)
+}
+
+#[cfg(not(target_os = "android"))]
+fn unlock_session_file(file: &std::fs::File) -> std::io::Result<()> {
+    FileExt::unlock(file)
+}
+
+fn with_session_lock<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _process_guard = ACCOUNT_SESSION_LOCK
+        .lock()
+        .map_err(|_| CoreError::Llm("账号会话锁中毒".into()))?;
+    let session_path = AccountSession::path();
+    if let Some(parent) = session_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent).map_err(|error| CoreError::Storage(error.to_string()))?;
+    }
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(session_lock_path(&session_path))
+        .map_err(|error| CoreError::Storage(error.to_string()))?;
+    lock_session_file(&lock_file).map_err(|error| CoreError::Storage(error.to_string()))?;
+    let result = operation();
+    let unlock_result =
+        unlock_session_file(&lock_file).map_err(|error| CoreError::Storage(error.to_string()));
+    match (result, unlock_result) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
+    }
+}
+
+/// Publish a newly authenticated identity without racing token rotation.
+pub fn publish_session(session: &AccountSession) -> Result<()> {
+    with_session_lock(|| session.save())
+}
+
+/// Remove the active identity under the same lock used by refresh writes.
+/// Unlike the legacy `delete_file` helper, filesystem failures are visible.
+pub fn clear_session() -> Result<()> {
+    take_session().map(|_| ())
+}
+
+/// Atomically remove and return the latest session. Logout uses the returned
+/// refresh token, so a concurrent rotation cannot leave a newer remote token
+/// active after local state is gone.
+pub fn take_session() -> Result<Option<AccountSession>> {
+    with_session_lock(|| {
+        let current = AccountSession::load();
+        match std::fs::remove_file(AccountSession::path()) {
+            Ok(()) => Ok(current),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(CoreError::Storage(error.to_string())),
+        }
+    })
 }
 
 pub fn is_valid_user_id(value: &str) -> bool {
@@ -260,6 +374,7 @@ pub trait AccountHttp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AccountHttpError {
     Unauthorized,
+    Retryable(String),
     Other(String),
 }
 
@@ -267,6 +382,7 @@ impl std::fmt::Display for AccountHttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AccountHttpError::Unauthorized => f.write_str("认证已过期"),
+            AccountHttpError::Retryable(message) => f.write_str(message),
             AccountHttpError::Other(message) => f.write_str(message),
         }
     }
@@ -278,9 +394,13 @@ pub struct HttpAccountClient {
 
 impl HttpAccountClient {
     pub fn new() -> Self {
+        Self::with_timeout(TIMEOUT_SECS)
+    }
+
+    fn with_timeout(timeout_secs: u64) -> Self {
         Self {
             agent: ureq::AgentBuilder::new()
-                .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
+                .timeout(std::time::Duration::from_secs(timeout_secs))
                 .build(),
         }
     }
@@ -306,7 +426,7 @@ impl AccountHttp for HttpAccountClient {
         let response = request.send_json(body).map_err(map_http_error)?;
         response
             .into_json()
-            .map_err(|e| AccountHttpError::Other(format!("响应不是 JSON: {e}")))
+            .map_err(|e| AccountHttpError::Retryable(format!("响应不是 JSON: {e}")))
     }
 
     fn get_json(
@@ -320,7 +440,7 @@ impl AccountHttp for HttpAccountClient {
             .call()
             .map_err(map_http_error)?
             .into_json()
-            .map_err(|e| AccountHttpError::Other(format!("响应不是 JSON: {e}")))
+            .map_err(|e| AccountHttpError::Retryable(format!("响应不是 JSON: {e}")))
     }
 }
 
@@ -340,7 +460,7 @@ fn map_http_error(error: ureq::Error) -> AccountHttpError {
         ureq::Error::Status(code, _) => {
             AccountHttpError::Other(format!("服务器暂时不可用（{code}）"))
         }
-        other => AccountHttpError::Other(other.to_string()),
+        ureq::Error::Transport(other) => AccountHttpError::Retryable(other.to_string()),
     }
 }
 
@@ -402,28 +522,49 @@ pub fn register(
     authenticate_via("register", "注册", server_url, username, password, model)
 }
 
-/// Log in and persist the session. The password lives only in this request.
-pub fn login(
-    server_url: &str,
-    username: &str,
-    password: &str,
-    model: &str,
-) -> Result<AccountSession> {
-    let session = authenticate(server_url, username, password, model)?;
-    session.save()?;
-    Ok(session)
+/// Best-effort revocation without changing whichever local session is active.
+/// Login/registration uses this for a newly issued token when local profile
+/// preparation fails before that session is published.
+pub fn revoke_remote(session: &AccountSession) {
+    let client = HttpAccountClient::with_timeout(REVOKE_TIMEOUT_SECS);
+    revoke_remote_with_client(&client, session);
 }
 
-/// Best-effort server-side revocation, then local sign-out. Never blocked by
-/// the network: the refresh token expires server-side on its own schedule.
-pub fn logout(session: &AccountSession) {
-    let client = HttpAccountClient::new();
+fn revoke_remote_with_client<T: AccountHttp>(client: &T, session: &AccountSession) {
     let _ = client.post_json(
         &format!("{}/v1/auth/logout", session.server_url),
-        Some(&session.access_token),
+        None,
         json!({ "refresh_token": session.refresh_token }),
     );
-    AccountSession::delete_file();
+}
+
+fn same_account_identity(left: &AccountSession, right: &AccountSession) -> bool {
+    if left.server_url != right.server_url {
+        return false;
+    }
+    match (left.stable_user_id(), right.stable_user_id()) {
+        (Some(left_id), Some(right_id)) => left_id == right_id,
+        (None, None) => left.username == right.username,
+        _ => false,
+    }
+}
+
+/// Save a model choice onto the latest rotated token pair for this identity.
+/// A stale UI request must never overwrite a newer refresh token.
+pub fn update_active_model(expected: &AccountSession, model: &str) -> Result<AccountSession> {
+    let model = normalize_cloud_model(model)?;
+    with_session_lock(|| {
+        let mut current = AccountSession::load_full()
+            .ok_or_else(|| CoreError::Invalid("当前没有完整账号会话".into()))?;
+        if !same_account_identity(&current, expected) {
+            return Err(CoreError::Invalid(
+                "账号已在其他操作中切换，请重新打开账号设置".into(),
+            ));
+        }
+        current.model = model;
+        current.save()?;
+        Ok(current)
+    })
 }
 
 /// Rotate the token pair via `/v1/auth/refresh`. The rotated pair is returned
@@ -432,48 +573,38 @@ fn refresh_with_client<T: AccountHttp>(
     client: &T,
     session: &AccountSession,
 ) -> Result<AccountSession> {
-    let response = client
-        .post_json(
+    let expected_user_id = session
+        .stable_user_id()
+        .ok_or_else(|| CoreError::Llm("旧账号会话缺少不可变 user_id，请重新登录".into()))?;
+    let request = || {
+        client.post_json(
             &format!("{}/v1/auth/refresh", session.server_url),
             None,
             json!({ "refresh_token": session.refresh_token }),
         )
-        .map_err(|e| match e {
-            AccountHttpError::Unauthorized => CoreError::Llm("登录已过期，请重新登录".into()),
-            other => CoreError::Llm(format!("刷新登录状态失败: {other}")),
-        })?;
+    };
+    let response = match request() {
+        Err(AccountHttpError::Retryable(_)) => request(),
+        result => result,
+    }
+    .map_err(|e| match e {
+        AccountHttpError::Unauthorized => CoreError::Llm("登录已过期，请重新登录".into()),
+        other => CoreError::Llm(format!("刷新登录状态失败: {other}")),
+    })?;
     let mut rotated = parse_auth_response(
         &response,
         &session.server_url,
         &session.username,
         &session.model,
     )?;
-    match session.stable_user_id() {
-        // A legacy process is still running the guest database. Do not make a
-        // newly returned UUID visible until an explicit login can cross the
-        // app's sync barrier and restart into that account profile.
-        None => rotated.user_id.clear(),
-        Some(expected) if rotated.stable_user_id().is_none() => {
-            rotated.user_id = expected.to_string();
-        }
-        Some(expected) if rotated.stable_user_id() != Some(expected) => {
-            return Err(CoreError::Llm(
-                "账号服务器刷新后返回了不同的 user_id，已拒绝切换身份".into(),
-            ));
-        }
-        Some(_) => {}
+    if rotated.stable_user_id().is_none() {
+        rotated.user_id = expected_user_id.to_string();
+    } else if rotated.stable_user_id() != Some(expected_user_id) {
+        return Err(CoreError::Llm(
+            "账号服务器刷新后返回了不同的 user_id，已拒绝切换身份".into(),
+        ));
     }
     Ok(rotated)
-}
-
-/// Rotate an account session through the configured identity server.
-///
-/// This is shared by non-AI clients (sync and alert delivery) so every Solum
-/// surface follows the same refresh protocol. The returned session is not
-/// persisted; use [`refresh_and_save`] when the caller owns the active local
-/// session file.
-pub fn refresh(session: &AccountSession) -> Result<AccountSession> {
-    refresh_with_client(&HttpAccountClient::new(), session)
 }
 
 /// Rotate and atomically persist an account session before it is reused.
@@ -487,22 +618,58 @@ fn refresh_and_save_with_client<T: AccountHttp>(
     client: &T,
     session: &AccountSession,
 ) -> Result<AccountSession> {
-    let _guard = ACCOUNT_REFRESH_LOCK
-        .lock()
-        .map_err(|_| CoreError::Llm("账号刷新锁中毒".into()))?;
-    // Another client in this process may have rotated the single-use refresh
-    // token while this request was in flight. Re-read before spending it.
-    let current = AccountSession::load().filter(|loaded| {
-        loaded.server_url == session.server_url && loaded.username == session.username
+    let load_current = || {
+        let current = AccountSession::load_full()
+            .ok_or_else(|| CoreError::Invalid("当前账号会话已退出，请重新登录".into()))?;
+        if !same_account_identity(&current, session) {
+            return Err(CoreError::Invalid(
+                "账号已在其他操作中切换，旧请求不能刷新当前会话".into(),
+            ));
+        }
+        Ok(current)
+    };
+
+    // Read the newest token/model under the cross-process lock, then release
+    // it before network I/O. Logout must never wait behind a 120-second HTTP
+    // timeout merely to remove local credentials.
+    let base = with_session_lock(load_current)?;
+    let mut rotated = match refresh_with_client(client, &base) {
+        Ok(rotated) => rotated,
+        Err(refresh_error) => {
+            // A different process may have won the single-use rotation while
+            // this request was in flight. Adopt only a newly persisted pair;
+            // missing/different identity remains a hard stop.
+            let current = with_session_lock(load_current)?;
+            if current.refresh_token != base.refresh_token {
+                return Ok(current);
+            }
+            return Err(refresh_error);
+        }
+    };
+
+    let committed = with_session_lock(|| {
+        let current = load_current()?;
+        if current.refresh_token != base.refresh_token {
+            return Ok((current, false));
+        }
+        // A model-only update may have landed while the refresh request was
+        // running. Tokens come from the server; model choice comes from the
+        // newest local session.
+        rotated.model = current.model;
+        rotated.save()?;
+        Ok((rotated.clone(), true))
     });
-    if let Some(current) = current {
-        if current.refresh_token != session.refresh_token {
-            return Ok(current);
+    match committed {
+        Ok((session, true)) => Ok(session),
+        Ok((session, false)) => {
+            revoke_remote_with_client(client, &rotated);
+            Ok(session)
+        }
+        Err(error) => {
+            revoke_remote_with_client(client, &rotated);
+            Err(error)
         }
     }
-    let rotated = refresh_with_client(client, session)?;
-    rotated.save()?;
-    Ok(rotated)
 }
 
 /// POST an authorized request; a 401 refreshes the session exactly once and
@@ -705,8 +872,9 @@ impl Reasoner for AccountReasoner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::sync::Mutex;
+    use std::cell::{Cell, RefCell};
+    use std::sync::{mpsc, Mutex};
+    use std::time::Duration;
 
     static ACCOUNT_CONFIG_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -727,6 +895,280 @@ mod tests {
         let json = serde_json::to_string(&session).unwrap();
         let back = AccountSession::from_json(&json).unwrap();
         assert_eq!(session, back);
+
+        let opaque = r#"{
+            "server_url":"https://cloud.example.com",
+            "username":"u",
+            "access_token":"  access  ",
+            "refresh_token":"\trefresh\n"
+        }"#;
+        let opaque = AccountSession::from_json(opaque).unwrap();
+        assert_eq!(opaque.access_token, "  access  ");
+        assert_eq!(opaque.refresh_token, "\trefresh\n");
+    }
+
+    #[test]
+    fn only_uuid_sessions_form_a_full_account_identity() {
+        let _env_guard = ACCOUNT_CONFIG_TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "solum-account-full-session-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("solum-account.json");
+        std::env::set_var("SOLUM_ACCOUNT_CONFIG", &path);
+
+        let mut session = AccountSession {
+            server_url: "https://cloud.example.com".into(),
+            user_id: String::new(),
+            username: "legacy".into(),
+            access_token: "access".into(),
+            refresh_token: "refresh".into(),
+            model: DEFAULT_CLOUD_MODEL.into(),
+        };
+        session.save().unwrap();
+        assert!(AccountSession::load().is_some());
+        assert!(AccountSession::load_full().is_none());
+
+        session.user_id = "9d4df1be-9f7b-4a3a-b986-ec920d2df60e".into();
+        session.save().unwrap();
+        assert_eq!(
+            AccountSession::load_full()
+                .and_then(|loaded| loaded.stable_user_id().map(str::to_owned))
+                .as_deref(),
+            Some("9d4df1be-9f7b-4a3a-b986-ec920d2df60e")
+        );
+
+        std::env::remove_var("SOLUM_ACCOUNT_CONFIG");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn refresh_never_adopts_a_different_uuid_with_the_same_username() {
+        let original = AccountSession {
+            server_url: "https://cloud.example.com".into(),
+            user_id: "9d4df1be-9f7b-4a3a-b986-ec920d2df60e".into(),
+            username: "same-name".into(),
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            model: DEFAULT_CLOUD_MODEL.into(),
+        };
+        let mut replacement = original.clone();
+        replacement.user_id = "6ea64c69-0531-45cb-b585-500c5f479fd8".into();
+        assert!(!same_account_identity(&original, &replacement));
+        replacement.user_id = original.user_id.clone();
+        assert!(same_account_identity(&original, &replacement));
+    }
+
+    #[test]
+    fn model_update_preserves_the_latest_rotated_tokens() {
+        let _env_guard = ACCOUNT_CONFIG_TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "solum-account-model-update-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SOLUM_ACCOUNT_CONFIG", dir.join("solum-account.json"));
+
+        let expected = AccountSession {
+            server_url: "https://cloud.example.com".into(),
+            user_id: "9d4df1be-9f7b-4a3a-b986-ec920d2df60e".into(),
+            username: "same-name".into(),
+            access_token: "old-access".into(),
+            refresh_token: "old-refresh".into(),
+            model: DEFAULT_CLOUD_MODEL.into(),
+        };
+        let mut latest = expected.clone();
+        latest.access_token = "new-access".into();
+        latest.refresh_token = "new-refresh".into();
+        latest.save().unwrap();
+
+        let updated = update_active_model(&expected, "mimo-v2.5-pro").unwrap();
+        assert_eq!(updated.access_token, "new-access");
+        assert_eq!(updated.refresh_token, "new-refresh");
+        assert_eq!(updated.model, "mimo-v2.5-pro");
+        assert_eq!(AccountSession::load_full().unwrap(), updated);
+
+        clear_session().unwrap();
+        std::env::remove_var("SOLUM_ACCOUNT_CONFIG");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn session_file_lock_blocks_a_second_writer() {
+        let _env_guard = ACCOUNT_CONFIG_TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "solum-account-file-lock-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SOLUM_ACCOUNT_CONFIG", dir.join("solum-account.json"));
+        let lock_path = session_lock_path(&AccountSession::path());
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        lock_session_file(&lock_file).unwrap();
+
+        let session = state_test_session();
+        let (sent, received) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let result = publish_session(&session);
+            sent.send(result).unwrap();
+        });
+        assert!(received.recv_timeout(Duration::from_millis(150)).is_err());
+        unlock_session_file(&lock_file).unwrap();
+        received
+            .recv_timeout(Duration::from_secs(2))
+            .expect("writer did not resume after OS lock release")
+            .unwrap();
+        writer.join().unwrap();
+        drop(lock_file);
+
+        clear_session().unwrap();
+        std::env::remove_var("SOLUM_ACCOUNT_CONFIG");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stale_refresh_cannot_recreate_a_missing_or_different_session() {
+        let _env_guard = ACCOUNT_CONFIG_TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "solum-account-stale-refresh-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SOLUM_ACCOUNT_CONFIG", dir.join("solum-account.json"));
+        let stale = state_test_session();
+        let fake = RotatingFake {
+            calls: RefCell::new(Vec::new()),
+        };
+
+        assert!(refresh_and_save_with_client(&fake, &stale).is_err());
+        assert!(
+            fake.calls.borrow().is_empty(),
+            "missing state must fail before HTTP"
+        );
+
+        let mut replacement = stale.clone();
+        replacement.user_id = "6ea64c69-0531-45cb-b585-500c5f479fd8".into();
+        replacement.access_token = "other-access".into();
+        replacement.refresh_token = "other-refresh".into();
+        publish_session(&replacement).unwrap();
+        assert!(refresh_and_save_with_client(&fake, &stale).is_err());
+        assert_eq!(AccountSession::load_full().unwrap(), replacement);
+        assert!(
+            fake.calls.borrow().is_empty(),
+            "another identity must never be contacted"
+        );
+
+        clear_session().unwrap();
+        std::env::remove_var("SOLUM_ACCOUNT_CONFIG");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn refresh_preserves_a_model_change_that_lands_during_network_io() {
+        struct ModelRaceFake {
+            expected: AccountSession,
+        }
+        impl AccountHttp for ModelRaceFake {
+            fn post_json(
+                &self,
+                url: &str,
+                _access_token: Option<&str>,
+                _body: Value,
+            ) -> std::result::Result<Value, AccountHttpError> {
+                if url.ends_with("/v1/auth/refresh") {
+                    update_active_model(&self.expected, "mimo-v2.5-pro").unwrap();
+                    return Ok(json!({
+                        "access_token":"access-2", "refresh_token":"refresh-2",
+                        "user":{"id":self.expected.user_id.clone(),
+                                "username":self.expected.username.clone()}
+                    }));
+                }
+                Ok(json!({"status":"ok"}))
+            }
+        }
+
+        let _env_guard = ACCOUNT_CONFIG_TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "solum-account-model-race-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SOLUM_ACCOUNT_CONFIG", dir.join("solum-account.json"));
+        let session = state_test_session();
+        publish_session(&session).unwrap();
+        let rotated = refresh_and_save_with_client(
+            &ModelRaceFake {
+                expected: session.clone(),
+            },
+            &session,
+        )
+        .unwrap();
+        assert_eq!(rotated.refresh_token, "refresh-2");
+        assert_eq!(rotated.model, "mimo-v2.5-pro");
+        assert_eq!(AccountSession::load_full().unwrap(), rotated);
+
+        clear_session().unwrap();
+        std::env::remove_var("SOLUM_ACCOUNT_CONFIG");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn logout_during_refresh_revokes_the_new_pair_instead_of_resurrecting_it() {
+        struct LogoutRaceFake {
+            revoke_calls: Cell<usize>,
+            user_id: String,
+        }
+        impl AccountHttp for LogoutRaceFake {
+            fn post_json(
+                &self,
+                url: &str,
+                _access_token: Option<&str>,
+                _body: Value,
+            ) -> std::result::Result<Value, AccountHttpError> {
+                if url.ends_with("/v1/auth/refresh") {
+                    take_session().unwrap();
+                    return Ok(json!({
+                        "access_token":"access-2", "refresh_token":"refresh-2",
+                        "user":{"id":self.user_id.clone(),"username":"u"}
+                    }));
+                }
+                if url.ends_with("/v1/auth/logout") {
+                    self.revoke_calls.set(self.revoke_calls.get() + 1);
+                }
+                Ok(json!({"status":"ok"}))
+            }
+        }
+
+        let _env_guard = ACCOUNT_CONFIG_TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "solum-account-logout-race-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SOLUM_ACCOUNT_CONFIG", dir.join("solum-account.json"));
+        let session = state_test_session();
+        publish_session(&session).unwrap();
+        let fake = LogoutRaceFake {
+            revoke_calls: Cell::new(0),
+            user_id: session.user_id.clone(),
+        };
+        assert!(refresh_and_save_with_client(&fake, &session).is_err());
+        assert!(AccountSession::load().is_none());
+        assert_eq!(
+            fake.revoke_calls.get(),
+            1,
+            "newly issued pair must be revoked"
+        );
+
+        std::env::remove_var("SOLUM_ACCOUNT_CONFIG");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -819,6 +1261,7 @@ mod tests {
             refresh_token: "refresh-1".into(),
             model: DEFAULT_CLOUD_MODEL.into(),
         };
+        publish_session(&session).unwrap();
         let fake = RotatingFake {
             calls: RefCell::new(Vec::new()),
         };
@@ -834,6 +1277,7 @@ mod tests {
         // 轮换后的会话已持久化（post_with_refresh 立即落盘，重试失败也不丢新令牌）。
         let persisted = AccountSession::load().expect("rotated session persisted");
         assert_eq!(persisted.access_token, "access-2");
+        clear_session().unwrap();
         std::env::remove_var("SOLUM_ACCOUNT_CONFIG");
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -925,6 +1369,7 @@ mod tests {
             omit_default: false,
         };
         let mut session = state_test_session();
+        publish_session(&session).unwrap();
         let state = cloud_account_state_with_client(&fake, &mut session).unwrap();
         assert_eq!(session.access_token, "access-2");
         assert_eq!(state.catalog.models.len(), 2);
@@ -934,6 +1379,7 @@ mod tests {
         assert!(calls[1].ends_with("/v1/auth/refresh"));
         assert!(calls[2].ends_with("/v1/ai/models"));
         assert!(calls[3].ends_with("/v1/ai/usage"));
+        clear_session().unwrap();
         std::env::remove_var("SOLUM_ACCOUNT_CONFIG");
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -953,7 +1399,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_refresh_does_not_promote_the_running_guest_profile() {
+    fn legacy_refresh_requires_an_explicit_login() {
         let client = RotatingFake {
             calls: RefCell::new(Vec::new()),
         };
@@ -965,13 +1411,48 @@ mod tests {
             refresh_token: "refresh-1".into(),
             model: DEFAULT_CLOUD_MODEL.into(),
         };
-        let rotated = refresh_with_client(&client, &legacy).unwrap();
-        assert_eq!(rotated.stable_user_id(), None);
-        assert_eq!(rotated.access_token, "access-2");
+        let error = refresh_with_client(&client, &legacy).unwrap_err();
+        assert!(error.to_string().contains("重新登录"));
+    }
+
+    #[test]
+    fn refresh_retries_one_transient_response_failure() {
+        struct TransientRefresh {
+            calls: Cell<usize>,
+        }
+        impl AccountHttp for TransientRefresh {
+            fn post_json(
+                &self,
+                _url: &str,
+                _token: Option<&str>,
+                _body: Value,
+            ) -> std::result::Result<Value, AccountHttpError> {
+                let call = self.calls.get() + 1;
+                self.calls.set(call);
+                if call == 1 {
+                    return Err(AccountHttpError::Retryable("connection reset".into()));
+                }
+                Ok(json!({
+                    "access_token": "access-2",
+                    "refresh_token": "refresh-2",
+                    "user": {
+                        "id": "9d4df1be-9f7b-4a3a-b986-ec920d2df60e",
+                        "username": "u"
+                    }
+                }))
+            }
+        }
+        let client = TransientRefresh {
+            calls: Cell::new(0),
+        };
+        let rotated = refresh_with_client(&client, &state_test_session()).unwrap();
+        assert_eq!(client.calls.get(), 2);
+        assert_eq!(rotated.refresh_token, "refresh-2");
     }
 
     #[test]
     fn refresh_failure_maps_to_relogin_message() {
+        let _env_guard = ACCOUNT_CONFIG_TEST_LOCK.lock().unwrap();
         struct AlwaysUnauthorized;
         impl AccountHttp for AlwaysUnauthorized {
             fn post_json(
@@ -991,9 +1472,19 @@ mod tests {
             refresh_token: "r".into(),
             model: DEFAULT_CLOUD_MODEL.into(),
         };
+        let dir = std::env::temp_dir().join(format!(
+            "solum-account-refresh-failure-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SOLUM_ACCOUNT_CONFIG", dir.join("solum-account.json"));
+        publish_session(&session).unwrap();
         let err =
             AccountReasoner::complete_with_client(&AlwaysUnauthorized, &mut session, "s", "u")
                 .unwrap_err();
         assert!(err.to_string().contains("重新登录"), "{err}");
+        clear_session().unwrap();
+        std::env::remove_var("SOLUM_ACCOUNT_CONFIG");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

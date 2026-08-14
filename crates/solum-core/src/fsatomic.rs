@@ -17,8 +17,11 @@
 
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::{CoreError, Result};
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Replace `path` with `contents`, atomically.
 ///
@@ -48,11 +51,15 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-/// `foo.json` → `foo.json.<pid>.tmp`. The pid keeps two processes writing the
-/// same config from clobbering each other's temp file mid-write.
+/// Each call gets its own sibling. The PID separates processes and the counter
+/// separates concurrent writers inside one process.
 fn tmp_sibling(path: &Path) -> std::path::PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(format!(".{}.tmp", std::process::id()));
+    name.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
     path.with_file_name(name)
 }
 
@@ -89,6 +96,35 @@ mod tests {
         let target = dir.join("nested").join("cfg.json");
         write_atomic(&target, "ok").unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "ok");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn concurrent_writers_do_not_share_a_temp_path() {
+        let dir = std::env::temp_dir().join(format!("solum-atomic-race-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = std::sync::Arc::new(dir.join("cfg.json"));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let writers: Vec<_> = (0..8)
+            .map(|index| {
+                let target = target.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    write_atomic(&target, &format!("writer-{index}")).unwrap();
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        assert!(std::fs::read_to_string(&*target)
+            .unwrap()
+            .starts_with("writer-"));
+        assert!(std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .all(|entry| !entry.file_name().to_string_lossy().contains(".tmp")));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

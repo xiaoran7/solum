@@ -10,7 +10,16 @@ const { DatabaseSync } = require('node:sqlite');
 const {
   verifyAccessToken, withTenant, parseModelCatalog, usageProjection,
   validateCompletionOptions, readBodyLimited, recoverTenantStaleAiRequests,
+  optionalBoundedNumber, optionalHttpUrl, requiredOpaqueString, safeDatabaseInteger,
 } = require('../src/postgres-server');
+const {
+  createRefreshToken,
+  createRefreshSuccessorToken,
+  createConcurrencyLimiter,
+  createFixedWindowLimiter, isJsonContentType, passwordHashAsync,
+  refreshTokenSessionId, requestClientAddress, requestOriginAllowed,
+  verifyPasswordAsync,
+} = require('../src/http-security');
 const { loadLegacy } = require('../scripts/import-legacy-sqlite');
 
 const root = path.join(__dirname, '..');
@@ -27,9 +36,23 @@ test('PostgreSQL schema forces RLS on every tenant-owned table', () => {
   assert.match(sql, /current_setting\('app\.current_tenant_id', true\)/);
   assert.match(sql, /create index if not exists blobs_tenant_seq_idx\s+on sync\.blobs \(tenant_id, seq\)/i);
   assert.match(sql, /create index if not exists usage_events_tenant_created_idx\s+on ai\.usage_events \(tenant_id, created_at desc\)/i);
-  assert.match(sql, /grant select, insert, delete on sync\.blobs to solum_api;/i);
+  assert.match(sql, /revoke all on all tables in schema auth, sync, vault, ai from solum_api, solum_runtime;/i);
+  assert.match(sql, /grant select, insert on auth\.users to solum_api;/i);
+  assert.match(sql, /grant select, insert on sync\.blobs to solum_api;/i);
   assert.match(sql, /grant select, insert, delete on sync\.alerts to solum_api;/i);
+  assert.match(sql, /grant select, insert on vault\.key_envelopes to solum_api;/i);
   assert.match(sql, /grant select, insert, update, delete on auth\.refresh_tokens to solum_api;/i);
+  assert.doesNotMatch(sql, /grant[^;]*delete[^;]*on sync\.blobs/i);
+  assert.doesNotMatch(sql, /grant[^;]*update[^;]*on (?:auth\.users|vault\.key_envelopes)/i);
+  assert.match(sql, /users_password_version_check/i);
+  assert.match(sql, /refresh_tokens_session_idx\s+on auth\.refresh_tokens \(session_id\)/i);
+  assert.match(sql, /refresh_tokens_previous_idx\s+on auth\.refresh_tokens \(previous_token_hash\)/i);
+  assert.match(sql, /alerts_detail_url_scheme/i);
+  assert.match(sql, /validate constraint alerts_latency_ms_range/i);
+  assert.match(sql, /validate constraint alerts_ping_latency_ms_range/i);
+  assert.match(sql, /validate constraint alerts_availability_7d_range/i);
+  assert.match(sql, /validate constraint alerts_detail_url_scheme/i);
+  assert.match(sql, /alerts_tenant_received_at_idx\s+on sync\.alerts \(tenant_id, received_at\)/i);
   assert.doesNotMatch(sql, /grant all/i);
 });
 
@@ -45,6 +68,111 @@ test('AI model catalog always retains one validated default and removes duplicat
   assert.equal(catalog.defaultModel, 'mimo-v2.5');
   assert.deepEqual(catalog.models, ['mimo-v2.5', 'mimo-v2.5-pro', 'custom/model']);
   assert.throws(() => parseModelCatalog('bad model', ''), /invalid_model/);
+});
+
+test('password and refresh-token inputs preserve exact surrounding whitespace', () => {
+  assert.equal(requiredOpaqueString('  exact secret  ', 'invalid', 64), '  exact secret  ');
+  assert.throws(() => requiredOpaqueString('', 'invalid', 64), /invalid/);
+  assert.throws(() => requiredOpaqueString('x'.repeat(65), 'invalid', 64), /invalid/);
+
+  const sessionId = '9d4df1be-9f7b-4a3a-b986-ec920d2df60e';
+  const refresh = createRefreshToken(sessionId, 'test-secret');
+  assert.equal(refreshTokenSessionId(refresh, 'test-secret'), sessionId);
+  assert.equal(refreshTokenSessionId(`${refresh}x`, 'test-secret'), null);
+  assert.equal(refreshTokenSessionId(refresh, 'wrong-secret'), null);
+  const successor = createRefreshSuccessorToken(sessionId, refresh, 'test-secret');
+  assert.equal(createRefreshSuccessorToken(sessionId, refresh, 'test-secret'), successor);
+  assert.equal(refreshTokenSessionId(successor, 'test-secret'), sessionId);
+  assert.notEqual(createRefreshSuccessorToken(sessionId, `${refresh}x`, 'test-secret'), successor);
+});
+
+test('public auth helpers are asynchronous, bounded and proxy-aware', async () => {
+  const salt = '00112233445566778899aabbccddeeff';
+  const expected = crypto.scryptSync('password', salt, 64).toString('hex');
+  assert.equal(await passwordHashAsync('password', salt), expected);
+  const exactHash = 'ab'.repeat(64);
+  const kdfInputs = [];
+  const paddedMatch = await verifyPasswordAsync(' padded ', salt, exactHash, 2,
+    async (candidate) => {
+      kdfInputs.push(candidate);
+      return candidate === ' padded ' ? exactHash : 'cd'.repeat(64);
+    });
+  assert.equal(paddedMatch, true);
+  assert.deepEqual(kdfInputs, [' padded ', 'padded'],
+    'padded attempts must use the same two KDFs even after an exact match');
+
+  const limiter = createFixedWindowLimiter({ windowMs: 100, maxAttempts: 2, maxKeys: 2 });
+  assert.equal(limiter.consume('one', 10), true);
+  assert.equal(limiter.consume('one', 20), true);
+  assert.equal(limiter.consume('one', 30), false);
+  limiter.record('two', 30);
+  limiter.record('three', 30);
+  assert.equal(limiter.size, 2, 'attacker-controlled keys must stay bounded');
+  assert.equal(limiter.isLimited('one', 200), false, 'expired windows must not persist');
+
+  const burst = createFixedWindowLimiter({ windowMs: 100, maxAttempts: 2 });
+  const first = burst.reserve('same', 10);
+  const second = burst.reserve('same', 10);
+  assert.ok(first);
+  assert.ok(second);
+  assert.equal(burst.reserve('same', 10), null, 'in-flight attempts consume the limit');
+  first.release();
+  const replacement = burst.reserve('same', 20);
+  assert.ok(replacement);
+  second.commit(20);
+  replacement.commit(20);
+  assert.equal(burst.isLimited('same', 20), true);
+
+  const concurrency = createConcurrencyLimiter(2);
+  const releaseFirst = concurrency.tryAcquire();
+  const releaseSecond = concurrency.tryAcquire();
+  assert.ok(releaseFirst);
+  assert.ok(releaseSecond);
+  assert.equal(concurrency.tryAcquire(), null);
+  releaseFirst();
+  releaseFirst();
+  assert.equal(concurrency.active, 1, 'release handles must be idempotent');
+  assert.ok(concurrency.tryAcquire());
+
+  const req = { headers: { host: 'center.example', 'content-type': 'application/problem+json',
+    'cf-connecting-ip': '203.0.113.8' }, socket: { remoteAddress: '127.0.0.1' } };
+  assert.equal(isJsonContentType(req), true);
+  assert.equal(requestOriginAllowed(req, 'https://center.example', new Set()), true);
+  assert.equal(requestOriginAllowed(req, 'https://evil.example', new Set()), false);
+  assert.equal(requestClientAddress(req, true), '203.0.113.8');
+  assert.equal(requestClientAddress(req, false), '127.0.0.1');
+});
+
+test('alert metrics, URLs and database integers reject lossy or dangerous values', () => {
+  assert.equal(optionalBoundedNumber(42, 'bad', { min: 0, max: 100, integer: true }), 42);
+  for (const value of [-1, 101, 1.5, Number.POSITIVE_INFINITY]) {
+    assert.throws(() => optionalBoundedNumber(value, 'bad', { min: 0, max: 100, integer: true }));
+  }
+  assert.equal(optionalHttpUrl('https://example.com/path', 'bad'), 'https://example.com/path');
+  assert.throws(() => optionalHttpUrl('javascript:alert(1)', 'bad'));
+  assert.equal(safeDatabaseInteger('9007199254740991', 'seq'), Number.MAX_SAFE_INTEGER);
+  assert.throws(() => safeDatabaseInteger('9007199254740992', 'seq'), /JSON precision/);
+});
+
+test('sync history is durable and tenant storage is explicitly bounded', () => {
+  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const compose = fs.readFileSync(path.join(root, 'compose.yaml'), 'utf8');
+  assert.doesNotMatch(source, /delete from sync\.blobs where/);
+  assert.doesNotMatch(compose, /SOLUM_SYNC_RETENTION_DAYS/);
+  assert.match(source, /storage_quota_exceeded/);
+  assert.match(source, /device_limit_exceeded/);
+  assert.match(source, /pg_advisory_xact_lock/);
+  assert.match(compose, /SOLUM_TENANT_MAX_BLOB_BYTES/);
+});
+
+test('refresh rotation locks one token family and revokes descendants on reuse', () => {
+  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  assert.match(source, /where rt\.session_id=\$1\$\{lock\}/);
+  assert.match(source, /for update of rt/);
+  assert.match(source, /previous_token_hash=\$2/);
+  assert.match(source, /delete from auth\.refresh_tokens where session_id=\$1/);
+  assert.match(source, /row\.status !== 'active'/);
+  assert.match(source, /auth-session:/, 'session issuance must serialize per user');
 });
 
 test('AI usage projection is server-authoritative and never reports negative remaining quota', () => {
@@ -94,6 +222,13 @@ test('non-streaming upstream bodies are bounded before buffering', async () => {
   assert.equal(await readBodyLimited(small, 4), '1234');
   const oversized = new Response(Buffer.from('12345'));
   await assert.rejects(readBodyLimited(oversized, 4), /upstream_response_too_large/);
+});
+
+test('SQLite streaming cancels disconnected upstreams and honors response backpressure', () => {
+  const source = fs.readFileSync(path.join(root, 'src', 'server.js'), 'utf8');
+  assert.match(source, /const lifetime = requestSignal\(req, res,/);
+  assert.match(source, /if \(!res\.write\(chunk\)\) await waitForDrain\(res\)/);
+  assert.match(source, /await upstream\.body\.cancel\(\)\.catch\(\(\) => \{\}\)/);
 });
 
 test('stale pending AI calls are recovered for the active tenant and counted once', async () => {
@@ -153,6 +288,7 @@ test('access tokens accept only signed, unexpired UUID tenants', () => {
 
 test('compose exposes only the API and keeps PostgreSQL on the private network', () => {
   const compose = fs.readFileSync(path.join(root, 'compose.yaml'), 'utf8');
+  const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
   const postgres = compose.slice(compose.indexOf('\n  postgres:\n'), compose.indexOf('\n  solum-cloud:\n'));
   const cloud = compose.slice(compose.indexOf('\n  solum-cloud:\n'), compose.indexOf('\n  migrate:\n'));
   assert.doesNotMatch(postgres, /\n\s+ports:/);
@@ -160,6 +296,8 @@ test('compose exposes only the API and keeps PostgreSQL on the private network',
   assert.match(cloud, /ports:\s*\n\s+- "127\.0\.0\.1:/);
   assert.match(cloud, /networks: \[backend, edge\]/);
   assert.match(cloud, /127\.0\.0\.1:8787\/v1\/health/);
+  assert.match(dockerfile, /^USER node$/m,
+    'the public API container must not run as root');
 });
 
 test('center dashboard provides one-origin registration and account workspace', () => {
@@ -172,6 +310,14 @@ test('center dashboard provides one-origin registration and account workspace', 
   assert.match(dashboard, /data-mode="login"/);
   assert.match(dashboard, /\/v1\/devices/);
   assert.match(dashboard, /\/v1\/alerts/);
+  assert.match(dashboard, /refreshInFlight/);
+  assert.match(dashboard, /rotateSession/);
+  assert.match(dashboard, /authEpoch/);
+  assert.match(dashboard, /expectedEpoch!==authEpoch/);
+  assert.match(dashboard, /revokeRefreshToken\(session\.refresh_token\)/);
+  assert.match(dashboard, /data:image\/svg\+xml/);
+  assert.match(source, /img-src 'self' data:/);
+  assert.match(dashboard, /账号已登录，但数据加载失败/);
   assert.doesNotMatch(dashboard, /localStorage|sessionStorage/);
 });
 
@@ -180,10 +326,14 @@ test('recovery envelope is fixed-scope and create-only', () => {
   assert.match(source, /PUT'.*\/v1\/keys\/recovery/);
   assert.match(source, /recipient_device_id='account-recovery-v1'/);
   assert.match(source, /on conflict\(tenant_id,recipient_device_id,key_version,algorithm\) do nothing/);
-  assert.match(source, /device === 'account-recovery-v1'/);
+  assert.doesNotMatch(source, /\/v1\/keys\/envelopes/);
+  assert.doesNotMatch(source, /\/v1\/devices\/register/);
   assert.doesNotMatch(source, /last_seen_at=excluded\.last_seen_at,revoked_at=null/);
-  assert.equal((source.match(/where sync\.devices\.revoked_at is null returning device_id/g) || []).length, 3);
-  assert.equal((source.match(/throw new HttpError\(403, 'device_revoked'\)/g) || []).length, 3);
+  assert.match(source, /select revoked_at from sync\.devices/);
+  assert.match(source, /where tenant_id=\$1 and device_id=\$2 and revoked_at is null returning device_id/);
+  assert.match(source, /where tenant_id=\$1 and revoked_at is null/);
+  assert.match(source, /device_limit_exceeded/);
+  assert.equal((source.match(/throw new HttpError\(403, 'device_revoked'\)/g) || []).length, 2);
 });
 
 test('legacy importer preserves tenant ownership and cursor sequences atomically', () => {
@@ -223,11 +373,119 @@ test('legacy importer maps username tenants and decodes refresh hashes', () => {
 
     const data = loadLegacy(cloudPath, relayPath);
     assert.match(data.users[0].id, /^[0-9a-f-]{36}$/);
+    assert.equal(data.users[0].passwordVersion, 1);
     assert.equal(data.refreshTokens[0].tokenHash.toString('hex'), 'ab'.repeat(32));
     assert.equal(data.blobs[0].tenantId, data.users[0].id);
     assert.equal(data.blobs[0].seq, 8);
     assert.equal(data.alerts[0].tenantId, data.users[0].id);
     assert.equal(data.alerts[0].seq, 72);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('legacy importer preserves and validates refresh-token session ids', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'solum-import-session-id-'));
+  const cloudPath = path.join(directory, 'cloud.sqlite');
+  const relayPath = path.join(directory, 'relay.sqlite');
+  const sessionId = '9d4df1be-9f7b-4a3a-b986-ec920d2df60e';
+  try {
+    const cloud = new DatabaseSync(cloudPath);
+    cloud.exec(`
+      create table users(
+        id text primary key, username text unique, password_hash text,
+        password_salt text, created_at integer
+      );
+      create table refresh_tokens(
+        token_hash text primary key, user_id text, session_id text,
+        expires_at integer, created_at integer
+      );
+      insert into users values(
+        '00000000-0000-4000-8000-000000000001','session-user','hash','salt',1700000000
+      );
+      insert into refresh_tokens values(
+        '${'cd'.repeat(32)}','00000000-0000-4000-8000-000000000001',
+        '${sessionId}',4102444800,1700000001
+      );
+    `);
+    cloud.close();
+    new DatabaseSync(relayPath).close();
+
+    const data = loadLegacy(cloudPath, relayPath);
+    assert.equal(data.refreshTokens[0].sessionId, sessionId);
+
+    const invalid = new DatabaseSync(cloudPath);
+    invalid.prepare('update refresh_tokens set session_id=?').run('not-a-uuid');
+    invalid.close();
+    assert.throws(() => loadLegacy(cloudPath, relayPath),
+      /invalid legacy refresh-token session id/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('legacy importer rejects an unknown password compatibility version', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'solum-import-password-version-'));
+  const cloudPath = path.join(directory, 'cloud.sqlite');
+  const relayPath = path.join(directory, 'relay.sqlite');
+  try {
+    const cloud = new DatabaseSync(cloudPath);
+    cloud.exec(`
+      create table users(
+        id text primary key, username text unique, password_hash text,
+        password_salt text, password_version integer, created_at integer
+      );
+      insert into users values(
+        '00000000-0000-4000-8000-000000000001',
+        'invalid-version', 'hash', 'salt', 9, 1700000000
+      );
+    `);
+    cloud.close();
+    const relay = new DatabaseSync(relayPath);
+    relay.exec('create table blobs(seq integer, tenant_id text, device text, blob blob, received_at text)');
+    relay.close();
+    assert.throws(() => loadLegacy(cloudPath, relayPath), /invalid legacy password version/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('legacy importer rejects null values and missing required alert columns', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'solum-import-required-'));
+  const cloudPath = path.join(directory, 'cloud.sqlite');
+  const relayPath = path.join(directory, 'relay.sqlite');
+  try {
+    const cloud = new DatabaseSync(cloudPath);
+    cloud.exec(`
+      create table users(username text,password_hash text,password_salt text,created_at integer);
+      insert into users values(null,null,null,1700000000);
+    `);
+    cloud.close();
+    new DatabaseSync(relayPath).close();
+    assert.throws(() => loadLegacy(cloudPath, relayPath), /invalid legacy username/);
+
+    const repairedCloud = new DatabaseSync(cloudPath);
+    repairedCloud.exec("update users set username='alice',password_hash='hash',password_salt='salt'");
+    repairedCloud.close();
+    const relay = new DatabaseSync(relayPath);
+    relay.exec(`
+      create table alerts(
+        seq integer,tenant_id text,event_id text,source text,status text,received_at text
+      );
+      insert into alerts values(1,'alice','evt',null,'up','2026-08-14T00:00:00Z');
+    `);
+    relay.close();
+    assert.throws(() => loadLegacy(cloudPath, relayPath), /invalid legacy alert source/);
+
+    const missingColumn = new DatabaseSync(relayPath);
+    missingColumn.exec(`
+      drop table alerts;
+      create table alerts(
+        seq integer,tenant_id text,event_id text,status text,received_at text
+      );
+    `);
+    missingColumn.close();
+    assert.throws(() => loadLegacy(cloudPath, relayPath), /unsupported relay alerts schema/);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

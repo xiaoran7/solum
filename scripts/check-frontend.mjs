@@ -3,8 +3,15 @@ import vm from "node:vm";
 
 const htmlPath = new URL("../crates/solum-app/dist/index.html", import.meta.url);
 const appPath = new URL("../crates/solum-app/src/lib.rs", import.meta.url);
+const accountCorePath = new URL("../crates/solum-core/src/account.rs", import.meta.url);
+const notificationPipelinePath = new URL(
+  "../crates/solum-notif-access/android/src/main/java/dev/solum/notifaccess/NotificationPipelineService.kt",
+  import.meta.url,
+);
 const html = fs.readFileSync(htmlPath, "utf8");
 const app = fs.readFileSync(appPath, "utf8");
+const accountCore = fs.readFileSync(accountCorePath, "utf8");
+const notificationPipeline = fs.readFileSync(notificationPipelinePath, "utf8");
 
 const inlineScripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)];
 if (inlineScripts.length === 0) {
@@ -44,10 +51,17 @@ if (runStart < 0 || handlerStart < 0 || app.slice(runStart, handlerStart).includ
 
 const requiredAccountGateIds = [
   "accountGate", "accountGateLoginTab", "accountGateRegisterTab", "accountGateSubmit",
-  "accountGuestBtn", "accountShellBtn", "accountShellAvatarM",
+  "accountGateConfirmField", "accountGateConfirm", "accountGuestBtn", "accountShellBtn",
+  "accountShellAvatarM",
 ];
 for (const id of requiredAccountGateIds) {
   if (!ids.includes(id)) throw new Error(`account shell is missing #${id}`);
+}
+if (!html.includes('password !== $("accountGateConfirm").value')) {
+  throw new Error("registration must confirm the exact password before creating an account");
+}
+if (html.includes('submitAccount("account_register"')) {
+  throw new Error("registration must use the single account-gate flow");
 }
 const privacyViewStart = html.indexOf('id="view-privacy"');
 const nextViewStart = html.indexOf('<section class="view"', privacyViewStart + 1);
@@ -83,6 +97,12 @@ if (/else\s*\{\s*solum_core::llm::LlmConfig::load\(\)/s.test(app)) {
 }
 if (!app.includes('return Err("多设备同步需要先注册或登录 Solum 账号".into());')) {
   throw new Error("manual/background sync must require an account session");
+}
+if (!/if \(url != account\.serverUrl\) return null[\s\S]*?RelayConfig\(url, account\.accessToken/.test(notificationPipeline)) {
+  throw new Error("Android background sync must never send an account token to another origin");
+}
+if (!accountCore.includes("libc::F_OFD_SETLKW") || !notificationPipeline.includes("handle.channel.lock()")) {
+  throw new Error("Rust and Kotlin Android session writers must use interoperable OFD/POSIX record locks");
 }
 const tickerStart = app.indexOf("fn ticker(");
 const tickerEnd = app.indexOf("\nfn resync_alarms", tickerStart);

@@ -14,22 +14,79 @@ create table if not exists auth.users (
   username text not null unique,
   password_hash text not null,
   password_salt text not null,
+  password_version smallint not null default 2 constraint users_password_version_check
+    check (password_version in (1, 2)),
   status text not null default 'active' check (status in ('active', 'disabled')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
+alter table auth.users add column if not exists password_version smallint;
+update auth.users set password_version = 1 where password_version is null;
+alter table auth.users alter column password_version set default 2;
+alter table auth.users alter column password_version set not null;
+do $$
+begin
+  if not exists (select 1 from pg_constraint
+                 where conname = 'users_password_version_check'
+                   and conrelid = 'auth.users'::regclass) then
+    alter table auth.users add constraint users_password_version_check
+      check (password_version in (1, 2)) not valid;
+  end if;
+end
+$$;
+alter table auth.users validate constraint users_password_version_check;
+
 create table if not exists auth.refresh_tokens (
   token_hash bytea primary key,
   user_id uuid not null references auth.users(id) on delete cascade,
+  session_id uuid not null default gen_random_uuid(),
+  previous_token_hash bytea,
+  legacy_token_hash bytea,
+  rotated_at timestamptz,
   expires_at timestamptz not null,
   created_at timestamptz not null default now()
 );
+
+alter table auth.refresh_tokens add column if not exists session_id uuid;
+alter table auth.refresh_tokens add column if not exists previous_token_hash bytea;
+do $$
+begin
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'auth' and table_name = 'refresh_tokens'
+                   and column_name = 'legacy_token_hash') then
+    alter table auth.refresh_tokens add column legacy_token_hash bytea;
+    update auth.refresh_tokens set legacy_token_hash = token_hash;
+  end if;
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'auth' and table_name = 'refresh_tokens'
+                   and column_name = 'rotated_at') then
+    alter table auth.refresh_tokens add column rotated_at timestamptz;
+  end if;
+end
+$$;
+update auth.refresh_tokens set session_id = gen_random_uuid() where session_id is null;
+alter table auth.refresh_tokens alter column session_id set default gen_random_uuid();
+alter table auth.refresh_tokens alter column session_id set not null;
+delete from auth.refresh_tokens where expires_at <= now();
+with ranked as (
+  select token_hash,
+         row_number() over(partition by user_id order by created_at desc, session_id desc) as rank
+  from auth.refresh_tokens
+)
+delete from auth.refresh_tokens target using ranked
+where target.token_hash = ranked.token_hash and ranked.rank > 32;
 
 create index if not exists refresh_tokens_user_expiry_idx
   on auth.refresh_tokens (user_id, expires_at);
 create index if not exists refresh_tokens_expiry_idx
   on auth.refresh_tokens (expires_at);
+create unique index if not exists refresh_tokens_session_idx
+  on auth.refresh_tokens (session_id);
+create index if not exists refresh_tokens_previous_idx
+  on auth.refresh_tokens (previous_token_hash) where previous_token_hash is not null;
+create index if not exists refresh_tokens_legacy_idx
+  on auth.refresh_tokens (legacy_token_hash) where legacy_token_hash is not null;
 
 create table if not exists ai.entitlements (
   tenant_id uuid primary key references auth.users(id) on delete cascade,
@@ -125,19 +182,98 @@ create table if not exists sync.alerts (
   monitor_id text,
   name text,
   status text not null check (char_length(status) between 1 and 64),
-  latency_ms bigint,
-  ping_latency_ms bigint,
-  availability_7d numeric(7, 4),
+  latency_ms bigint constraint alerts_latency_ms_range
+    check (latency_ms is null or latency_ms between 0 and 86400000),
+  ping_latency_ms bigint constraint alerts_ping_latency_ms_range
+    check (ping_latency_ms is null or ping_latency_ms between 0 and 86400000),
+  availability_7d numeric(7, 4) constraint alerts_availability_7d_range
+    check (availability_7d is null or availability_7d between 0 and 100),
   checked_at text,
-  detail_url text,
+  detail_url text constraint alerts_detail_url_scheme
+    check (detail_url is null or
+      (char_length(detail_url) <= 2048 and detail_url ~* '^https?://' and
+       detail_url !~ E'[\\r\\n]')),
   received_at timestamptz not null default now(),
   unique (tenant_id, event_id)
 );
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint
+                 where conname = 'alerts_latency_ms_range' and conrelid = 'sync.alerts'::regclass) then
+    alter table sync.alerts add constraint alerts_latency_ms_range
+      check (latency_ms is null or latency_ms between 0 and 86400000) not valid;
+  end if;
+  if not exists (select 1 from pg_constraint
+                 where conname = 'alerts_ping_latency_ms_range' and conrelid = 'sync.alerts'::regclass) then
+    alter table sync.alerts add constraint alerts_ping_latency_ms_range
+      check (ping_latency_ms is null or ping_latency_ms between 0 and 86400000) not valid;
+  end if;
+  if not exists (select 1 from pg_constraint
+                 where conname = 'alerts_availability_7d_range' and conrelid = 'sync.alerts'::regclass) then
+    alter table sync.alerts add constraint alerts_availability_7d_range
+      check (availability_7d is null or availability_7d between 0 and 100) not valid;
+  end if;
+  if not exists (select 1 from pg_constraint
+                 where conname = 'alerts_detail_url_scheme' and conrelid = 'sync.alerts'::regclass) then
+    alter table sync.alerts add constraint alerts_detail_url_scheme
+      check (detail_url is null or
+        (char_length(detail_url) <= 2048 and detail_url ~* '^https?://' and
+         detail_url !~ E'[\\r\\n]')) not valid;
+  end if;
+end
+$$;
+
+do $$
+begin
+  if exists (select 1 from pg_constraint
+             where conrelid = 'sync.alerts'::regclass and not convalidated
+               and conname = any(array[
+                 'alerts_latency_ms_range', 'alerts_ping_latency_ms_range',
+                 'alerts_availability_7d_range', 'alerts_detail_url_scheme'
+               ])) then
+    update sync.alerts set
+      latency_ms = case
+        when latency_ms is not null and latency_ms not between 0 and 86400000 then null
+        else latency_ms
+      end,
+      ping_latency_ms = case
+        when ping_latency_ms is not null and ping_latency_ms not between 0 and 86400000 then null
+        else ping_latency_ms
+      end,
+      availability_7d = case
+        when availability_7d is not null and
+          (availability_7d not between 0 and 100 or availability_7d::text = 'NaN') then null
+        else availability_7d
+      end,
+      detail_url = case
+        when detail_url is not null and
+          (char_length(detail_url) > 2048 or detail_url !~* '^https?://' or
+           detail_url ~ E'[\\r\\n]') then null
+        else detail_url
+      end
+    where (latency_ms is not null and latency_ms not between 0 and 86400000)
+       or (ping_latency_ms is not null and ping_latency_ms not between 0 and 86400000)
+       or (availability_7d is not null and
+           (availability_7d not between 0 and 100 or availability_7d::text = 'NaN'))
+       or (detail_url is not null and
+           (char_length(detail_url) > 2048 or detail_url !~* '^https?://' or
+            detail_url ~ E'[\\r\\n]'));
+
+    alter table sync.alerts validate constraint alerts_latency_ms_range;
+    alter table sync.alerts validate constraint alerts_ping_latency_ms_range;
+    alter table sync.alerts validate constraint alerts_availability_7d_range;
+    alter table sync.alerts validate constraint alerts_detail_url_scheme;
+  end if;
+end
+$$;
 
 create index if not exists alerts_tenant_source_seq_idx
   on sync.alerts (tenant_id, source, seq);
 create index if not exists alerts_received_at_idx
   on sync.alerts (received_at);
+create index if not exists alerts_tenant_received_at_idx
+  on sync.alerts (tenant_id, received_at);
 
 create table if not exists vault.key_envelopes (
   id uuid primary key default gen_random_uuid(),
@@ -216,15 +352,20 @@ revoke all on all tables in schema auth, sync, vault, ai from public;
 revoke all on all sequences in schema auth, sync, vault, ai from public;
 revoke all on all functions in schema sync from public;
 
+-- Reapplying the migration must also repair privileges left by older releases.
+-- Granting a narrower list alone never removes an obsolete DELETE/UPDATE grant.
+revoke all on schema auth, sync, vault, ai from solum_api, solum_runtime;
+revoke all on all tables in schema auth, sync, vault, ai from solum_api, solum_runtime;
+revoke all on all sequences in schema auth, sync, vault, ai from solum_api, solum_runtime;
+revoke all on all functions in schema sync from solum_api, solum_runtime;
+
 grant usage on schema auth, sync, vault, ai to solum_api;
-grant select, insert, update on auth.users to solum_api;
+grant select, insert on auth.users to solum_api;
 grant select, insert, update, delete on auth.refresh_tokens to solum_api;
 grant select, insert, update on sync.devices to solum_api;
-grant select, insert, delete on sync.blobs to solum_api;
-grant select, insert, update on sync.preferences to solum_api;
+grant select, insert on sync.blobs to solum_api;
 grant select, insert, delete on sync.alerts to solum_api;
-grant select, insert, update on vault.key_envelopes to solum_api;
-revoke update, delete on ai.entitlements from solum_api;
+grant select, insert on vault.key_envelopes to solum_api;
 grant select, insert on ai.entitlements to solum_api;
 grant select, insert, update on ai.usage_monthly to solum_api;
 grant select, insert, update on ai.usage_events to solum_api;

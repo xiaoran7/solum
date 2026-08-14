@@ -21,6 +21,7 @@ solum-sync.json
 solum-soulous.json
 solum-email.json
 solum-account.json
+solum-account.json.lock
 solum-privacy-consent.json
 .env
 .env.*
@@ -48,3 +49,10 @@ Thumbs.db
 .agents/
 .impeccable/
 skills-lock.json
+
+# Local demo and browser QA artifacts
+/Solum_demo.mp4
+/Solum_demo_script_v3.md
+/Solum_demo_v3.mp4
+/Solum_demo_v3_screenshots/
+/output/

@@ -24,3 +24,7 @@ sha2 = { workspace = true }
 url = { workspace = true }
 pbkdf2 = { workspace = true }
 hkdf = { workspace = true }
+fs2 = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+libc = { workspace = true }

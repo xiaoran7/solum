@@ -6,8 +6,10 @@ RUN npm ci --omit=dev --ignore-scripts
 COPY src ./src
 COPY scripts ./scripts
 
-RUN mkdir -p /data
+RUN mkdir -p /data && chown node:node /data
 ENV NODE_ENV=production
 EXPOSE 8787
+
+USER node
 
 CMD ["node", "src/postgres-server.js"]

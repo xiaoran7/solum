@@ -5,6 +5,18 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { Pool } = require('pg');
+const {
+  createRefreshToken,
+  createRefreshSuccessorToken,
+  createConcurrencyLimiter,
+  createFixedWindowLimiter,
+  isJsonContentType,
+  passwordHashAsync,
+  refreshTokenSessionId,
+  requestClientAddress,
+  requestOriginAllowed,
+  verifyPasswordOrDummyAsync,
+} = require('./http-security');
 
 const ACCESS_TTL_SECONDS = 15 * 60;
 const REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -15,8 +27,15 @@ const MAX_PULL_ROWS = 500;
 const DEFAULT_AI_RESPONSE_BYTES = 8 * 1024 * 1024;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 5;
+const LOGIN_IP_MAX_FAILURES = 50;
+const MAX_CONCURRENT_AUTH_KDFS = 8;
+const REGISTRATION_MAX_ATTEMPTS = 5;
+const MAX_REFRESH_SESSIONS_PER_USER = 32;
+const REFRESH_REPLAY_GRACE_MS = 5_000;
 const MAX_AI_TOKENS_PER_REQUEST = 10 * 1000 * 1000;
+const MAX_ALERT_LATENCY_MS = 24 * 60 * 60 * 1000;
 const DASHBOARD = fs.readFileSync(path.join(__dirname, 'dashboard.html'));
+const SERVICE_VERSION = require('../package.json').version;
 
 class HttpError extends Error {
   constructor(status, code) {
@@ -47,7 +66,7 @@ function html(res, body) {
     'Content-Length': body.length,
     'Cache-Control': 'no-cache',
     'X-Content-Type-Options': 'nosniff',
-    'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+    'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'",
   });
   res.end(body);
 }
@@ -64,9 +83,14 @@ async function readBytes(req, limit) {
 }
 
 async function readJson(req) {
+  if (!isJsonContentType(req)) throw new HttpError(415, 'unsupported_media_type');
   const raw = await readBytes(req, MAX_JSON_BYTES);
   try {
-    return JSON.parse(raw.toString('utf8') || '{}');
+    const parsed = JSON.parse(raw.toString('utf8') || '{}');
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new HttpError(400, 'invalid_json');
+    }
+    return parsed;
   } catch {
     throw new HttpError(400, 'invalid_json');
   }
@@ -79,16 +103,47 @@ function requiredString(value, code, max = 256) {
   return value.trim();
 }
 
+// Passwords and bearer-style secrets are opaque. Trimming them made multiple
+// login strings authenticate as the same password while the client derived a
+// different recovery key from each exact string.
+function requiredOpaqueString(value, code, max) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > max) {
+    throw new HttpError(400, code);
+  }
+  return value;
+}
+
 function optionalString(value, code, max = 2048) {
   if (value === undefined || value === null || value === '') return null;
   if (typeof value !== 'string' || value.length > max) throw new HttpError(400, code);
   return value.trim() || null;
 }
 
-function optionalNumber(value, code) {
+function optionalBoundedNumber(value, code, { min, max, integer = false }) {
   if (value === undefined || value === null) return null;
-  if (typeof value !== 'number' || !Number.isFinite(value)) throw new HttpError(400, code);
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max ||
+    (integer && !Number.isSafeInteger(value))) throw new HttpError(400, code);
   return value;
+}
+
+function optionalHttpUrl(value, code, max = 2048) {
+  const text = optionalString(value, code, max);
+  if (text === null) return null;
+  try {
+    const parsed = new URL(text);
+    if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('invalid protocol');
+    return parsed.toString();
+  } catch {
+    throw new HttpError(400, code);
+  }
+}
+
+function safeDatabaseInteger(value, name) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`database integer exceeds JSON precision: ${name}`);
+  }
+  return parsed;
 }
 
 function decodeBase64(value, code, maxChars) {
@@ -111,19 +166,9 @@ function parseNonNegativeInt(value, fallback, max = Number.MAX_SAFE_INTEGER) {
   return parsed;
 }
 
-function passwordHash(password, salt) {
-  return crypto.scryptSync(password, salt, 64).toString('hex');
-}
-
-function secureEqualHex(left, right) {
-  if (typeof left !== 'string' || typeof right !== 'string' || left.length !== right.length) {
-    return false;
-  }
-  try {
-    return crypto.timingSafeEqual(Buffer.from(left, 'hex'), Buffer.from(right, 'hex'));
-  } catch {
-    return false;
-  }
+function secureEqualBuffer(left, right) {
+  return Buffer.isBuffer(left) && Buffer.isBuffer(right) && left.length === right.length &&
+    crypto.timingSafeEqual(left, right);
 }
 
 function tokenHash(token) {
@@ -249,22 +294,43 @@ function buildConfig(overrides = {}) {
     aiMaxResponseBytes: Number(process.env.SOLUM_AI_MAX_RESPONSE_BYTES || DEFAULT_AI_RESPONSE_BYTES),
     aiPendingTimeoutSeconds: Number(process.env.SOLUM_AI_PENDING_TIMEOUT_SECONDS || 600),
     allowedOrigins: process.env.SOLUM_ALLOWED_ORIGINS || '',
+    trustProxy: process.env.SOLUM_TRUST_PROXY === 'true',
     poolMax: Number(process.env.SOLUM_DB_POOL_MAX || 10),
-    blobRetentionDays: Number(process.env.SOLUM_SYNC_RETENTION_DAYS || 30),
     alertRetentionDays: Number(process.env.SOLUM_ALERT_RETENTION_DAYS || 7),
+    tenantMaxBlobBytes: Number(process.env.SOLUM_TENANT_MAX_BLOB_BYTES || 1073741824),
+    tenantMaxBlobs: Number(process.env.SOLUM_TENANT_MAX_BLOBS || 100000),
+    tenantMaxDevices: Number(process.env.SOLUM_TENANT_MAX_DEVICES || 32),
+    buildRevision: process.env.SOLUM_BUILD_REVISION || 'unknown',
     ...overrides,
   };
   if (config.authSecret.length < 32) throw new Error('SOLUM_AUTH_SECRET must be at least 32 characters');
-  if (!config.adminUsername) throw new Error('SOLUM_ADMIN_USERNAME is required');
+  if (typeof config.adminUsername !== 'string') throw new Error('SOLUM_ADMIN_USERNAME is required');
+  config.adminUsername = config.adminUsername.trim();
+  if (!config.adminUsername || config.adminUsername.length > 128 ||
+      /[\u0000-\u001f\u007f]/.test(config.adminUsername)) {
+    throw new Error('SOLUM_ADMIN_USERNAME must be a valid username');
+  }
   if (!['closed', 'open'].includes(config.registrationMode)) {
     throw new Error('SOLUM_REGISTRATION_MODE must be closed or open');
   }
   if (!Number.isInteger(config.poolMax) || config.poolMax < 1 || config.poolMax > 100) {
     throw new Error('SOLUM_DB_POOL_MAX must be between 1 and 100');
   }
-  if (!Number.isInteger(config.blobRetentionDays) || config.blobRetentionDays < 0 ||
-    !Number.isInteger(config.alertRetentionDays) || config.alertRetentionDays < 1) {
-    throw new Error('retention days must be whole non-negative values');
+  if (!Number.isSafeInteger(config.alertRetentionDays) || config.alertRetentionDays < 1 ||
+    config.alertRetentionDays > 36500) {
+    throw new Error('SOLUM_ALERT_RETENTION_DAYS must be between 1 and 36500');
+  }
+  for (const [name, value, maximum] of [
+    ['SOLUM_TENANT_MAX_BLOB_BYTES', config.tenantMaxBlobBytes, Number.MAX_SAFE_INTEGER],
+    ['SOLUM_TENANT_MAX_BLOBS', config.tenantMaxBlobs, 10000000],
+    ['SOLUM_TENANT_MAX_DEVICES', config.tenantMaxDevices, 10000],
+  ]) {
+    if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+      throw new Error(`${name} must be a positive safe integer no greater than ${maximum}`);
+    }
+  }
+  if (config.buildRevision !== 'unknown' && !/^[0-9a-f]{7,40}$/.test(config.buildRevision)) {
+    throw new Error('SOLUM_BUILD_REVISION must be unknown or a 7-40 character lowercase Git SHA');
   }
   validateModel(config.defaultModel, 'mimo-v2.5');
   config.modelCatalog = parseModelCatalog(config.defaultModel, config.allowedModels);
@@ -303,11 +369,46 @@ async function withTenant(pool, tenantId, operation) {
   }
 }
 
-async function issueSession(client, user, secret) {
-  const refresh = crypto.randomBytes(48).toString('base64url');
+async function lockAuthSessionUser(client, userId) {
   await client.query(
-    "insert into auth.refresh_tokens(token_hash,user_id,expires_at) values ($1,$2,now()+interval '30 days')",
-    [tokenHash(refresh), user.id]
+    "select pg_advisory_xact_lock(hashtextextended('auth-session:'||$1::text,0))", [userId]
+  );
+}
+
+async function selectRefreshFamily(client, sessionId, hash, forUpdate = false) {
+  const lock = forUpdate ? ' for update of rt' : '';
+  const columns = `rt.token_hash,rt.previous_token_hash,rt.legacy_token_hash,rt.rotated_at,
+    rt.session_id,rt.user_id,rt.expires_at,u.username,u.status`;
+  if (sessionId) {
+    return client.query(
+      `select ${columns} from auth.refresh_tokens rt join auth.users u on u.id=rt.user_id
+       where rt.session_id=$1${lock}`, [sessionId]
+    );
+  }
+  return client.query(
+    `select ${columns} from auth.refresh_tokens rt join auth.users u on u.id=rt.user_id
+     where rt.token_hash=$1 or rt.previous_token_hash=$1 or rt.legacy_token_hash=$1${lock}`,
+    [hash]
+  );
+}
+
+async function issueSession(client, user, secret) {
+  const sessionId = crypto.randomUUID();
+  const refresh = createRefreshToken(sessionId, secret);
+  await lockAuthSessionUser(client, user.id);
+  await client.query('delete from auth.refresh_tokens where user_id=$1 and expires_at<=now()', [user.id]);
+  await client.query(
+    `delete from auth.refresh_tokens where user_id=$1 and session_id in (
+       select session_id from auth.refresh_tokens where user_id=$1
+       order by created_at desc,session_id desc offset $2
+     )`, [user.id, MAX_REFRESH_SESSIONS_PER_USER - 1]
+  );
+  await client.query(
+    `insert into auth.refresh_tokens(
+       token_hash,user_id,session_id,previous_token_hash,legacy_token_hash,
+       rotated_at,expires_at
+     ) values ($1,$2,$3,null,null,null,now()+interval '30 days')`,
+    [tokenHash(refresh), user.id, sessionId]
   );
   return {
     access_token: signAccessToken(user, secret),
@@ -324,8 +425,9 @@ async function bootstrapAdmin(pool, config) {
   }
   const salt = crypto.randomBytes(16).toString('hex');
   await pool.query(
-    'insert into auth.users(username,password_hash,password_salt) values ($1,$2,$3) on conflict(username) do nothing',
-    [config.adminUsername, passwordHash(config.adminPassword, salt), salt]
+    `insert into auth.users(username,password_hash,password_salt,password_version)
+     values ($1,$2,$3,2) on conflict(username) do nothing`,
+    [config.adminUsername, await passwordHashAsync(config.adminPassword, salt), salt]
   );
 }
 
@@ -333,12 +435,6 @@ async function cleanExpiredData(pool, config) {
   const users = await pool.query('select id from auth.users');
   for (const user of users.rows) {
     await withTenant(pool, user.id, async (client) => {
-      if (config.blobRetentionDays > 0) {
-        await client.query(
-          "delete from sync.blobs where tenant_id=$1 and received_at<now()-($2::text||' days')::interval",
-          [user.id, config.blobRetentionDays]
-        );
-      }
       await client.query(
         "delete from sync.alerts where tenant_id=$1 and received_at<now()-($2::text||' days')::interval",
         [user.id, config.alertRetentionDays]
@@ -346,6 +442,49 @@ async function cleanExpiredData(pool, config) {
     });
   }
   await pool.query('delete from auth.refresh_tokens where expires_at<=now()');
+}
+
+async function lockTenantMutation(client, tenantId) {
+  await client.query('select pg_advisory_xact_lock(hashtextextended($1::text,0))', [tenantId]);
+}
+
+async function touchActiveDevice(client, tenantId, device, maxDevices) {
+  const selected = await client.query(
+    'select revoked_at from sync.devices where tenant_id=$1 and device_id=$2', [tenantId, device]
+  );
+  if (selected.rowCount > 0) {
+    if (selected.rows[0].revoked_at !== null) throw new HttpError(403, 'device_revoked');
+    const updated = await client.query(
+      `update sync.devices set last_seen_at=now()
+       where tenant_id=$1 and device_id=$2 and revoked_at is null returning device_id`,
+      [tenantId, device]
+    );
+    if (updated.rowCount !== 1) throw new HttpError(403, 'device_revoked');
+    return;
+  }
+  const count = await client.query(
+    `select count(*) as device_count from sync.devices
+     where tenant_id=$1 and revoked_at is null`, [tenantId]
+  );
+  if (safeDatabaseInteger(count.rows[0].device_count, 'device_count') >= maxDevices) {
+    throw new HttpError(429, 'device_limit_exceeded');
+  }
+  await client.query(
+    'insert into sync.devices(tenant_id,device_id,last_seen_at) values($1,$2,now())',
+    [tenantId, device]
+  );
+}
+
+async function ensureBlobQuota(client, tenantId, blobLength, config) {
+  const usage = await client.query(
+    `select count(*) as blob_count,coalesce(sum(octet_length(ciphertext)),0) as blob_bytes
+     from sync.blobs where tenant_id=$1`, [tenantId]
+  );
+  const blobCount = safeDatabaseInteger(usage.rows[0].blob_count, 'blob_count');
+  const blobBytes = safeDatabaseInteger(usage.rows[0].blob_bytes, 'blob_bytes');
+  if (blobCount >= config.tenantMaxBlobs || blobBytes > config.tenantMaxBlobBytes - blobLength) {
+    throw new HttpError(507, 'storage_quota_exceeded');
+  }
 }
 
 async function recoverTenantStaleAiRequests(client, tenantId, timeoutSeconds) {
@@ -391,8 +530,12 @@ function usageProjection(entitlement, row = {}) {
   };
   const limit = safeCount(entitlement.monthly_request_limit, 'monthly_request_limit');
   const used = safeCount(row.request_count, 'request_count');
-  const periodStart = row.period_start ? new Date(row.period_start) : new Date();
-  const resetAt = new Date(Date.UTC(periodStart.getUTCFullYear(), periodStart.getUTCMonth() + 1, 1));
+  const periodText = typeof row.period_start === 'string' ? row.period_start : '';
+  const periodMatch = /^(\d{4})-(\d{2})-\d{2}$/.exec(periodText);
+  const fallbackDate = row.period_start instanceof Date ? row.period_start : new Date();
+  const periodYear = periodMatch ? Number(periodMatch[1]) : fallbackDate.getFullYear();
+  const periodMonth = periodMatch ? Number(periodMatch[2]) - 1 : fallbackDate.getMonth();
+  const resetAt = new Date(Date.UTC(periodYear, periodMonth + 1, 1));
   return {
     plan: entitlement.plan,
     custom_models_enabled: entitlement.custom_models_enabled !== false,
@@ -414,7 +557,8 @@ async function readAiUsage(pool, tenantId, config) {
     await recoverTenantStaleAiRequests(client, tenantId, config.aiPendingTimeoutSeconds);
     const entitlement = await ensureEntitlement(client, tenantId, config);
     const selected = await client.query(
-      `select period_start,request_count,success_count,failure_count,fallback_count,
+      `select to_char(period_start,'YYYY-MM-DD') as period_start,
+              request_count,success_count,failure_count,fallback_count,
               prompt_tokens,completion_tokens,total_tokens
        from ai.usage_monthly
        where tenant_id=$1 and period_start=date_trunc('month',now())::date`, [tenantId]
@@ -424,7 +568,10 @@ async function readAiUsage(pool, tenantId, config) {
               upstream_latency_ms,created_at,completed_at
        from ai.usage_events where tenant_id=$1 order by created_at desc limit 1`, [tenantId]
     );
-    return { ...usageProjection(entitlement, selected.rows[0]), latest_request: recent.rows[0] || null };
+    const latest = recent.rows[0] ? { ...recent.rows[0],
+      upstream_latency_ms: recent.rows[0].upstream_latency_ms === null ? null :
+        safeDatabaseInteger(recent.rows[0].upstream_latency_ms, 'upstream_latency_ms') } : null;
+    return { ...usageProjection(entitlement, selected.rows[0]), latest_request: latest };
   });
 }
 
@@ -449,7 +596,8 @@ async function reserveAiRequest(pool, tenantId, requestedModel, config) {
        where usage.tenant_id=$1 and usage.period_start=date_trunc('month',now())::date
          and entitlement.tenant_id=usage.tenant_id
          and usage.request_count<entitlement.monthly_request_limit
-       returning usage.period_start,usage.request_count,usage.success_count,usage.failure_count,
+       returning to_char(usage.period_start,'YYYY-MM-DD') as period_start,
+                 usage.request_count,usage.success_count,usage.failure_count,
                  usage.fallback_count,usage.prompt_tokens,usage.completion_tokens,usage.total_tokens`,
       [tenantId]
     );
@@ -537,6 +685,12 @@ function requestSignal(req, res, timeoutMs) {
   };
 }
 
+function isEventStreamResponse(response) {
+  const contentType = response && response.headers.get('content-type');
+  return typeof contentType === 'string' &&
+    contentType.split(';', 1)[0].trim().toLowerCase() === 'text/event-stream';
+}
+
 async function requestUpstream(config, body, model, wantStream, req, res) {
   const startedAt = Date.now();
   const lifetime = requestSignal(req, res, wantStream ? 300000 : 60000);
@@ -584,6 +738,17 @@ async function readBodyLimited(response, maxBytes) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+async function readJsonObjectResponse(response, maxBytes) {
+  const text = await readBodyLimited(response, maxBytes);
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid');
+    return { text, parsed };
+  } catch {
+    throw new HttpError(502, 'upstream_invalid_response');
+  }
+}
+
 function waitForDrain(res) {
   return new Promise((resolve, reject) => {
     const cleanup = () => {
@@ -625,17 +790,20 @@ async function proxyCompletion(req, res, pool, tenantId, config) {
   let fallbackReason = reservation.fallbackReason;
   let attempt = await requestUpstream(config, upstreamBody, effectiveModel, wantStream, req, res);
   let totalLatency = attempt.latencyMs;
-  if ((!attempt.response || !attempt.response.ok) && !attempt.clientDisconnected() &&
+  const usable = (candidate) => candidate.response && candidate.response.ok &&
+    (!wantStream || isEventStreamResponse(candidate.response));
+  if (!usable(attempt) && !attempt.clientDisconnected() &&
     effectiveModel !== config.modelCatalog.defaultModel) {
     if (attempt.response && attempt.response.body) await attempt.response.body.cancel().catch(() => {});
-    fallbackReason = attempt.response ? `upstream_http_${attempt.response.status}` : 'upstream_unavailable';
+    fallbackReason = attempt.response && attempt.response.ok ? 'upstream_invalid_content_type' :
+      (attempt.response ? `upstream_http_${attempt.response.status}` : 'upstream_unavailable');
     effectiveModel = config.modelCatalog.defaultModel;
     attempt.release();
     attempt = await requestUpstream(config, upstreamBody, effectiveModel, wantStream, req, res);
     totalLatency += attempt.latencyMs;
   }
   const upstream = attempt.response;
-  if (!upstream || !upstream.ok) {
+  if (!usable(attempt)) {
     if (upstream && upstream.body) await upstream.body.cancel().catch(() => {});
     try {
       await finalizeAiRequest(pool, tenantId, reservation, {
@@ -645,7 +813,8 @@ async function proxyCompletion(req, res, pool, tenantId, config) {
     } finally {
       attempt.release();
     }
-    throw new HttpError(502, 'upstream_unavailable');
+    throw new HttpError(502, upstream && upstream.ok ?
+      'upstream_invalid_response' : 'upstream_unavailable');
   }
   if (wantStream) {
     let reader = upstream.body.getReader();
@@ -658,12 +827,12 @@ async function proxyCompletion(req, res, pool, tenantId, config) {
       effectiveModel = config.modelCatalog.defaultModel;
       attempt = await requestUpstream(config, upstreamBody, effectiveModel, true, req, res);
       totalLatency += attempt.latencyMs;
-      if (attempt.response && attempt.response.ok) {
+      if (usable(attempt)) {
         reader = attempt.response.body.getReader();
         first = await nextStreamChunk(reader);
       }
     }
-    if (!attempt.response || !attempt.response.ok || first.failed || first.done) {
+    if (!usable(attempt) || first.failed || first.done) {
       if (attempt.response && attempt.response.body) {
         await attempt.response.body.cancel().catch(() => {});
       }
@@ -713,25 +882,48 @@ async function proxyCompletion(req, res, pool, tenantId, config) {
     res.end();
     return;
   }
-  let response;
+  let completed;
+  let bodyError;
   try {
-    response = await readBodyLimited(upstream, config.aiMaxResponseBytes);
+    completed = await readJsonObjectResponse(upstream, config.aiMaxResponseBytes);
   } catch (error) {
+    bodyError = error instanceof HttpError ? error : new HttpError(502, 'upstream_interrupted');
+  }
+  if (bodyError && !attempt.clientDisconnected() &&
+      effectiveModel !== config.modelCatalog.defaultModel) {
+    fallbackReason = bodyError.code;
+    effectiveModel = config.modelCatalog.defaultModel;
+    attempt.release();
+    attempt = await requestUpstream(config, upstreamBody, effectiveModel, false, req, res);
+    totalLatency += attempt.latencyMs;
+    if (usable(attempt)) {
+      try {
+        completed = await readJsonObjectResponse(attempt.response, config.aiMaxResponseBytes);
+        bodyError = null;
+      } catch (error) {
+        bodyError = error instanceof HttpError ? error : new HttpError(502, 'upstream_interrupted');
+      }
+    } else {
+      if (attempt.response && attempt.response.body) {
+        await attempt.response.body.cancel().catch(() => {});
+      }
+      bodyError = new HttpError(502, attempt.response && attempt.response.ok ?
+        'upstream_invalid_response' : 'upstream_unavailable');
+    }
+  }
+  if (bodyError) {
     try {
       await finalizeAiRequest(pool, tenantId, reservation, {
-        status: error instanceof HttpError ? 'failed' : 'interrupted',
+        status: attempt.clientDisconnected() ? 'interrupted' : 'failed',
         effectiveModel, fallbackReason, latencyMs: totalLatency,
       });
     } finally {
       attempt.release();
     }
-    throw error instanceof HttpError ? error : new HttpError(502, 'upstream_interrupted');
+    throw bodyError;
   }
-  let usage;
-  try {
-    const parsed = JSON.parse(response);
-    if (parsed && parsed.usage && typeof parsed.usage === 'object') usage = parsed.usage;
-  } catch { /* Preserve an upstream-compatible response even when usage is absent. */ }
+  const { text: response, parsed } = completed;
+  const usage = parsed.usage && typeof parsed.usage === 'object' ? parsed.usage : undefined;
   try {
     await finalizeAiRequest(pool, tenantId, reservation, {
       status: 'succeeded', effectiveModel, fallbackReason, latencyMs: totalLatency, usage,
@@ -767,39 +959,38 @@ async function createPostgresServer(overrides = {}) {
     runRetention();
   }, 6 * 60 * 60 * 1000);
   retentionTimer.unref();
-  const loginFailures = new Map();
+  const loginFailures = createFixedWindowLimiter({
+    windowMs: LOGIN_WINDOW_MS, maxAttempts: LOGIN_MAX_FAILURES,
+  });
+  const loginIpFailures = createFixedWindowLimiter({
+    windowMs: LOGIN_WINDOW_MS, maxAttempts: LOGIN_IP_MAX_FAILURES,
+  });
+  const registrationAttempts = createFixedWindowLimiter({
+    windowMs: LOGIN_WINDOW_MS, maxAttempts: REGISTRATION_MAX_ATTEMPTS,
+  });
+  const authKdfConcurrency = createConcurrencyLimiter(MAX_CONCURRENT_AUTH_KDFS);
 
-  function authenticate(req) {
+  async function authenticate(req) {
     const tenantId = verifyAccessToken(bearer(req), config.authSecret);
     if (!tenantId) throw new HttpError(401, 'unauthorized');
+    const active = await pool.query(
+      "select 1 from auth.users where id=$1 and status='active'", [tenantId]
+    );
+    if (active.rowCount !== 1) throw new HttpError(401, 'unauthorized');
     return tenantId;
   }
 
   function loginKey(req, username) {
-    return `${req.socket.remoteAddress || 'unknown'}|${username}`;
-  }
-
-  function isRateLimited(key) {
-    const record = loginFailures.get(key);
-    if (!record || Date.now() - record.startedAt > LOGIN_WINDOW_MS) {
-      loginFailures.delete(key);
-      return false;
-    }
-    return record.count >= LOGIN_MAX_FAILURES;
-  }
-
-  function recordLoginFailure(key) {
-    const record = loginFailures.get(key);
-    if (!record || Date.now() - record.startedAt > LOGIN_WINDOW_MS) {
-      loginFailures.set(key, { count: 1, startedAt: Date.now() });
-    } else {
-      record.count += 1;
-    }
+    const address = requestClientAddress(req, config.trustProxy);
+    return { pair: `${address}|${username}`, address };
   }
 
   async function handle(req, res) {
     const origin = req.headers.origin;
-    if (typeof origin === 'string' && config.allowedOrigins.has(origin)) {
+    const originAllowed = typeof origin !== 'string' ||
+      requestOriginAllowed(req, origin, config.allowedOrigins);
+    if (!originAllowed) throw new HttpError(403, 'origin_not_allowed');
+    if (typeof origin === 'string') {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Device');
@@ -810,9 +1001,7 @@ async function createPostgresServer(overrides = {}) {
         'X-Solum-Quota-Used, X-Solum-Quota-Remaining, X-Solum-Quota-Reset');
     }
     if (req.method === 'OPTIONS') {
-      if (typeof origin !== 'string' || !config.allowedOrigins.has(origin)) {
-        throw new HttpError(403, 'origin_not_allowed');
-      }
+      if (typeof origin !== 'string') throw new HttpError(403, 'origin_not_allowed');
       res.writeHead(204, { 'Content-Length': '0', 'Cache-Control': 'no-store' });
       return res.end();
     }
@@ -825,6 +1014,8 @@ async function createPostgresServer(overrides = {}) {
     if (req.method === 'GET' && url.pathname === '/v1/meta') {
       return json(res, 200, {
         name: 'Solum Center',
+        version: SERVICE_VERSION,
+        revision: config.buildRevision,
         api_base: '/',
         registration: config.registrationMode,
         features: ['account', 'ai', 'ai_quota', 'sync', 'alerts', 'devices'],
@@ -833,24 +1024,39 @@ async function createPostgresServer(overrides = {}) {
 
     if (req.method === 'GET' && url.pathname === '/v1/health') {
       await pool.query('select 1');
-      return json(res, 200, { status: 'ok', storage: 'postgres' });
+      return json(res, 200, {
+        status: 'ok', storage: 'postgres', version: SERVICE_VERSION, revision: config.buildRevision,
+      });
     }
 
     if (req.method === 'POST' && url.pathname === '/v1/auth/register') {
       if (config.registrationMode !== 'open') throw new HttpError(403, 'registration_closed');
+      const registrationKey = requestClientAddress(req, config.trustProxy);
+      if (!registrationAttempts.consume(registrationKey)) {
+        throw new HttpError(429, 'too_many_attempts');
+      }
       const body = await readJson(req);
       const username = requiredString(body.username, 'invalid_credentials', 128);
-      const password = requiredString(body.password, 'invalid_credentials', 1024);
+      const password = requiredOpaqueString(body.password, 'invalid_credentials', 1024);
       if (password.length < 12 || /[\u0000-\u001f\u007f]/.test(username)) {
         throw new HttpError(400, 'invalid_credentials');
       }
       const salt = crypto.randomBytes(16).toString('hex');
+      const releaseKdf = authKdfConcurrency.tryAcquire();
+      if (!releaseKdf) throw new HttpError(429, 'too_many_attempts');
+      let passwordHash;
+      try {
+        passwordHash = await passwordHashAsync(password, salt);
+      } finally {
+        releaseKdf();
+      }
       const client = await pool.connect();
       try {
         await client.query('begin');
         const inserted = await client.query(
-          'insert into auth.users(username,password_hash,password_salt) values($1,$2,$3) returning id,username',
-          [username, passwordHash(password, salt), salt]
+          `insert into auth.users(username,password_hash,password_salt,password_version)
+           values($1,$2,$3,2) returning id,username`,
+          [username, passwordHash, salt]
         );
         const session = await issueSession(client, inserted.rows[0], config.authSecret);
         await client.query('commit');
@@ -867,59 +1073,159 @@ async function createPostgresServer(overrides = {}) {
     if (req.method === 'POST' && url.pathname === '/v1/auth/login') {
       const body = await readJson(req);
       const username = requiredString(body.username, 'invalid_credentials', 128);
-      const password = requiredString(body.password, 'invalid_credentials', 1024);
+      const password = requiredOpaqueString(body.password, 'invalid_credentials', 1024);
       const key = loginKey(req, username);
-      if (isRateLimited(key)) throw new HttpError(429, 'too_many_attempts');
-      const selected = await pool.query(
-        "select id,username,password_hash,password_salt from auth.users where username=$1 and status='active'",
-        [username]
-      );
-      const user = selected.rows[0];
-      const candidate = user ? passwordHash(password, user.password_salt) :
-        passwordHash(password, crypto.randomBytes(16).toString('hex'));
-      if (!user || !secureEqualHex(candidate, user.password_hash)) {
-        recordLoginFailure(key);
-        throw new HttpError(401, 'invalid_credentials');
+      const pairReservation = loginFailures.reserve(key.pair);
+      if (!pairReservation) throw new HttpError(429, 'too_many_attempts');
+      const ipReservation = loginIpFailures.reserve(key.address);
+      if (!ipReservation) {
+        pairReservation.release();
+        throw new HttpError(429, 'too_many_attempts');
       }
-      loginFailures.delete(key);
-      const client = await pool.connect();
+      const releaseKdf = authKdfConcurrency.tryAcquire();
+      if (!releaseKdf) {
+        pairReservation.release();
+        ipReservation.release();
+        throw new HttpError(429, 'too_many_attempts');
+      }
       try {
-        await client.query('begin');
-        await client.query('delete from auth.refresh_tokens where expires_at<=now()');
-        const session = await issueSession(client, user, config.authSecret);
-        await client.query('commit');
+        // Password verification is CPU work and must not hold a database row
+        // lock or an open transaction. Session issuance has its own short,
+        // per-user advisory-locked transaction below.
+        const selected = await pool.query(
+          `select id,username,password_hash,password_salt,password_version
+           from auth.users where username=$1 and status='active'`,
+          [username]
+        );
+        const user = selected.rows[0];
+        const passwordMatches = await verifyPasswordOrDummyAsync(password, user && {
+          salt: user.password_salt,
+          storedHash: user.password_hash,
+          passwordVersion: user.password_version,
+        });
+        if (!passwordMatches) {
+          pairReservation.commit();
+          ipReservation.commit();
+          throw new HttpError(401, 'invalid_credentials');
+        }
+        // Keep version-1 hashes stable. A login cannot prove which
+        // whitespace variant is bound to an existing recovery envelope.
+        const client = await pool.connect();
+        let transactionOpen = false;
+        let session;
+        try {
+          await client.query('begin');
+          transactionOpen = true;
+          const active = await client.query(
+            `select id,username from auth.users where id=$1 and status='active'`, [user.id]
+          );
+          if (active.rowCount !== 1) {
+            pairReservation.commit();
+            ipReservation.commit();
+            await client.query('rollback');
+            transactionOpen = false;
+            throw new HttpError(401, 'invalid_credentials');
+          }
+          session = await issueSession(client, active.rows[0], config.authSecret);
+          await client.query('commit');
+          transactionOpen = false;
+        } catch (error) {
+          if (transactionOpen) await client.query('rollback').catch(() => {});
+          throw error;
+        } finally {
+          client.release();
+        }
+        pairReservation.release();
+        ipReservation.release();
+        loginFailures.reset(key.pair);
         return json(res, 200, session);
       } catch (error) {
-        await client.query('rollback').catch(() => {});
+        pairReservation.release();
+        ipReservation.release();
         throw error;
       } finally {
-        client.release();
+        releaseKdf();
       }
     }
 
     if (req.method === 'POST' && url.pathname === '/v1/auth/refresh') {
       const body = await readJson(req);
-      const hash = tokenHash(requiredString(body.refresh_token, 'invalid_refresh_token', 512));
+      const refresh = requiredOpaqueString(body.refresh_token, 'invalid_refresh_token', 512);
+      const hash = tokenHash(refresh);
+      const sessionId = refreshTokenSessionId(refresh, config.authSecret);
       const client = await pool.connect();
+      let transactionOpen = false;
       try {
         await client.query('begin');
-        const selected = await client.query(
-          'select rt.user_id,rt.expires_at,u.username from auth.refresh_tokens rt join auth.users u on u.id=rt.user_id where rt.token_hash=$1 for update',
-          [hash]
-        );
-        const row = selected.rows[0];
-        if (!row || new Date(row.expires_at).getTime() <= Date.now()) {
-          await client.query('delete from auth.refresh_tokens where token_hash=$1', [hash]);
+        transactionOpen = true;
+        const preliminary = await selectRefreshFamily(client, sessionId, hash);
+        if (preliminary.rowCount === 0) {
           await client.query('commit');
+          transactionOpen = false;
           throw new HttpError(401, 'invalid_refresh_token');
         }
-        await client.query('delete from auth.refresh_tokens where token_hash=$1', [hash]);
-        const session = await issueSession(client,
-          { id: row.user_id, username: row.username }, config.authSecret);
+        await lockAuthSessionUser(client, preliminary.rows[0].user_id);
+        const selected = await selectRefreshFamily(client, sessionId, hash, true);
+        const row = selected.rows[0];
+        if (!row || row.status !== 'active' || new Date(row.expires_at).getTime() <= Date.now()) {
+          if (row) {
+            await client.query('delete from auth.refresh_tokens where session_id=$1', [row.session_id]);
+          }
+          await client.query('commit');
+          transactionOpen = false;
+          throw new HttpError(401, 'invalid_refresh_token');
+        }
+        if (!secureEqualBuffer(row.token_hash, hash)) {
+          const rotatedAt = row.rotated_at === null ? Number.NaN :
+            new Date(row.rotated_at).getTime();
+          const grace = secureEqualBuffer(row.previous_token_hash, hash) &&
+            Number.isFinite(rotatedAt) && Date.now() >= rotatedAt &&
+            Date.now() - rotatedAt <= REFRESH_REPLAY_GRACE_MS;
+          if (grace) {
+            const recoveredRefresh = createRefreshSuccessorToken(
+              row.session_id, refresh, config.authSecret
+            );
+            if (secureEqualBuffer(row.token_hash, tokenHash(recoveredRefresh))) {
+              await client.query('commit');
+              transactionOpen = false;
+              return json(res, 200, {
+                access_token: signAccessToken(
+                  { id: row.user_id, username: row.username }, config.authSecret
+                ),
+                refresh_token: recoveredRefresh,
+                user: { id: row.user_id, username: row.username },
+              });
+            }
+          }
+          if (!grace) {
+            await client.query('delete from auth.refresh_tokens where session_id=$1', [row.session_id]);
+          }
+          await client.query('commit');
+          transactionOpen = false;
+          throw new HttpError(401, 'invalid_refresh_token');
+        }
+        const rotatedRefresh = createRefreshSuccessorToken(
+          row.session_id, refresh, config.authSecret
+        );
+        const updated = await client.query(
+          `update auth.refresh_tokens set token_hash=$1,previous_token_hash=$2,
+             rotated_at=now(),expires_at=now()+interval '30 days',created_at=now()
+           where session_id=$3 and token_hash=$2`,
+          [tokenHash(rotatedRefresh), hash, row.session_id]
+        );
+        if (updated.rowCount !== 1) throw new HttpError(401, 'invalid_refresh_token');
         await client.query('commit');
+        transactionOpen = false;
+        const session = {
+          access_token: signAccessToken(
+            { id: row.user_id, username: row.username }, config.authSecret
+          ),
+          refresh_token: rotatedRefresh,
+          user: { id: row.user_id, username: row.username },
+        };
         return json(res, 200, session);
       } catch (error) {
-        if (!(error instanceof HttpError)) await client.query('rollback').catch(() => {});
+        if (transactionOpen) await client.query('rollback').catch(() => {});
         throw error;
       } finally {
         client.release();
@@ -927,16 +1233,37 @@ async function createPostgresServer(overrides = {}) {
     }
 
     if (req.method === 'POST' && url.pathname === '/v1/auth/logout') {
-      authenticate(req);
       const body = await readJson(req);
-      if (typeof body.refresh_token === 'string') {
-        await pool.query('delete from auth.refresh_tokens where token_hash=$1', [tokenHash(body.refresh_token)]);
+      const refresh = requiredOpaqueString(body.refresh_token, 'invalid_refresh_token', 512);
+      const sessionId = refreshTokenSessionId(refresh, config.authSecret);
+      const hash = tokenHash(refresh);
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const selected = await selectRefreshFamily(client, sessionId, hash);
+        if (selected.rowCount > 0) {
+          await lockAuthSessionUser(client, selected.rows[0].user_id);
+          if (sessionId) {
+            await client.query('delete from auth.refresh_tokens where session_id=$1', [sessionId]);
+          } else {
+            await client.query(
+              `delete from auth.refresh_tokens where token_hash=$1 or previous_token_hash=$1
+                 or legacy_token_hash=$1`, [hash]
+            );
+          }
+        }
+        await client.query('commit');
+      } catch (error) {
+        await client.query('rollback').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
       }
       return json(res, 200, { status: 'ok' });
     }
 
     if (req.method === 'GET' && url.pathname === '/v1/ai/models') {
-      const tenantId = authenticate(req);
+      const tenantId = await authenticate(req);
       const usage = await readAiUsage(pool, tenantId, config);
       return json(res, 200, {
         default_model: config.modelCatalog.defaultModel,
@@ -948,51 +1275,40 @@ async function createPostgresServer(overrides = {}) {
     }
 
     if (req.method === 'GET' && url.pathname === '/v1/ai/usage') {
-      const tenantId = authenticate(req);
+      const tenantId = await authenticate(req);
       return json(res, 200, await readAiUsage(pool, tenantId, config));
     }
 
     if (req.method === 'POST' && url.pathname === '/v1/ai/chat/completions') {
-      const tenantId = authenticate(req);
+      const tenantId = await authenticate(req);
       return proxyCompletion(req, res, pool, tenantId, config);
     }
 
     if (req.method === 'POST' && url.pathname === '/v1/push') {
-      const tenantId = authenticate(req);
+      const tenantId = await authenticate(req);
       const device = requiredString(req.headers['x-device'], 'invalid_device', 128);
       const blob = await readBytes(req, MAX_BLOB_BYTES);
       if (blob.length === 0) throw new HttpError(400, 'bad_blob');
       const seq = await withTenant(pool, tenantId, async (client) => {
-        const activeDevice = await client.query(
-          `insert into sync.devices(tenant_id,device_id,last_seen_at)
-           values($1,$2,now()) on conflict(tenant_id,device_id)
-           do update set last_seen_at=excluded.last_seen_at
-           where sync.devices.revoked_at is null returning device_id`,
-          [tenantId, device]
-        );
-        if (activeDevice.rowCount !== 1) throw new HttpError(403, 'device_revoked');
+        await lockTenantMutation(client, tenantId);
+        await touchActiveDevice(client, tenantId, device, config.tenantMaxDevices);
+        await ensureBlobQuota(client, tenantId, blob.length, config);
         const inserted = await client.query(
           'insert into sync.blobs(tenant_id,device_id,ciphertext) values($1,$2,$3) returning seq',
           [tenantId, device, blob]
         );
-        return Number(inserted.rows[0].seq);
+        return safeDatabaseInteger(inserted.rows[0].seq, 'blob_seq');
       });
       return json(res, 200, { seq });
     }
 
     if (req.method === 'GET' && url.pathname === '/v1/pull') {
-      const tenantId = authenticate(req);
+      const tenantId = await authenticate(req);
       const since = parseNonNegativeInt(url.searchParams.get('since'), 0);
       const device = requiredString(url.searchParams.get('device'), 'invalid_device', 128);
       const result = await withTenant(pool, tenantId, async (client) => {
-        const activeDevice = await client.query(
-          `insert into sync.devices(tenant_id,device_id,last_seen_at)
-           values($1,$2,now()) on conflict(tenant_id,device_id)
-           do update set last_seen_at=excluded.last_seen_at
-           where sync.devices.revoked_at is null returning device_id`,
-          [tenantId, device]
-        );
-        if (activeDevice.rowCount !== 1) throw new HttpError(403, 'device_revoked');
+        await lockTenantMutation(client, tenantId);
+        await touchActiveDevice(client, tenantId, device, config.tenantMaxDevices);
         const pulled = await client.query(
           `with candidates as (
              select seq,device_id,ciphertext,
@@ -1011,9 +1327,10 @@ async function createPostgresServer(overrides = {}) {
           'select coalesce(min(seq),0) as oldest_seq from sync.blobs where tenant_id=$1', [tenantId]
         );
         return {
-          oldest_seq: Number(oldest.rows[0].oldest_seq),
+          oldest_seq: safeDatabaseInteger(oldest.rows[0].oldest_seq, 'oldest_blob_seq'),
           blobs: pulled.rows.map((row) => ({
-            seq: Number(row.seq), device: row.device_id, blob: row.ciphertext.toString('base64'),
+            seq: safeDatabaseInteger(row.seq, 'blob_seq'),
+            device: row.device_id, blob: row.ciphertext.toString('base64'),
           })),
         };
       });
@@ -1021,7 +1338,7 @@ async function createPostgresServer(overrides = {}) {
     }
 
     if (req.method === 'GET' && url.pathname === '/v1/stats') {
-      const tenantId = authenticate(req);
+      const tenantId = await authenticate(req);
       const stats = await withTenant(pool, tenantId, async (client) => {
         const totals = await client.query(
           `select count(*) as total_blobs,coalesce(sum(octet_length(ciphertext)),0) as total_bytes,
@@ -1035,11 +1352,16 @@ async function createPostgresServer(overrides = {}) {
         );
         const row = totals.rows[0];
         return {
-          total_blobs: Number(row.total_blobs), total_bytes: Number(row.total_bytes),
-          oldest_seq: Number(row.oldest_seq), newest_seq: Number(row.newest_seq),
+          total_blobs: safeDatabaseInteger(row.total_blobs, 'total_blobs'),
+          total_bytes: safeDatabaseInteger(row.total_bytes, 'total_bytes'),
+          oldest_seq: safeDatabaseInteger(row.oldest_seq, 'oldest_blob_seq'),
+          newest_seq: safeDatabaseInteger(row.newest_seq, 'newest_blob_seq'),
           devices: devices.rows.map((item) => ({
-            device: item.device_id, blob_count: Number(item.blob_count), bytes: Number(item.bytes),
-            last_seq: Number(item.last_seq), last_received_at: item.last_received_at,
+            device: item.device_id,
+            blob_count: safeDatabaseInteger(item.blob_count, 'device_blob_count'),
+            bytes: safeDatabaseInteger(item.bytes, 'device_blob_bytes'),
+            last_seq: safeDatabaseInteger(item.last_seq, 'device_last_seq'),
+            last_received_at: item.last_received_at,
           })),
           tenant: tenantId, auth_mode: 'account',
         };
@@ -1047,45 +1369,20 @@ async function createPostgresServer(overrides = {}) {
       return json(res, 200, stats);
     }
 
-    if (req.method === 'POST' && url.pathname === '/v1/devices/register') {
-      const tenantId = authenticate(req);
-      const body = await readJson(req);
-      const device = requiredString(body.device_id, 'invalid_device', 128);
-      const publicKey = body.public_key === undefined || body.public_key === null ? null :
-        decodeBase64(body.public_key, 'invalid_device_key', 256);
-      const protocolVersion = body.protocol_version === undefined ? 1 : body.protocol_version;
-      if ((publicKey !== null && (publicKey.length < 32 || publicKey.length > 128)) ||
-        !Number.isInteger(protocolVersion) ||
-        protocolVersion < 1 || protocolVersion > 32767) throw new HttpError(400, 'invalid_device');
-      await withTenant(pool, tenantId, async (client) => {
-        const registered = await client.query(
-          `insert into sync.devices(tenant_id,device_id,public_key,protocol_version,last_seen_at)
-           values($1,$2,$3,$4,now()) on conflict(tenant_id,device_id)
-           do update set public_key=coalesce(excluded.public_key,sync.devices.public_key),
-                         protocol_version=excluded.protocol_version,last_seen_at=excluded.last_seen_at
-           where sync.devices.revoked_at is null returning device_id`,
-          [tenantId, device, publicKey, protocolVersion]
-        );
-        if (registered.rowCount !== 1) throw new HttpError(403, 'device_revoked');
-      });
-      return json(res, 200, { status: 'ok' });
-    }
-
     if (req.method === 'GET' && url.pathname === '/v1/devices') {
-      const tenantId = authenticate(req);
+      const tenantId = await authenticate(req);
       const devices = await withTenant(pool, tenantId, async (client) => {
         const result = await client.query(
-          `select device_id,public_key,protocol_version,last_seen_at,revoked_at
+          `select device_id,protocol_version,last_seen_at,revoked_at
            from sync.devices where tenant_id=$1 order by last_seen_at desc`, [tenantId]
         );
-        return result.rows.map((row) => ({ ...row,
-          public_key: row.public_key === null ? null : row.public_key.toString('base64') }));
+        return result.rows;
       });
       return json(res, 200, { devices });
     }
 
     if (req.method === 'POST' && url.pathname === '/v1/alerts') {
-      const tenantId = authenticate(req);
+      const tenantId = await authenticate(req);
       const body = await readJson(req);
       const alert = {
         eventId: requiredString(body.event_id, 'invalid_alert', 256),
@@ -1093,11 +1390,14 @@ async function createPostgresServer(overrides = {}) {
         monitorId: optionalString(body.monitor_id, 'invalid_alert', 256),
         name: optionalString(body.name, 'invalid_alert', 256),
         status: requiredString(body.status, 'invalid_alert', 64),
-        latencyMs: optionalNumber(body.latency_ms, 'invalid_alert'),
-        pingLatencyMs: optionalNumber(body.ping_latency_ms, 'invalid_alert'),
-        availability7d: optionalNumber(body.availability_7d, 'invalid_alert'),
+        latencyMs: optionalBoundedNumber(body.latency_ms, 'invalid_alert',
+          { min: 0, max: MAX_ALERT_LATENCY_MS, integer: true }),
+        pingLatencyMs: optionalBoundedNumber(body.ping_latency_ms, 'invalid_alert',
+          { min: 0, max: MAX_ALERT_LATENCY_MS, integer: true }),
+        availability7d: optionalBoundedNumber(body.availability_7d, 'invalid_alert',
+          { min: 0, max: 100 }),
         checkedAt: optionalString(body.checked_at, 'invalid_alert', 128),
-        detailUrl: optionalString(body.detail_url, 'invalid_alert', 2048),
+        detailUrl: optionalHttpUrl(body.detail_url, 'invalid_alert', 2048),
       };
       const seq = await withTenant(pool, tenantId, async (client) => {
         const inserted = await client.query(
@@ -1108,17 +1408,17 @@ async function createPostgresServer(overrides = {}) {
           [tenantId, alert.eventId, alert.source, alert.monitorId, alert.name, alert.status,
             alert.latencyMs, alert.pingLatencyMs, alert.availability7d, alert.checkedAt, alert.detailUrl]
         );
-        if (inserted.rowCount > 0) return Number(inserted.rows[0].seq);
+        if (inserted.rowCount > 0) return safeDatabaseInteger(inserted.rows[0].seq, 'alert_seq');
         const existing = await client.query(
           'select seq from sync.alerts where tenant_id=$1 and event_id=$2', [tenantId, alert.eventId]
         );
-        return Number(existing.rows[0].seq);
+        return safeDatabaseInteger(existing.rows[0].seq, 'alert_seq');
       });
       return json(res, 200, { seq });
     }
 
     if (req.method === 'GET' && url.pathname === '/v1/alerts') {
-      const tenantId = authenticate(req);
+      const tenantId = await authenticate(req);
       const since = parseNonNegativeInt(url.searchParams.get('since'), 0);
       const limit = parseNonNegativeInt(url.searchParams.get('limit'), 100, 500) || 100;
       const source = url.searchParams.has('source') ?
@@ -1130,16 +1430,19 @@ async function createPostgresServer(overrides = {}) {
            from sync.alerts where tenant_id=$1 and seq>$2 and ($3::text is null or source=$3)
            order by seq limit $4`, [tenantId, since, source, limit]
         );
-        return result.rows.map((row) => ({ ...row, seq: Number(row.seq),
-          latency_ms: row.latency_ms === null ? null : Number(row.latency_ms),
-          ping_latency_ms: row.ping_latency_ms === null ? null : Number(row.ping_latency_ms),
+        return result.rows.map((row) => ({ ...row,
+          seq: safeDatabaseInteger(row.seq, 'alert_seq'),
+          latency_ms: row.latency_ms === null ? null :
+            safeDatabaseInteger(row.latency_ms, 'alert_latency_ms'),
+          ping_latency_ms: row.ping_latency_ms === null ? null :
+            safeDatabaseInteger(row.ping_latency_ms, 'alert_ping_latency_ms'),
           availability_7d: row.availability_7d === null ? null : Number(row.availability_7d) }));
       });
       return json(res, 200, { alerts });
     }
 
     if (req.method === 'GET' && url.pathname === '/v1/keys/recovery') {
-      const tenantId = authenticate(req);
+      const tenantId = await authenticate(req);
       const recovery = await withTenant(pool, tenantId, async (client) => {
         const result = await client.query(
           `select key_version,algorithm,envelope,created_at
@@ -1156,7 +1459,7 @@ async function createPostgresServer(overrides = {}) {
     }
 
     if (req.method === 'PUT' && url.pathname === '/v1/keys/recovery') {
-      const tenantId = authenticate(req);
+      const tenantId = await authenticate(req);
       const body = await readJson(req);
       if (body.key_version !== 1 || body.algorithm !== 'recovery-xchacha20poly1305') {
         throw new HttpError(400, 'invalid_envelope');
@@ -1188,56 +1491,24 @@ async function createPostgresServer(overrides = {}) {
       return json(res, 200, effective);
     }
 
-    if (req.method === 'POST' && url.pathname === '/v1/keys/envelopes') {
-      const tenantId = authenticate(req);
-      const body = await readJson(req);
-      const device = requiredString(body.recipient_device_id, 'invalid_envelope', 128);
-      const algorithm = requiredString(body.algorithm, 'invalid_envelope', 64);
-      if (device === 'account-recovery-v1' || algorithm !== 'x25519-xchacha20poly1305' ||
-        !Number.isInteger(body.key_version) || body.key_version < 1) {
-        throw new HttpError(400, 'invalid_envelope');
-      }
-      const envelope = decodeBase64(body.envelope, 'invalid_envelope', 100000);
-      if (envelope.length === 0 || envelope.length > 65536) throw new HttpError(400, 'invalid_envelope');
-      const id = await withTenant(pool, tenantId, async (client) => {
-        const saved = await client.query(
-          `insert into vault.key_envelopes(tenant_id,recipient_device_id,key_version,algorithm,envelope)
-           values($1,$2,$3,$4,$5)
-           on conflict(tenant_id,recipient_device_id,key_version,algorithm)
-           do update set envelope=excluded.envelope,created_at=now(),revoked_at=null returning id`,
-          [tenantId, device, body.key_version, algorithm, envelope]
-        );
-        return saved.rows[0].id;
-      });
-      return json(res, 200, { id });
-    }
-
-    if (req.method === 'GET' && url.pathname === '/v1/keys/envelopes') {
-      const tenantId = authenticate(req);
-      const device = requiredString(url.searchParams.get('device'), 'invalid_device', 128);
-      if (device === 'account-recovery-v1') throw new HttpError(400, 'invalid_device');
-      const envelopes = await withTenant(pool, tenantId, async (client) => {
-        const result = await client.query(
-          `select id,recipient_device_id,key_version,algorithm,envelope,created_at
-           from vault.key_envelopes where tenant_id=$1 and recipient_device_id=$2 and revoked_at is null
-           order by key_version desc`, [tenantId, device]
-        );
-        return result.rows.map((row) => ({ ...row, envelope: row.envelope.toString('base64') }));
-      });
-      return json(res, 200, { envelopes });
-    }
-
     throw new HttpError(404, 'not_found');
   }
 
   const server = http.createServer((req, res) => {
     handle(req, res).catch((error) => {
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
       if (error instanceof HttpError) return json(res, error.status, { error: error.code });
       console.error(error);
-      if (!res.headersSent) return json(res, 500, { error: 'internal_error' });
-      res.destroy();
+      return json(res, 500, { error: 'internal_error' });
     });
   });
+  server.headersTimeout = 15_000;
+  server.requestTimeout = 60_000;
+  server.keepAliveTimeout = 5_000;
+  server.maxHeadersCount = 64;
 
   return {
     server,
@@ -1273,4 +1544,5 @@ if (require.main === module) {
 module.exports = {
   createPostgresServer, verifyAccessToken, withTenant, parseModelCatalog, usageProjection,
   validateCompletionOptions, readBodyLimited, recoverTenantStaleAiRequests, proxyCompletion,
+  optionalBoundedNumber, optionalHttpUrl, requiredOpaqueString, safeDatabaseInteger,
 };

@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/solum-core", "crates/solum-cli", "crates/solum-app", "crates/solum-sync-server", "crates/solum-notif-access", "crates/solum-health-connect", "crates/solum-alarm"]
 
 [workspace.package]
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 license = "MIT"
 authors = ["Solum project"]
@@ -40,6 +40,8 @@ url = "2"
 pbkdf2 = "0.12"
 hkdf = "0.12"
 hmac = "0.12"
+fs2 = "0.4"
+libc = "0.2"
 
 # Faster, smaller test/dev builds where the SQLite C compile dominates.
 [profile.dev]

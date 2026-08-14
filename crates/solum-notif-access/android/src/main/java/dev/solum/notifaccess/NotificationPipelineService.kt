@@ -10,11 +10,15 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
+import android.util.AtomicFile
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
@@ -24,10 +28,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
- * F20's foreground-service skeleton. The service deliberately does not parse
- * notifications or call the network: it keeps the *same application process*
- * that hosts Tauri/Rust alive, where the resident ticker owns the configured
- * 15–30 minute batch cadence and all privacy/LLM decisions.
+ * F20's foreground service keeps the same application process that hosts
+ * Tauri/Rust alive. It never parses captured notification content itself; its
+ * only network work is polling account-scoped recovery alerts.
  */
 class NotificationPipelineService : Service() {
     private val poller = Executors.newSingleThreadScheduledExecutor()
@@ -104,7 +107,9 @@ class NotificationPipelineService : Service() {
             }
             if (connection.responseCode != HttpURLConnection.HTTP_OK) return
             val body = connection.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-            applyAlerts(body, prefs, cursorKey, initializedKey, since, initialized)
+            if (relayConfigStillCurrent(config)) {
+                applyAlerts(body, prefs, cursorKey, initializedKey, since, initialized)
+            }
         } finally {
             connection.disconnect()
         }
@@ -127,7 +132,9 @@ class NotificationPipelineService : Service() {
         try {
             if (connection.responseCode != HttpURLConnection.HTTP_OK) return
             val body = connection.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-            applyAlerts(body, getSharedPreferences(PREFS, Context.MODE_PRIVATE), cursorKey, initializedKey, since, initialized)
+            if (accountStillCurrent(config)) {
+                applyAlerts(body, getSharedPreferences(PREFS, Context.MODE_PRIVATE), cursorKey, initializedKey, since, initialized)
+            }
         } finally { connection.disconnect() }
     }
 
@@ -199,6 +206,9 @@ class NotificationPipelineService : Service() {
     }
 
     private data class AccountSession(val serverUrl: String, val userId: String, val username: String, val accessToken: String, val refreshToken: String)
+    private data class AccountRecord(val session: AccountSession, val json: JSONObject)
+    private data class RotatedTokens(val accessToken: String, val refreshToken: String, val userId: String)
+    private data class RefreshCommit(val session: AccountSession?, val revokeRotatedToken: Boolean)
     private data class RelayConfig(val url: String, val accessToken: String, val account: AccountSession?, val cursorScope: String)
 
     private fun loadSyncConfig(): RelayConfig? {
@@ -212,61 +222,215 @@ class NotificationPipelineService : Service() {
         val json = runCatching { JSONObject(file.readText(StandardCharsets.UTF_8)) }.getOrNull() ?: return null
         val url = json.optString("url").trim().trimEnd('/')
         if (!isAllowedEndpoint(url)) return null
-        val directToken = json.optString("token").trim()
-        if (account != null) return RelayConfig(url, account.accessToken, account, account.userId)
+        val directToken = json.opt("token") as? String ?: ""
+        if (account != null) {
+            // Account access tokens are valid for the unified center only.
+            // Never let an old or edited sync file redirect them to another
+            // otherwise-valid HTTPS endpoint.
+            if (url != account.serverUrl) return null
+            return RelayConfig(url, account.accessToken, account, account.userId)
+        }
         if (directToken.isNotEmpty()) return RelayConfig(url, directToken, null, "legacy")
         return null
     }
 
     private fun loadAccountSession(): AccountSession? {
+        return runCatching {
+            withAccountLock { loadAccountRecordUnlocked()?.session }
+        }.getOrNull()
+    }
+
+    private fun loadAccountRecordUnlocked(): AccountRecord? {
         val file = File(dataDir, "solum-account.json")
         if (!file.isFile) return null
         val json = runCatching { JSONObject(file.readText(StandardCharsets.UTF_8)) }.getOrNull() ?: return null
-        val serverUrl = json.optString("server_url").trim().trimEnd('/')
-        val userId = json.optString("user_id").trim().lowercase()
-        val username = json.optString("username").trim()
-        val access = json.optString("access_token").trim()
-        val refresh = json.optString("refresh_token").trim()
+        val serverUrl = (json.opt("server_url") as? String)?.trim()?.trimEnd('/') ?: return null
+        val userId = (json.opt("user_id") as? String)?.trim()?.lowercase() ?: return null
+        val username = (json.opt("username") as? String)?.trim() ?: return null
+        val access = json.opt("access_token") as? String ?: return null
+        val refresh = json.opt("refresh_token") as? String ?: return null
         if (!isAllowedEndpoint(serverUrl) || !isStableUserId(userId) || username.isEmpty() || access.isEmpty() || refresh.isEmpty()) return null
-        return AccountSession(serverUrl, userId, username, access, refresh)
+        return AccountRecord(AccountSession(serverUrl, userId, username, access, refresh), json)
     }
 
     private fun refreshAccount(session: AccountSession): AccountSession? {
+        // Snapshot the newest same-identity session while synchronized with
+        // Rust. The potentially slow request deliberately happens outside the
+        // lock so logout and account switching remain responsive.
+        val base = runCatching {
+            withAccountLock {
+                loadAccountRecordUnlocked()?.session?.takeIf { sameIdentity(it, session) }
+            }
+        }.getOrNull() ?: return null
+        if (base.refreshToken != session.refreshToken) return base
+
+        val rotated = requestRefresh(base)
+        if (rotated == null) {
+            // Another process may have consumed the single-use token and
+            // already published its replacement while this request was live.
+            return runCatching {
+                withAccountLock {
+                    loadAccountRecordUnlocked()?.session?.takeIf {
+                        sameIdentity(it, base) && it.refreshToken != base.refreshToken
+                    }
+                }
+            }.getOrNull()
+        }
+
+        if (rotated.userId != base.userId) {
+            revokeRefreshToken(base.serverUrl, rotated.refreshToken)
+            return null
+        }
+
+        val committed = runCatching {
+            withAccountLock {
+                val current = loadAccountRecordUnlocked()
+                if (current == null || !sameIdentity(current.session, base)) {
+                    RefreshCommit(null, true)
+                } else if (current.session.refreshToken != base.refreshToken) {
+                    RefreshCommit(current.session, true)
+                } else {
+                    // Keep model and any future/unknown fields from the latest
+                    // local record. Only the server-owned token pair rotates.
+                    current.json.put("access_token", rotated.accessToken)
+                    current.json.put("refresh_token", rotated.refreshToken)
+                    writeAccountRecordUnlocked(current.json)
+                    RefreshCommit(
+                        current.session.copy(
+                            accessToken = rotated.accessToken,
+                            refreshToken = rotated.refreshToken,
+                        ),
+                        false,
+                    )
+                }
+            }
+        }.getOrElse { RefreshCommit(null, true) }
+
+        if (committed.revokeRotatedToken) {
+            revokeRefreshToken(base.serverUrl, rotated.refreshToken)
+        }
+        return committed.session
+    }
+
+    private fun requestRefresh(session: AccountSession): RotatedTokens? {
+        repeat(2) {
+            val attempt = runCatching { requestRefreshOnce(session) }
+            // HTTP rejections and structurally invalid successful responses
+            // return null without retrying. Only transport/JSON exceptions get
+            // one retry, which the center's idempotent rotation can recover.
+            if (attempt.isSuccess) return attempt.getOrNull()
+        }
+        return null
+    }
+
+    private fun requestRefreshOnce(session: AccountSession): RotatedTokens? {
         val connection = (URL("${session.serverUrl}/v1/auth/refresh").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"; doOutput = true; connectTimeout = 10_000; readTimeout = 10_000
             setRequestProperty("Content-Type", "application/json")
         }
         return try {
             connection.outputStream.use { it.write(JSONObject().put("refresh_token", session.refreshToken).toString().toByteArray(StandardCharsets.UTF_8)) }
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                // Rust/AI may have won a concurrent single-use refresh-token
-                // rotation. Re-read its atomically persisted replacement.
-                return loadAccountSession()?.takeIf {
-                    it.userId == session.userId && it.refreshToken != session.refreshToken
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) return null
+            val json = connection.inputStream.bufferedReader(StandardCharsets.UTF_8).use { JSONObject(it.readText()) }
+            val accessToken = json.opt("access_token") as? String ?: return null
+            val refreshToken = json.opt("refresh_token") as? String ?: return null
+            val userId = (json.optJSONObject("user")?.opt("id") as? String)
+                ?.trim()?.lowercase() ?: return null
+            if (accessToken.isEmpty() || refreshToken.isEmpty() || !isStableUserId(userId)) return null
+            RotatedTokens(accessToken, refreshToken, userId)
+        } finally { connection.disconnect() }
+    }
+
+    private fun revokeRefreshToken(serverUrl: String, refreshToken: String) {
+        val connection = runCatching {
+            (URL("$serverUrl/v1/auth/logout").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"; doOutput = true; connectTimeout = 5_000; readTimeout = 5_000
+                setRequestProperty("Content-Type", "application/json")
+            }
+        }.getOrNull() ?: return
+        try {
+            runCatching {
+                connection.outputStream.use {
+                    it.write(JSONObject().put("refresh_token", refreshToken).toString().toByteArray(StandardCharsets.UTF_8))
+                }
+                connection.responseCode
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun sameIdentity(left: AccountSession, right: AccountSession): Boolean =
+        left.serverUrl == right.serverUrl &&
+            left.userId == right.userId
+
+    private fun accountStillCurrent(expected: AccountSession): Boolean = runCatching {
+        withAccountLock { loadAccountRecordUnlocked()?.session?.let { sameIdentity(it, expected) } == true }
+    }.getOrDefault(false)
+
+    private fun relayConfigStillCurrent(expected: RelayConfig): Boolean {
+        val current = loadSyncConfig() ?: return false
+        if (current.url != expected.url || current.cursorScope != expected.cursorScope) return false
+        return if (expected.account != null && current.account != null) {
+            sameIdentity(current.account, expected.account)
+        } else {
+            expected.account == null && current.account == null &&
+                current.accessToken == expected.accessToken
+        }
+    }
+
+    private fun <T> withAccountLock(operation: () -> T): T {
+        return synchronized(ACCOUNT_LOCK_MONITOR) {
+            val lockFile = File(dataDir, "solum-account.json.lock")
+            lockFile.parentFile?.mkdirs()
+            RandomAccessFile(lockFile, "rw").use { handle ->
+                val lock = handle.channel.lock()
+                try {
+                    operation()
+                } finally {
+                    lock.release()
                 }
             }
-            val json = connection.inputStream.bufferedReader(StandardCharsets.UTF_8).use { JSONObject(it.readText()) }
-            val refreshedUserId = json.optJSONObject("user")?.optString("id")?.trim()?.lowercase().orEmpty()
-            if (refreshedUserId != session.userId) return null
-            val rotated = session.copy(accessToken = json.optString("access_token"), refreshToken = json.optString("refresh_token"))
-            if (rotated.accessToken.isEmpty() || rotated.refreshToken.isEmpty()) return null
-            val file = File(dataDir, "solum-account.json")
-            val tmp = File(file.parentFile, "${file.name}.tmp")
-            val persisted = runCatching { JSONObject(file.readText(StandardCharsets.UTF_8)) }.getOrElse { JSONObject() }
-            persisted.put("server_url", rotated.serverUrl).put("username", rotated.username)
-                .put("access_token", rotated.accessToken).put("refresh_token", rotated.refreshToken)
-            tmp.writeText(persisted.toString(2), StandardCharsets.UTF_8)
-            if (!tmp.renameTo(file)) { tmp.delete(); return null }
-            rotated
-        } finally { connection.disconnect() }
+        }
+    }
+
+    private fun writeAccountRecordUnlocked(json: JSONObject) {
+        val target = File(dataDir, "solum-account.json")
+        val atomicFile = AtomicFile(target)
+        val payload = json.toString(2).toByteArray(StandardCharsets.UTF_8)
+        var output: FileOutputStream? = null
+        try {
+            output = atomicFile.startWrite()
+            output.write(payload)
+            atomicFile.finishWrite(output)
+            output = null
+            if (!target.isFile || !target.readBytes().contentEquals(payload)) {
+                throw IOException("account session commit could not be verified")
+            }
+        } catch (error: Exception) {
+            output?.let { runCatching { atomicFile.failWrite(it) } }
+            throw error
+        }
     }
 
     private fun isAllowedEndpoint(value: String): Boolean = runCatching {
         val uri = URI(value)
+        if (!uri.isAbsolute || uri.isOpaque || uri.rawUserInfo != null ||
+            uri.rawQuery != null || uri.rawFragment != null) return@runCatching false
+        val host = uri.host ?: return@runCatching false
         uri.scheme.equals("https", ignoreCase = true) ||
-            (uri.scheme.equals("http", ignoreCase = true) &&
-                (uri.host == "127.0.0.1" || uri.host == "localhost" || uri.host == "::1"))
+            (uri.scheme.equals("http", ignoreCase = true) && isLoopbackHost(host))
     }.getOrDefault(false)
+
+    private fun isLoopbackHost(host: String): Boolean {
+        if (host.equals("localhost", ignoreCase = true) || host == "::1" || host == "[::1]") {
+            return true
+        }
+        val parts = host.split('.')
+        if (parts.size != 4 || parts[0] != "127") return false
+        return parts.all { part -> part.isNotEmpty() && part.all(Char::isDigit) &&
+            part.toIntOrNull()?.let { it in 0..255 } == true }
+    }
 
     private fun isStableUserId(value: String): Boolean =
         Regex("^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$").matches(value)
@@ -282,6 +446,7 @@ class NotificationPipelineService : Service() {
         private const val KEY_INITIALIZED = "initialized"
         private const val POLL_SECONDS = 20L
         private const val MAX_NOTIFICATION_AGE_SECONDS = 10 * 60L
+        private val ACCOUNT_LOCK_MONITOR = Any()
 
         @Volatile var running: Boolean = false
             private set

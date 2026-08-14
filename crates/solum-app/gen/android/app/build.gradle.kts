@@ -1,3 +1,5 @@
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import java.util.Properties
 
 plugins {
@@ -8,11 +10,58 @@ plugins {
 
 layout.buildDirectory.set(file(providers.gradleProperty("solumBuildDir").orElse("build").get()))
 
-val tauriProperties = Properties().apply {
-    val propFile = file("tauri.properties")
-    if (propFile.exists()) {
-        propFile.inputStream().use { load(it) }
+val rootTauriConfigFile = file("../../../tauri.conf.json")
+require(rootTauriConfigFile.isFile) {
+    "Missing root Tauri config: ${rootTauriConfigFile.absolutePath}"
+}
+@Suppress("UNCHECKED_CAST")
+val rootTauriConfig = (JsonSlurper().parse(rootTauriConfigFile) as? Map<String, Any?>)
+    ?: error("Root tauri.conf.json must contain a JSON object")
+val tauriVersionName = (rootTauriConfig["version"] as? String)?.trim()
+    ?.takeIf { it.matches(Regex("""\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?""")) }
+    ?: error("tauri.conf.json version must be a non-empty semantic version")
+val tauriBundle = rootTauriConfig["bundle"] as? Map<*, *>
+    ?: error("tauri.conf.json bundle must contain a JSON object")
+val tauriAndroidBundle = tauriBundle["android"] as? Map<*, *>
+    ?: error("tauri.conf.json bundle.android must contain a JSON object")
+val tauriVersionCodeText = tauriAndroidBundle["versionCode"]?.toString()
+    ?: error("tauri.conf.json bundle.android.versionCode is required")
+val tauriVersionCode = tauriVersionCodeText.toIntOrNull()
+    ?.takeIf { it > 0 && it.toString() == tauriVersionCodeText }
+    ?: error("tauri.conf.json bundle.android.versionCode must be a positive 32-bit integer")
+
+val generatedTauriProperties = file("tauri.properties")
+val generatedTauriAsset = file("src/main/assets/tauri.conf.json")
+val syncTauriGeneratedInputs by tasks.registering {
+    group = "build setup"
+    description = "Synchronize Android metadata and runtime config from the root Tauri config"
+    inputs.file(rootTauriConfigFile)
+    outputs.files(generatedTauriProperties, generatedTauriAsset)
+    doLast {
+        generatedTauriProperties.parentFile.mkdirs()
+        generatedTauriProperties.writeText(
+            "tauri.android.versionName=$tauriVersionName\n" +
+                "tauri.android.versionCode=$tauriVersionCode\n",
+            Charsets.UTF_8,
+        )
+
+        val runtimeConfig = LinkedHashMap(rootTauriConfig)
+        val plugins = runtimeConfig["plugins"]
+        if (plugins == null) {
+            runtimeConfig["plugins"] = emptyMap<String, Any?>()
+        } else if (plugins !is Map<*, *>) {
+            error("tauri.conf.json plugins must contain a JSON object")
+        }
+        generatedTauriAsset.parentFile.mkdirs()
+        generatedTauriAsset.writeText(
+            JsonOutput.prettyPrint(JsonOutput.toJson(runtimeConfig)) + "\n",
+            Charsets.UTF_8,
+        )
     }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(syncTauriGeneratedInputs)
 }
 
 // Release signing (self-use sideload, no Play Store): key material lives in
@@ -38,8 +87,8 @@ android {
         // merger requires the app's minSdk to be >= every library's.
         minSdk = 26
         targetSdk = 36
-        versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
-        versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+        versionCode = tauriVersionCode
+        versionName = tauriVersionName
     }
     signingConfigs {
         if (keystoreProperties.containsKey("storeFile")) {

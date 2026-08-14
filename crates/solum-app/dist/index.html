@@ -2145,6 +2145,7 @@
   .account-mode-switch button { min-height: 42px; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; font: inherit; cursor: pointer; }
   .account-mode-switch button[aria-selected="true"] { border-bottom-color: var(--ink); color: var(--ink); font-weight: 700; }
   .account-gate-form { display: grid; gap: 9px; }
+  #accountGateConfirmField { display: grid; gap: 9px; }
   .account-gate-form label { margin-top: 5px; color: var(--ink-2); font-size: .8125rem; font-weight: 650; }
   .account-gate-form .btn { margin-top: 10px; }
   .account-gate-status { min-height: 20px; margin: 0; color: var(--danger); font-size: .8125rem; }
@@ -2982,6 +2983,10 @@
         <input type="text" id="accountGateUser" autocomplete="username" placeholder="输入账号" spellcheck="false" />
         <label for="accountGatePass">密码</label>
         <input type="password" id="accountGatePass" autocomplete="current-password" placeholder="至少 12 个字符" />
+        <div id="accountGateConfirmField" hidden>
+          <label for="accountGateConfirm">确认密码</label>
+          <input type="password" id="accountGateConfirm" autocomplete="new-password" placeholder="再次输入密码" />
+        </div>
         <button class="btn primary" id="accountGateSubmit" type="button">登录</button>
         <p class="account-gate-status" id="accountGateStatus" role="alert" aria-live="polite"></p>
       </div>
@@ -6789,6 +6794,7 @@ $("llmTestBtn").addEventListener("click", async () => {
 let accountLoggedIn = false;
 let accountFormSeeded = false; // 同 llm 表单：只首次 seed，refreshAll 不覆盖正在编辑的值
 let accountGateMode = "login";
+let accountAuthSubmitting = false;
 const GUEST_CHOICE_KEY = "solum.guest-choice.v1";
 const GUEST_ALLOWED_VIEWS = new Set(["chat", "agenda", "notifs", "ledger", "journal", "search", "settings", "privacy"]);
 const GUEST_ALLOWED_REFRESHERS = new Set([
@@ -6807,6 +6813,9 @@ function setAccountGateMode(mode) {
   $("accountGateModeTitle").textContent = registering ? "创建你的空间" : "欢迎回来";
   $("accountGateSubmit").textContent = registering ? "注册并进入" : "登录";
   $("accountGatePass").autocomplete = registering ? "new-password" : "current-password";
+  $("accountGateConfirmField").hidden = !registering;
+  $("accountGateConfirm").required = registering;
+  $("accountGateConfirm").value = "";
   $("accountGateStatus").textContent = "";
 }
 
@@ -6956,22 +6965,21 @@ async function refreshAccount() {
   $("accountModel").value = options.includes(s.model) ? s.model : defaultModel;
 }
 
-async function submitAccount(command, action) {
+async function submitSettingsLogin() {
+  if (accountAuthSubmitting || $("accountLoginBtn").disabled) return;
   const serverUrl = $("accountServer").value.trim() || SOLUM_CENTER_URL;
   const username = $("accountUser").value.trim();
   const password = $("accountPass").value;
   if (!username || !password) return toast("请填写账号和密码", "danger");
-  if (command === "account_register" && password.length < 12) {
-    return toast("注册密码至少需要 12 个字符", "danger");
-  }
+  accountAuthSubmitting = true;
   $("accountLoginBtn").disabled = true;
   $("accountRegisterBtn").disabled = true;
   try {
-    const summary = await invoke(command, {
+    const summary = await invoke("account_login", {
       serverUrl, username, password, model: $("accountModel").value.trim(),
     });
     $("accountPass").value = ""; // 密码只用于本次登录与本地解封，界面也不留
-    toast(action === "注册" ? "账号已创建，正在进入专属空间" : "已登录，云端改走账号代理", "ok");
+    toast("已登录，云端改走账号代理", "ok");
     $("llmDot").className = "sdot ok";
     $("llmText").textContent = "云端在线";
     $("llmRow").title = summary;
@@ -6979,12 +6987,14 @@ async function submitAccount(command, action) {
     refreshAccount(); refreshCloud(); refreshSyncConfig(); refreshSyncStatus();
   } catch (e) { toast(String(e), "danger"); }
   finally {
+    accountAuthSubmitting = false;
     $("accountLoginBtn").disabled = false;
     $("accountRegisterBtn").disabled = false;
   }
 }
 
 async function submitAccountGate() {
+  if (accountAuthSubmitting || $("accountGateSubmit").disabled) return;
   const username = $("accountGateUser").value.trim();
   const password = $("accountGatePass").value;
   const registering = accountGateMode === "register";
@@ -6996,6 +7006,11 @@ async function submitAccountGate() {
     $("accountGateStatus").textContent = "注册密码至少需要 12 个字符。";
     return;
   }
+  if (registering && password !== $("accountGateConfirm").value) {
+    $("accountGateStatus").textContent = "两次输入的密码不一致。";
+    return;
+  }
+  accountAuthSubmitting = true;
   $("accountGateSubmit").disabled = true;
   $("accountGateSubmit").textContent = registering ? "正在创建…" : "正在登录…";
   $("accountGateStatus").textContent = "正在建立你的加密空间…";
@@ -7007,11 +7022,19 @@ async function submitAccountGate() {
       model: "mimo-v2.5",
     });
     $("accountGatePass").value = "";
+    $("accountGateConfirm").value = "";
     $("accountGateStatus").textContent = "身份已确认，正在进入账号空间…";
   } catch (e) {
-    $("accountGateStatus").textContent = String(e);
+    const message = String(e);
+    if (registering && message.startsWith("账号已创建，但")) {
+      setAccountGateMode("login");
+      $("accountGatePass").value = "";
+    }
+    $("accountGateStatus").textContent = message;
     $("accountGateSubmit").disabled = false;
     $("accountGateSubmit").textContent = registering ? "注册并进入" : "登录";
+  } finally {
+    accountAuthSubmitting = false;
   }
 }
 
@@ -7021,6 +7044,9 @@ $("accountGateLoginTab").addEventListener("click", () => setAccountGateMode("log
 $("accountGateRegisterTab").addEventListener("click", () => setAccountGateMode("register"));
 $("accountGateSubmit").addEventListener("click", submitAccountGate);
 $("accountGatePass").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); submitAccountGate(); }
+});
+$("accountGateConfirm").addEventListener("keydown", (event) => {
   if (event.key === "Enter") { event.preventDefault(); submitAccountGate(); }
 });
 $("accountGateClose").addEventListener("click", closeAccountGate);
@@ -7040,11 +7066,13 @@ $("mobileAccountBtn").addEventListener("click", () => {
 });
 
 $("accountLoginBtn").addEventListener("click", async () => {
-  await submitAccount("account_login", "登录");
+  await submitSettingsLogin();
 });
 
-$("accountRegisterBtn").addEventListener("click", async () => {
-  await submitAccount("account_register", "注册");
+$("accountRegisterBtn").addEventListener("click", () => {
+  setAccountGateMode("register");
+  $("accountGateUser").value = $("accountUser").value.trim();
+  openAccountGate("创建账号并进入独立的加密空间", { dismissible: true, allowGuest: false });
 });
 
 $("accountLogoutBtn").addEventListener("click", async () => {
