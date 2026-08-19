@@ -561,6 +561,35 @@ async fn account_status_get() -> CmdResult<AccountStatus> {
     }
 }
 
+/// Switch the active profile without leaving Android on a dead process.
+///
+/// Tauri's generic `AppHandle::restart()` re-execs the current binary. That
+/// works for desktop executables, but Android links this crate into the app
+/// process and has no executable path that can be spawned. The generic path
+/// therefore exits successfully after the spawn fails. Android delegates to
+/// the Activity, which creates a fresh launch task before terminating us.
+#[cfg(target_os = "android")]
+fn restart_account_app(app: &tauri::AppHandle) -> CmdResult<String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "找不到 Solum 主窗口，账号已保存，请重新打开应用".to_string())?;
+    window
+        .with_webview(|webview| {
+            webview.jni_handle().exec(|env, activity, _webview| {
+                if let Err(error) = env.call_method(activity, "restartApp", "()V", &[]) {
+                    eprintln!("failed to restart Android activity after account switch: {error}");
+                }
+            });
+        })
+        .map_err(|error| format!("无法重新打开 Solum：{error}"))?;
+    Ok("账号已切换，正在重新打开 Solum".to_string())
+}
+
+#[cfg(not(target_os = "android"))]
+fn restart_account_app(app: &tauri::AppHandle) -> CmdResult<String> {
+    app.restart()
+}
+
 async fn account_auth(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
@@ -629,7 +658,7 @@ async fn account_auth(
     // connection, cache, ticker and in-memory chat context closes before the
     // new profile opens. Hot-swapping only the reasoner would leave the old
     // user's database live under the new token.
-    app.restart()
+    restart_account_app(&app)
 }
 
 /// Log in against a self-hosted solum-cloud (`server/`), prepare the target
@@ -676,7 +705,7 @@ async fn account_logout(state: State<'_, AppState>, app: tauri::AppHandle) -> Cm
     if let Some(session) = session {
         revoke_pending_session(session).await;
     }
-    app.restart()
+    restart_account_app(&app)
 }
 
 /// Change which model the proxy asks upstream for (login stays untouched).

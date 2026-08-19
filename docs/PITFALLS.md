@@ -2,6 +2,13 @@
 
 > 强制记录：任何调试超过几分钟、走过弯路、被坑过的问题都要写在这里，不管最后是否解决。格式：现象 / 根因 / 解决方式 / 如何避免。
 
+## 2026-08-19：Tauri 的通用 restart 在 Android 上只会退出进程
+
+- **现象**：登录或注册成功、账号会话和 profile 都已落盘后，Android 界面瞬间消失，系统桌面看起来像闪退；桌面端同一流程可以正常重新打开。
+- **根因**：`AppHandle::restart()` 在 Tauri 2.11 中通过 `current_binary()` 和 `Command::new(...).spawn()` 重启。Android 是把 Rust crate 链接进 Activity 进程，没有可重新执行的 app binary；spawn 失败后 Tauri 仍调用 `exit(0)`，所以旧进程结束但新 Activity 不会出现。
+- **解决**：保留桌面 `app.restart()` 的整进程 profile 隔离；Android 通过 `MainActivity.restartApp()` 调用 `Intent.makeRestartActivityTask` 先创建新的启动任务，再退出当前进程。Rust 通过当前 WebView 的 JNI handle 调用该方法。
+- **避免**：移动端账号切换不能直接套用桌面进程重启 API；每次认证边界改动都要验证“认证成功 -> 新 Activity 可见”，而不是只看 IPC 返回成功。
+
 ## 2026-08-14：单次 refresh 轮换不等于响应丢失后可恢复
 
 - **现象**：服务端已经把 refresh token 从 A 轮换到 B，但 200 响应在网络中丢失；客户端只剩 A，重试时即使落在 5 秒 grace 内也收到 401，被迫重新登录。
