@@ -2,6 +2,11 @@
 
 > 状态约定：`待验证` 尚未在目标环境跑通；`已通过` 已有可复查证据；`已复现` 已稳定观察到缺陷；`受阻` 受设备、权限或外部环境限制。Android 真机测试默认使用已安装的生产版客户端与 `https://solumsync.tannerlab.xyz`，不得卸载应用、清空数据或删除用户内容。
 
+## 2026-08-20 验收回修
+
+- [x] **已修复/P1：通知、捕获、息壤和邮件页面的 raw exception 展示。** 生产可见状态、空状态和错误卡统一经过 `safeUserError`；前端语法检查拒绝高风险 `String(e)` 文本渲染。
+- [ ] **待验证：新 0.2.8/1018 APK 的 vivo 覆盖安装与提醒 E2E。** 新包的 manifest、签名、ABI 和 `AlarmReceiver` 已核对；设备当前 ADB `device not found`，不能把旧包安装证据或 dumpsys alarm 当作本轮通过。
+
 ## Android 生产链路审计（2026-08-19）
 
 ### 已复现缺陷与 UX 问题

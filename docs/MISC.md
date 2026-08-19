@@ -1008,3 +1008,6 @@ Work incrementally: brief.rs + its unit tests first, then orchestrator wiring + 
 - **投影比架构 L2 总表更窄。** v1 只发送标题、类型、开始/结束时间和地点；不因为字段“也许属于 L2”就带上重要度、参与人或任何来源线索。预览直接由将要序列化的投影生成，防止界面承诺和实际 payload 脱节。
 - **`local_only` 在核心层二次兜底。** 前端隐藏入口不作为安全边界；任意 IPC/CLI 调用若试图推送第三方通知来源的事件，`pa-core` 都会拒绝。推送 HTTP 不调用 ingest、提醒 ticker 或 sync，避免派生副作用。
 - **Soull 只入、不回流。** 接收端按 JWT 用户隔离、稳定外部 ID 幂等覆盖、严格拒绝未列 payload 字段，且刻意不提供 PA 读取这些外部上下文的 API；这样 RAG 中带 `source=pa` 的事实不会经现有 Soulous → PA 拉取路径回声放大。AI 记忆关闭时仍可保留用户自己的外部事实记录，但绝不新建 embedding。
+## 2026-08-20 验收回修：生产可见错误出口
+
+通知管线、通知捕获、息壤拉取和邮件页面属于同一条 Android/桌面 WebView 展示边界：底层异常保留在控制台诊断，用户界面统一显示可重试的人话提示。新增前端检查会拒绝 `String(e)` 直接写入文本节点、空状态或隐私状态，避免后续页面绕过 `safeUserError`。

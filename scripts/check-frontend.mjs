@@ -21,6 +21,18 @@ for (const [index, match] of inlineScripts.entries()) {
   new vm.Script(match[1], { filename: `index.html:inline-${index + 1}` });
 }
 
+const rawErrorRenderPatterns = [
+  /text\s*:\s*String\((?:e|error)\)/,
+  /textContent\s*=\s*String\((?:e|error)\)/,
+  /emptyBox\([^\n]*String\((?:e|error)\)/,
+  /setPrivacyGateStatus\([^\n]*String\((?:e|error)\)/,
+];
+for (const pattern of rawErrorRenderPatterns) {
+  if (pattern.test(html)) {
+    throw new Error(`raw exceptions must pass through safeUserError: ${pattern}`);
+  }
+}
+
 const ids = [...html.matchAll(/\bid\s*=\s*["']([^"']+)["']/gi)].map((match) => match[1]);
 const duplicates = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
 if (duplicates.length > 0) {

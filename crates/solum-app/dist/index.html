@@ -4534,7 +4534,7 @@ function renderWidgetPreview(preview) {
       openDrawer("widgets");
     } catch (error) {
       confirm.disabled = false; discard.disabled = false;
-      root.appendChild(el("div", { class: "llm-test danger", text: String(error) }));
+      root.appendChild(el("div", { class: "llm-test danger", text: safeUserError(error, "组件操作暂时不可用，请稍后重试。") }));
     }
   });
   discard.addEventListener("click", async () => {
@@ -4590,7 +4590,7 @@ function renderWidgetAddField(definition, afterSave) {
       await afterSave();
     } catch (error) {
       save.disabled = false;
-      root.appendChild(el("div", { class: "llm-test danger", text: String(error) }));
+      root.appendChild(el("div", { class: "llm-test danger", text: safeUserError(error, "组件操作暂时不可用，请稍后重试。") }));
     }
   });
   root.appendChild(el("div", { class: "btnrow", style: "margin-top:12px;" }, [save, cancel]));
@@ -4649,7 +4649,7 @@ function renderWidgetEditor(definition, record, afterSave) {
       await showWidget(definition.id);
     } catch (error) {
       save.disabled = false;
-      form.appendChild(el("div", { class: "llm-test danger", text: String(error) }));
+      form.appendChild(el("div", { class: "llm-test danger", text: safeUserError(error, "组件记录暂时无法保存，请稍后重试。") }));
     }
   });
   return form;
@@ -4826,7 +4826,7 @@ async function showWidget(widgetId) {
     editor.appendChild(renderWidgetEditor(definition, null, () => showWidget(definition.id)));
     editorBlock.appendChild(editor);
     box.appendChild(editorBlock);
-  } catch (error) { box.appendChild(emptyBox("alert", "无法读取组件", String(error))); }
+  } catch (error) { box.appendChild(emptyBox("alert", "无法读取组件", safeUserError(error, "组件暂时无法读取，请稍后重试。"))); }
 }
 async function refreshWidgets() {
   // 当前工作台壳层未挂载组件面板时，后台刷新不能阻断其他页面初始化。
@@ -4842,7 +4842,7 @@ async function refreshWidgets() {
   } catch (error) {
     const box = $("widgetsBox");
     box.textContent = "";
-    box.appendChild(emptyBox("alert", "无法读取组件", String(error)));
+    box.appendChild(emptyBox("alert", "无法读取组件", safeUserError(error, "组件暂时无法读取，请稍后重试。")));
   }
 }
 
@@ -4952,7 +4952,7 @@ async function refreshDocuments() {
     box.appendChild(list);
   } catch (e) {
     box.textContent = "";
-    box.appendChild(emptyBox("alert", "无法读取本地资料", String(e)));
+    box.appendChild(emptyBox("alert", "无法读取本地资料", safeUserError(e, "本地资料暂时无法读取，请稍后重试。")));
   }
 }
 $("documentPickBtn")?.addEventListener("click", () => $("documentInput")?.click());
@@ -5146,7 +5146,7 @@ async function refreshAgenda() {
         }, icon("trash", 16)),
       ]));
     }
-  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", String(e))); }
+  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", safeUserError(e, "内容暂时无法读取，请稍后重试。"))); }
 }
 
 /* ============================== 提醒 ============================== */
@@ -5231,7 +5231,7 @@ async function refreshNotifs() {
     } else {
       notifBox.appendChild(emptyBox("bell", "还没有任何提醒", "录入带时间的事件后，按重要度规则自动排程。"));
     }
-  } catch (e) { notifBox.textContent = ""; notifBox.appendChild(emptyBox("alert", String(e))); }
+  } catch (e) { notifBox.textContent = ""; notifBox.appendChild(emptyBox("alert", safeUserError(e, "提醒暂时无法读取，请稍后重试。"))); }
 }
 $("fireBtn").addEventListener("click", async () => {
   try {
@@ -5284,7 +5284,7 @@ async function refreshSuggest() {
       ]));
     }
     box.appendChild(list);
-  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", String(e))); }
+  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", safeUserError(e, "内容暂时无法读取，请稍后重试。"))); }
 }
 $("suggestBtn").addEventListener("click", async () => {
   try {
@@ -5325,7 +5325,7 @@ async function refreshJournal() {
           td(b.source || "—", "mut"),
         ];
       })));
-  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", String(e))); }
+  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", safeUserError(e, "内容暂时无法读取，请稍后重试。"))); }
 }
 $("checkinBtn").addEventListener("click", async () => {
   try {
@@ -5399,7 +5399,7 @@ async function refreshWearable() {
             td(h.source || "—", "mut"),
           ];
         }))));
-  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", String(e))); }
+  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", safeUserError(e, "内容暂时无法读取，请稍后重试。"))); }
 }
 
 /* ============================== 复盘 ============================== */
@@ -5494,7 +5494,7 @@ async function refreshLedger() {
           ])],
         ];
       })));
-  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", String(e))); }
+  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", safeUserError(e, "内容暂时无法读取，请稍后重试。"))); }
 }
 async function askSoulousEventPush(id) {
   try {
@@ -5659,7 +5659,7 @@ async function refreshPersona() {
       vers.appendChild(el("div", { class: "empty", style: "padding:4px 2px;" },
         el("span", { class: "eh", text: "还没有版本。" })));
     }
-  } catch (e) { act.textContent = ""; act.appendChild(emptyBox("alert", String(e))); }
+  } catch (e) { act.textContent = ""; act.appendChild(emptyBox("alert", safeUserError(e, "受保护操作暂时无法读取，请稍后重试。"))); }
 }
 $("personaSaveBtn").addEventListener("click", async () => {
   try {
@@ -5735,7 +5735,7 @@ $("personaImportPreviewBtn").addEventListener("click", async () => {
     toast("提取完成（纯本地，未保存）", "ok");
   } catch (e) {
     report.textContent = "";
-    report.appendChild(emptyBox("alert", String(e)));
+    report.appendChild(emptyBox("alert", safeUserError(e, "今日简报暂时无法生成，请稍后重试。")));
     $("personaImportSaveBtn").disabled = true;
   }
 });
@@ -5771,7 +5771,7 @@ async function refreshRules() {
       el("button", { class: "btn sm", type: "button", text: "编辑", onclick: () => renderRuleEditor(rule) }),
     ]));
     box.appendChild(rows);
-  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", String(e))); }
+  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", safeUserError(e, "内容暂时无法读取，请稍后重试。"))); }
 }
 // 规则编辑走浮窗（2026-07-20 重构）：列表保持在原地，不再被编辑表单整个替换。
 function renderRuleEditor(rule) {
@@ -5834,7 +5834,7 @@ async function refreshProactivity() {
         seg,
       ]));
     }
-  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", String(e))); }
+  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", safeUserError(e, "内容暂时无法读取，请稍后重试。"))); }
 }
 
 /* ============================== 通知智能管线（F20） ============================== */
@@ -6082,7 +6082,7 @@ async function refreshNotificationIntelligence() {
     catch (_) { notificationAppCatalog = []; }
     await renderNotificationIntelligenceSettings(status);
   }
-  catch (e) { $("notifPipelineState").textContent = String(e); }
+  catch (e) { $("notifPipelineState").textContent = safeUserError(e, "通知处理状态暂时无法读取，请稍后重试。"); }
 }
 async function setNotificationApp(packageName, enabled) {
   try {
@@ -6217,7 +6217,7 @@ async function refreshPrivacy() {
       ? "当前开启：之后捕获的通知可被 recall 选作云端 AI 的上下文，并进入账号的端到端加密同步。"
       : "当前关闭：之后捕获的通知不发往云端 AI，也不进入 recall；账号的其他可同步数据不受影响。";
   } catch (e) {
-    state.textContent = String(e);
+    state.textContent = safeUserError(e, "通知处理状态暂时无法读取，请稍后重试。");
   }
   refreshNotificationIntelligence();
   refreshPrivacyPolicy();
@@ -6321,7 +6321,7 @@ $("privacyGateAcceptBtn").addEventListener("click", async (event) => {
     }
   } catch (e) {
     // 写盘失败必须留在门里：放行等于产生一次没有记录的同意。
-    setPrivacyGateStatus(`无法保存：${String(e)}。请重试。`, false);
+    setPrivacyGateStatus(safeUserError(e, "隐私选择没有保存，请重试。"), false);
     btn.disabled = false;
     btn.textContent = "同意并开始使用";
   }
@@ -6375,7 +6375,7 @@ async function refreshCapture() {
       ]));
     }
   } catch (e) {
-    box.textContent = String(e);
+    box.textContent = safeUserError(e, "采集内容暂时无法读取，请稍后重试。");
   }
   refreshCaptureInbox();
 }
@@ -6490,7 +6490,7 @@ async function refreshGuard() {
     for (const t of ts) sel.appendChild(el("option", { value: t.name, text: humanToolLabel(t.name) }));
     if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
     else if ([...sel.options].some((o) => o.value === "demo_delete")) sel.value = "demo_delete";
-  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", String(e))); }
+  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", safeUserError(e, "内容暂时无法读取，请稍后重试。"))); }
   refreshAudit();
 }
 async function refreshAudit() {
@@ -6514,7 +6514,7 @@ async function refreshAudit() {
           td(r.detail, "mut"),
         ];
       })));
-  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", String(e))); }
+  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", safeUserError(e, "内容暂时无法读取，请稍后重试。"))); }
 }
 function showGuardResult(ok, text) {
   const box = $("guardResult");
@@ -7254,7 +7254,7 @@ $("soulousPullBtn").addEventListener("click", async () => {
   } catch (e) {
     out.textContent = "";
     out.appendChild(el("div", { class: "llm-test danger" }, [
-      icon("alert", 15), el("span", { text: "拉取失败；已保留上次缓存：" + String(e) }),
+      icon("alert", 15), el("span", { text: safeUserError(e, "拉取未完成，已保留上次缓存，请稍后重试。") }),
     ]));
   } finally { $("soulousPullBtn").disabled = false; }
 });
@@ -7443,7 +7443,7 @@ async function refreshEmailFolders(loadMessages) {
     if (loadMessages) await loadEmailMessages();
   } catch (e) {
     out.textContent = "";
-    out.appendChild(el("div", { class: "llm-test danger" }, [icon("alert", 15), el("span", { text: String(e) })]));
+    out.appendChild(el("div", { class: "llm-test danger" }, [icon("alert", 15), el("span", { text: safeUserError(e, "邮箱设置暂时无法读取，请稍后重试。") })]));
   }
 }
 
@@ -7479,7 +7479,7 @@ async function loadEmailMessages(forceSearch) {
     renderEmailMessages(messages);
   } catch (e) {
     out.textContent = "";
-    out.appendChild(el("div", { class: "llm-test danger" }, [icon("alert", 15), el("span", { text: String(e) })]));
+    out.appendChild(el("div", { class: "llm-test danger" }, [icon("alert", 15), el("span", { text: safeUserError(e, "邮件暂时无法读取，请稍后重试。") })]));
   }
 }
 
@@ -7499,7 +7499,7 @@ async function openEmailMessage(uid) {
     ]));
   } catch (e) {
     box.textContent = "";
-    box.appendChild(el("div", { class: "llm-test danger" }, [icon("alert", 15), el("span", { text: String(e) })]));
+    box.appendChild(el("div", { class: "llm-test danger" }, [icon("alert", 15), el("span", { text: safeUserError(e, "邮件正文暂时无法读取，请稍后重试。") })]));
   }
 }
 
@@ -7534,7 +7534,7 @@ async function beginEmailOAuth() {
         await refreshEmail(true);
       } catch (e) {
         out.textContent = "";
-        out.appendChild(el("div", { class: "llm-test danger" }, [icon("alert", 15), el("span", { text: String(e) })]));
+        out.appendChild(el("div", { class: "llm-test danger" }, [icon("alert", 15), el("span", { text: safeUserError(e, "邮箱授权没有完成，请重新授权。") })]));
       }
     };
     emailOauthTimer = setTimeout(poll, 1200);
