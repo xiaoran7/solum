@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+- **Solum 0.2.7（Android versionCode 1017）——校正 Android 与 iOS 应用图标。** 最终 Solum S 信号标记由右偏约 27 个设计像素移至画布视觉中心，并为源图、Android legacy/round/adaptive 与整套 iOS AppIcon 统一纯白背景；补齐从唯一 SVG 品牌源重建两端移动图标的脚本，清除 iOS 1024 图仍残留旧 PA 占位图的问题。像素边界验证：iOS 1024 与 Android xxxhdpi legacy 水平偏差均为 0 px，垂直偏差分别为 3.5 px 与 0.5 px；生成器重复运行无漂移，`cargo test --workspace` 共 350 项通过，Clippy `-D warnings`、fmt、Node 语法与 `git diff --check` 通过。当前未生成 Android/iOS 安装包，未做真机桌面图标走查。
+
 - **Solum 0.2.6（Android versionCode 1016）——Android 启动图标切换为最终 Solum S 信号标记。** 从品牌源 `crates/solum-app/icons/solum-mark-final.svg` 生成并保留五档密度的 legacy、round 与带透明通道的 adaptive foreground；adaptive 背景改为品牌米白 `#F7F3EB`。验证：五档 legacy/round 尺寸为 48/72/96/144/192，adaptive foreground 为 108/162/216/324/432 且均为 32-bit Alpha；APK 资源表实际包含全部新资源和米白背景，反向提取的 xxxhdpi legacy/foreground 目视正确。`cargo test --workspace`、Clippy `-D warnings`、fmt 全绿；ARM64 Release APK 为 27,673,573 字节，包名 `dev.solum.app`、`0.2.6 (1016)`、minSdk 26、targetSdk 36，v2 签名有效，SHA-256 `B319FB5D1B66DEACFBC69FD986A6EAFE34B77065B187E08BBD54D8CFED04A2BD`。当前无真机安装走查。
 
 - **Solum 0.2.5（Android versionCode 1015）——修复账号登录/注册成功后 Android 闪退。** 账号切换仍先完成 profile、密钥恢复、同步屏障和会话发布，再关闭旧进程；桌面继续使用 Tauri 原生重启，Android 改由 `MainActivity` 通过 `Intent.makeRestartActivityTask` 重新建立启动任务后退出当前进程，避免 Tauri 在移动端找不到可执行文件时直接 `exit(0)` 却无法拉起应用。未连接 Android 真机，本轮以 Rust 构建/静态契约验证为主。
