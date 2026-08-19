@@ -3237,6 +3237,24 @@ function dataTable(headers, rows) {
 }
 function td(children, cls) { return el("td", { class: cls }, children); }
 
+// Keep transport/IPC details in the console for diagnosis, but expose only a
+// recovery action in product UI. The backend remains free to return rich
+// errors; this is the presentation boundary for desktop and Android.
+function safeUserError(error, fallback) {
+  const raw = String(error == null ? "" : error);
+  try { console.warn("[solum-ui]", raw); } catch (_) { /* logging is best effort */ }
+  if (/state not managed|app_info/i.test(raw)) return "应用状态正在初始化，请重新打开应用。";
+  if (/账号或密码|账号名已经存在|请填写账号和密码|注册密码|登录已过期|重新登录|服务器未开放注册|尝试太频繁/.test(raw)) {
+    return raw.replace(/^.*?(账号或密码不正确|该账号名已经存在|请填写账号和密码|注册密码至少需要 12 个字符。|登录已过期，请重新登录|账号服务器版本过旧：登录结果缺少不可变 user_id，请先升级 solum-cloud|服务器未开放注册或当前操作无权限|尝试太频繁，请稍后再试).*$/s, "$1");
+  }
+  if (/同步|sync|无法解密|留存窗口/i.test(raw)) return "同步暂时失败，已保留本地数据；请稍后重试。";
+  if (/网络|network|transport|tls|ssl|errno|os error|连接|超时|timeout|dns|url|https?:\/\//i.test(raw)) {
+    return "网络连接失败，请检查网络后重试。";
+  }
+  if (/guard|token|确认|dangerous|高危/i.test(raw)) return "这次操作没有执行，请重新确认。";
+  return fallback || "操作未完成，请重试。";
+}
+
 function toast(msg, kind, ms) {
   const t = $("toast");
   t.textContent = "";
@@ -3247,7 +3265,7 @@ function toast(msg, kind, ms) {
     const i = icon(ic, 16); i.classList.add(cls || "plainic"); if (cls) i.classList.add(cls);
     t.appendChild(i);
   }
-  t.appendChild(el("span", { text: msg }));
+  t.appendChild(el("span", { text: kind === "danger" ? safeUserError(msg) : msg }));
   t.classList.add("show");
   clearTimeout(t._h);
   t._h = setTimeout(() => t.classList.remove("show"), ms || 2800);
@@ -3256,6 +3274,28 @@ function toast(msg, kind, ms) {
 /* ============================== 领域词汇 ============================== */
 const KIND = { exam: "考试", meeting: "会议", class: "课程", deadline: "截止", reminder: "提醒", other: "事件" };
 const RISK = { safe: ["安全", "ok"], sensitive: ["敏感", "accent"], dangerous: ["高危", "danger"] };
+const TOOL_LABELS = {
+  memory_forget: "删除一条记忆",
+  event_cancel: "取消日程",
+  ledger_purge: "清理旧记录",
+  widget_delete: "删除组件",
+  data_import: "合并导入数据",
+  email_send: "发送邮件",
+  soulous_push_event: "发送日程到息壤",
+  demo_delete: "删除示例记录",
+};
+function humanToolLabel(name) { return TOOL_LABELS[name] || "受保护操作"; }
+function humanSourceLabel(source) {
+  const raw = String(source || "");
+  if (!raw) return "本地记录";
+  if (raw === "ingest_event") return "聊天记录";
+  if (/^event#\d+$/.test(raw)) return "日程";
+  if (/^routine#\d+$/.test(raw)) return "固定提醒";
+  if (raw.startsWith("habit:")) return "习惯建议";
+  if (raw === "system_share") return "系统分享";
+  if (raw === "manual") return "手动记录";
+  return "本地记录";
+}
 const STATUS = { pending: ["待触发", "hollow"], fired: ["已触发", "ok"], dismissed: ["已取消", ""] };
 const INTENT = { chat: "闲聊", ingest_event: "事件登记", status_answer: "状态记录", memory_write: "记忆写入",
                  create_widget: "创建组件", reschedule_event: "改期", cancel_event: "取消日程", dangerous_command: "高危指令" };
@@ -3306,7 +3346,7 @@ async function initClock() {
     $("llmRow").title = on ? info.llm : "未配置云端推理（solum-llm.json / SOLUM_LLM_*）";
     $("brandDot").classList.toggle("on", on);
     $("brandDotM").classList.toggle("on", on);
-  } catch (e) { toast(String(e), "danger"); }
+  } catch (e) { toast(safeUserError(e, "同步未完成，本地数据已保留。"), "danger"); }
   await refreshSyncStatus();
 }
 
@@ -4076,12 +4116,12 @@ async function sendChat(text) {
     if (stream.bubble) {
       // 已经流出一段又报错：在同一气泡后补一条错误行，不丢已显示的内容。
       stream.bubble.appendChild(el("div", { class: "intent" }, tag("错误", "danger")));
-      stream.bubble.appendChild(el("span", { text: String(err) }));
+      stream.bubble.appendChild(el("span", { text: safeUserError(err, "这次请求没有完成，请稍后重试。") }));
     } else {
       typing.remove();
-      addMsg("agent", [el("div", { class: "intent" }, tag("错误", "danger")), String(err)]);
+      addMsg("agent", [el("div", { class: "intent" }, tag("错误", "danger")), safeUserError(err, "这次请求没有完成，请稍后重试。")] );
     }
-    recordChatMessage("assistant", String(err), "error");
+    recordChatMessage("assistant", safeUserError(err, "这次请求没有完成，请稍后重试。"), "error");
   }
 }
 $("chatForm").addEventListener("submit", async (e) => {
@@ -4114,21 +4154,21 @@ for (const [k, text] of EXAMPLES) {
   $("examples").appendChild(el("button", {
     class: "example", type: "button",
     onclick: () => { $("chatInput").value = text; $("chatInput").focus(); },
-  }, [tag(k, k === "高危指令" ? "danger" : "plain"), el("span", { text })]));
+  }, [tag("示例", "plain"), tag(k, k === "高危指令" ? "danger" : "plain"), el("span", { text })]));
 }
 const dailyBriefExample = el("button", {
   class: "example", type: "button", onclick: () => accountLoggedIn
     ? refreshDailyBrief()
     : requireAccount("登录后生成包含建议与跨设备信息的今日简报"),
-}, [tag("今日简报", "accent"), el("span", { text: "刷新今日简报" })]);
+}, [tag("示例", "plain"), tag("今日简报", "accent"), el("span", { text: "刷新今日简报" })]);
 dailyBriefExample.dataset.requiresAccount = "true";
 dailyBriefExample.appendChild(el("span", { class: "utility-lock", title: "登录后可用" }, icon("lock", 14)));
 $("examples").appendChild(dailyBriefExample);
 
 function dailyBriefText(brief) {
   const events = (brief.events_today || []).map((e) => `${fmtDTText(e.start)} ${e.title}`);
-  const due = (brief.due_reminders || []).map((n) => `${fmtDTText(n.fire_at)} event#${n.event_id}`);
-  const upcoming = (brief.upcoming_reminders || []).map((n) => `${fmtDTText(n.fire_at)} event#${n.event_id}`);
+  const due = (brief.due_reminders || []).map((n) => `${fmtDTText(n.fire_at)} 提醒`);
+  const upcoming = (brief.upcoming_reminders || []).map((n) => `${fmtDTText(n.fire_at)} 提醒`);
   const suggestions = (brief.top_suggestions || []).map((s) => s.text);
   const section = (label, rows) => `${label}${rows.length ? "：" + rows.join("；") : "：无"}`;
   return [
@@ -4624,7 +4664,7 @@ async function guardedDestructive(opts) {
     const args = JSON.stringify(opts.args || {});
     const pending = await invoke("guard_request", { tool: opts.tool, args, now: nowParam() });
     const body = el("div", null, [
-      el("div", null, ["操作：", el("span", { class: "mono", text: pending.summary }), " ", tag("高危", "danger")]),
+      el("div", null, ["操作：", el("span", { class: "title", text: humanToolLabel(pending.tool) }), " ", tag("高危", "danger")]),
       el("div", { class: "preview", text: "后果预览：" + pending.preview }),
       el("div", { class: "fine", text: opts.note || "确认后签发一次性令牌，绑定这一次操作；令牌用后即焚。" }),
     ]);
@@ -4643,7 +4683,7 @@ async function requestWidgetDelete(definition) {
     const args = JSON.stringify({ widget_id: definition.id });
     const pending = await invoke("guard_request", { tool: "widget_delete", args, now: nowParam() });
     const body = el("div", null, [
-      el("div", null, ["操作：", el("span", { class: "mono", text: pending.summary }), " ", tag("高危", "danger")]),
+      el("div", null, ["操作：", el("span", { class: "title", text: humanToolLabel(pending.tool) }), " ", tag("高危", "danger")]),
       el("div", { class: "preview", text: "后果预览：" + pending.preview }),
       el("div", { class: "fine", text: "确认后签发一次性令牌，绑定此组件删除；令牌用后即焚。" }),
     ]);
@@ -5142,7 +5182,7 @@ async function refreshNotifs() {
       for (const n of due) {
         list.appendChild(el("div", { class: "due-item" }, [
           icon("bell", 16),
-          el("span", { class: "title", style: "font-weight:600;", text: evTitle[n.event_id] || ("event#" + n.event_id) }),
+          el("span", { class: "title", style: "font-weight:600;", text: evTitle[n.event_id] || "日程" }),
           el("span", { style: "color:var(--muted);font-size:.8125rem;" }, [
             `提前${n.lead_label}，应于 `, fmtDT(n.fire_at), " 提醒",
           ]),
@@ -5180,7 +5220,7 @@ async function refreshNotifs() {
         list.appendChild(el("div", { class: "notif-row" }, [
           el("span", { class: "when" }, fmtDT(n.fire_at)),
           el("div", { class: "grow" }, [
-            el("span", { class: "title", text: evTitle[n.event_id] || ("event#" + n.event_id) }),
+          el("span", { class: "title", text: evTitle[n.event_id] || "日程" }),
             st(s[0], s[1]),
             el("div", { class: "meta", text: [`提前${n.lead_label || "—"}`, (n.channels || []).map((c) => CH[c] || c).join(" + "), `#${n.id}`].filter(Boolean).join(" · ") }),
           ]),
@@ -5423,7 +5463,7 @@ async function refreshLedger() {
           [tag(ly[0], ly[1])],
           td(String(m.id), "num"),
           [m.summary],
-          td(m.source || "—", "mut"),
+          td(humanSourceLabel(m.source), "mut"),
           [fmtDT(m.created_at)],
           [el("span", { style: "display:flex;gap:6px;" }, [
             // F12 可编辑：目前只有语义记忆（fact）支持就地改写——其余层是
@@ -5548,7 +5588,7 @@ $("importFile").addEventListener("change", async (event) => {
     const args = JSON.stringify({ document: document_ });
     const pending = await invoke("guard_request", { tool: "data_import", args, now: nowParam() });
     const body = el("div", null, [
-      el("div", null, ["操作：", el("span", { class: "mono", text: pending.summary }), " ", tag("高危", "danger")]),
+      el("div", null, ["操作：", el("span", { class: "title", text: humanToolLabel(pending.tool) }), " ", tag("高危", "danger")]),
       el("div", { class: "preview", text: "后果预览：" + pending.preview }),
       el("div", { class: "fine", text: "确认后签发一次性令牌，绑定此次导入；令牌用后即焚。导入不会删除本机数据。" }),
     ]);
@@ -6438,7 +6478,7 @@ async function refreshGuard() {
     for (const t of ts) {
       const r = RISK[t.risk] || [t.risk, ""];
       list.appendChild(el("div", { class: "row" }, [
-        el("span", { class: "mono", text: t.name }),
+        el("span", { class: "title", text: humanToolLabel(t.name) }),
         el("div", { class: "grow" }),
         tag(r[0], r[1]),
       ]));
@@ -6447,7 +6487,7 @@ async function refreshGuard() {
     const sel = $("guardTool");
     const cur = sel.value;
     sel.textContent = "";
-    for (const t of ts) sel.appendChild(el("option", { value: t.name, text: t.name }));
+    for (const t of ts) sel.appendChild(el("option", { value: t.name, text: humanToolLabel(t.name) }));
     if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
     else if ([...sel.options].some((o) => o.value === "demo_delete")) sel.value = "demo_delete";
   } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", String(e))); }
@@ -6469,7 +6509,7 @@ async function refreshAudit() {
           td(String(r.id), "num"),
           [fmtDT(r.ts)],
           [tag(rk[0], rk[1])],
-          [el("span", { class: "mono", style: "font-size:.8125rem;", text: r.summary })],
+          [el("span", { class: "title", text: humanToolLabel(r.tool) })],
           [r.decision === "executed" ? tag("已执行", "ok") : tag("已拦截", "danger")],
           td(r.detail, "mut"),
         ];
@@ -6486,7 +6526,7 @@ function showGuardResult(ok, text) {
 function openGuardConfirm(p, showFine) {
   const rk = RISK[p.risk] || [p.risk, ""];
   const body = el("div", null, [
-    el("div", null, ["操作：", el("span", { class: "mono", text: p.summary }), " ", tag(rk[0], rk[1])]),
+    el("div", null, ["操作：", el("span", { class: "title", text: humanToolLabel(p.tool) }), " ", tag(rk[0], rk[1])]),
     el("div", { class: "preview", text: "后果预览：" + p.preview }),
     showFine ? el("div", { class: "fine", text: "确认后签发一次性令牌（5 分钟有效、绑定本操作、用后即焚）。" }) : null,
   ]);
@@ -6498,7 +6538,7 @@ function openGuardConfirm(p, showFine) {
       if (showFine) showGuardResult(r.ok, r.output); else toast(r.output, r.ok ? "ok" : "danger");
       refreshGuard();
     } catch (e) {
-      if (showFine) showGuardResult(false, String(e)); else toast(String(e), "danger");
+      if (showFine) showGuardResult(false, safeUserError(e, "这次操作没有执行，请重新确认。")); else toast(safeUserError(e), "danger");
       refreshAudit();
     }
   }, { icon: "shield" });
@@ -6565,7 +6605,7 @@ async function refreshToday() {
         tpDue.appendChild(el("div", { class: "tp-item" }, [
           el("span", { class: "sdot amber" }),
           el("div", { class: "grow" }, [
-            el("div", { text: evTitle[n.event_id] || ("event#" + n.event_id) }),
+            el("div", { text: evTitle[n.event_id] || "日程" }),
             el("div", { class: "t" }, [fmtDT(n.fire_at), ` · 提前${n.lead_label}`]),
           ]),
         ]));
@@ -6760,7 +6800,7 @@ $("llmSaveBtn").addEventListener("click", async () => {
     $("llmRow").title = summary;
     llmFormSeeded = false;
     refreshCloud();
-  } catch (e) { toast(String(e), "danger"); }
+  } catch (e) { toast(safeUserError(e, "云端配置未保存，请稍后重试。"), "danger"); }
   finally { $("llmSaveBtn").disabled = false; }
 });
 
@@ -6785,7 +6825,7 @@ $("llmTestBtn").addEventListener("click", async () => {
   } catch (e) {
     out.textContent = "";
     out.appendChild(el("div", { class: "llm-test danger" }, [
-      icon("alert", 15), el("span", { text: "测试失败：" + String(e) }),
+      icon("alert", 15), el("span", { text: "测试失败：" + safeUserError(e, "云端暂时不可用，请稍后重试。") }),
     ]));
   } finally { $("llmTestBtn").disabled = false; }
 });
@@ -6985,7 +7025,7 @@ async function submitSettingsLogin() {
     $("llmRow").title = summary;
     accountFormSeeded = false;
     refreshAccount(); refreshCloud(); refreshSyncConfig(); refreshSyncStatus();
-  } catch (e) { toast(String(e), "danger"); }
+  } catch (e) { toast(safeUserError(e, "云端配置未保存，请稍后重试。"), "danger"); }
   finally {
     accountAuthSubmitting = false;
     $("accountLoginBtn").disabled = false;
@@ -7025,8 +7065,9 @@ async function submitAccountGate() {
     $("accountGateConfirm").value = "";
     $("accountGateStatus").textContent = "身份已确认，正在进入账号空间…";
   } catch (e) {
-    const message = String(e);
-    if (registering && message.startsWith("账号已创建，但")) {
+    const rawMessage = String(e);
+    const message = safeUserError(e, registering ? "注册未完成，请检查网络后重试。" : "登录未完成，请检查网络后重试。");
+    if (registering && rawMessage.startsWith("账号已创建，但")) {
       setAccountGateMode("login");
       $("accountGatePass").value = "";
     }

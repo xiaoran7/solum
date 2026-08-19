@@ -289,7 +289,23 @@ fn resolve_time(text: &str) -> Option<(u32, u32)> {
     }
 
     // 24h "HH:MM".
-    if let Some(caps) = lazy_re!(r"\b(\d{1,2}):(\d{2})\b").captures(&lower) {
+    // Rust's Unicode-aware `\b` treats a Chinese character as a word
+    // character, so `今天22:08开会` has no boundary after `08`. Keep the
+    // numeric guard explicit: adjacent digits are invalid, other text is fine.
+    for caps in lazy_re!(r"(\d{1,2}):(\d{2})").captures_iter(&lower) {
+        let whole = caps.get(0).expect("clock match");
+        let before_digit = whole
+            .start()
+            .checked_sub(1)
+            .and_then(|i| lower.as_bytes().get(i))
+            .is_some_and(u8::is_ascii_digit);
+        let after_digit = lower
+            .as_bytes()
+            .get(whole.end())
+            .is_some_and(u8::is_ascii_digit);
+        if before_digit || after_digit {
+            continue;
+        }
         if let (Ok(mut h), Ok(m)) = (caps[1].parse::<u32>(), caps[2].parse::<u32>()) {
             if lower.contains("pm") && h < 12 {
                 h += 12;
@@ -571,6 +587,27 @@ mod tests {
     #[test]
     fn iso_datetime() {
         assert_eq!(p("2026-08-01 14:30 团建").start, dt(2026, 8, 1, 14, 30));
+    }
+
+    #[test]
+    fn cn_24h_clock_before_chinese_suffix() {
+        assert_eq!(p("今天22:08开会").start, dt(2026, 7, 6, 22, 8));
+    }
+
+    #[test]
+    fn english_clock_and_date_suffix() {
+        assert_eq!(p("today 22:08 meeting").start, dt(2026, 7, 6, 22, 8));
+        assert_eq!(p("2026-08-01 14:30团建").start, dt(2026, 8, 1, 14, 30));
+    }
+
+    #[test]
+    fn invalid_clock_is_rejected() {
+        let invalid = parse_datetime("今天25:99开会", now()).expect("date remains schedulable");
+        assert_eq!(invalid.start, dt(2026, 7, 6, 9, 0));
+        assert!(!invalid.explicit_time);
+        let adjacent = parse_datetime("今天123:45开会", now()).expect("date remains schedulable");
+        assert_eq!(adjacent.start, dt(2026, 7, 6, 9, 0));
+        assert!(!adjacent.explicit_time);
     }
 
     #[test]

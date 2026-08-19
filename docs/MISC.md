@@ -4,6 +4,12 @@
 
 ## 2026-08-19 Android 生产链路审计待办与仓库迁移缓存边界
 
+### 2026-08-19 修复轮：用户文案边界与 Android 生成项目路径
+
+本轮把底层错误与用户文案分成两层：前端 `safeUserError` 记录诊断信息但只展示网络/同步/确认等恢复动作；Guard 仍使用原始工具名和参数完成授权、令牌绑定与审计，展示层只显示用户动作。台账来源保留“聊天记录/日程/固定提醒”等可追溯类别，内部 `event#` 只留在实现与测试。
+
+Android 生成目录里的 `tauri.settings.gradle` 曾指向已迁移的 `Desktop_export...\\PA`，导致实际 Release 合并的插件 manifest 可能来自旧仓。交付前必须重新运行 Tauri Android 初始化/构建，使 `solum-alarm` 项目目录指向当前 `D:\\ClaudeSpace\\Project\\solum\\crates\\solum-alarm\\android`，再从 APK manifest 验证 `AlarmReceiver`；不能用源文件存在替代包内证据。
+
 本轮把 Android 模拟器审计发现和真机尚未验证的生产路径集中写入 `docs/TODO.md`，状态按“待验证 / 已通过 / 已复现 / 受阻”维护。真机使用现有 `dev.solum.app` 0.2.6，不卸载、不清数据、不删除用户事件或记忆；生产服务只做只读状态核验和客户端正常业务请求，不因“使用生产版本测试”推导出部署授权。
 
 真机补测新增三条需要优先回收的发布问题：`app_info` 调用出现 `AppState` 未注册错误；`HH:MM` 后接中文时刻会被解析成默认 09:00；0.2.6 安装包的合并 manifest 未列出 `dev.solum.alarm.AlarmReceiver`，所以系统虽持有 exact alarm，21:40 到点却没有 QA 通知。后两项都不能用“Rust/AlarmManager 代码看起来正确”替代生产 APK 证据。
