@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+- **文档入口收敛**：`docs/README.md` 只保留 canonical 文档导航与 0.2.8 当前验证边界，明确旧设备证据不能替代新 APK 覆盖安装和提醒 E2E。
+
 - **Solum 0.2.8（Android versionCode 1018）——修复生产链路中确认的文案、时间解析与 Android 发布输入问题。** Android UI 将账号、云端、同步和 Guard 失败映射为可重试的人话，详细异常只保留在诊断日志；Guard、台账和 guest 首页不再展示内部命令、风险名、`event#` 或无标记示例。Rust `HH:MM` 解析改用数字邻接保护，新增中文/英文/日期后缀/无效时间回归。重新生成 Android Gradle 输入以指向当前仓库的 `solum-alarm`，Release manifest 应包含 `dev.solum.alarm.AlarmReceiver`；版本、构建号与 ABI 以 `tauri.conf.json` 和 APK 实际内容核对。真机、APK 签名/ABI、进程外到点通知和生产安装复测待工具链可用后记录，未将静态结果冒充通过。
 
 - **Solum 0.2.7（Android versionCode 1017）——校正 Android 与 iOS 应用图标。** 最终 Solum S 信号标记由右偏约 27 个设计像素移至画布视觉中心，并为源图、Android legacy/round/adaptive 与整套 iOS AppIcon 统一纯白背景；补齐从唯一 SVG 品牌源重建两端移动图标的脚本，清除 iOS 1024 图仍残留旧 PA 占位图的问题。像素边界验证：iOS 1024 与 Android xxxhdpi legacy 水平偏差均为 0 px，垂直偏差分别为 3.5 px 与 0.5 px；生成器重复运行无漂移，`cargo test --workspace` 共 350 项通过，Clippy `-D warnings`、fmt、Node 语法与 `git diff --check` 通过。当前未生成 Android/iOS 安装包，未做真机桌面图标走查。

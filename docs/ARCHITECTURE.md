@@ -246,7 +246,7 @@
 
 ### 3.11 BloomXP 互通（Phase 8；8.1/8.2 均于 2026-07-18 完成）
 
-> 背景：用户同时运营 BloomXP（学习打卡全栈 App，Spring Boot + React，自有 VPS，多用户产品；仓库 `D:\ClaudeSpace\Project\Desktop_export_2026-07-13\BloomXP\`）。双向打通的价值已确认：Solum 拿 BloomXP 的课表/任务/打卡数据能更懂用户；BloomXP 拿 Solum 的日程/状态派生事实能更好地辅助学习规划。为此把 §4 的隐私原则从"一刀切不出本地"细化为三级分级（见 §4 第 1/5 条），这是一次**有意的原则调整**，不是违规。
+> 背景：用户同时运营 BloomXP（学习打卡全栈 App，Spring Boot + React，自有 VPS，多用户产品；当前仓库 `D:\ClaudeSpace\Project\bloom-xp\`）。双向打通的价值已确认：Solum 拿 BloomXP 的课表/任务/打卡数据能更懂用户；BloomXP 拿 Solum 的日程/状态派生事实能更好地辅助学习规划。为此把 §4 的隐私原则从"一刀切不出本地"细化为三级分级（见 §4 第 1/5 条），这是一次**有意的原则调整**，不是违规。
 
 **数据分级（本节是分级的唯一权威定义）**：
 
