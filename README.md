@@ -197,7 +197,7 @@ solum sync-status    # 查看配置与本机设备标识
 
 客户端现已启用“登录即恢复”：首台设备随机生成同步主密钥，并用账号密码与不可变 user UUID 在本地导出的包装密钥生成恢复信封；新设备登录同一账号后自动解开信封，无需再填写独立同步密码。就同步数据而言，服务器只保存包装后的密钥与业务密文，拿到数据库或 access token 也不能读取同步正文。新注册密码按原始输入精确处理；旧 `password_version=1` 账号先做精确校验，仅在输入确实含首尾空白时回退历史裁剪校验，并保持 v1，直到未来显式改密同时重包恢复信封。旧 guest 数据不会自动归入登录账号。
 
-Windows 独立监控应用位于 `D:\ClaudeSpace\benefit-monitor`，双击 `Start-BenefitMonitor.cmd` 后在浏览器打开 `http://127.0.0.1:17321/`。页面分别配置织境账号、Solum 账号服务器和同步中继；两套账号都会自动获取、保存、刷新 access/refresh token。密码与会话令牌由 Windows 当前用户 DPAPI 加密保存在 `%LOCALAPPDATA%\BenefitMonitor\secrets.dat`，页面/API 不回显。应用预置三个织境渠道，可分别启用检测和恢复通知，也可新增织境渠道 ID 或通用 HTTP JSON 检测。
+Windows 独立监控应用位于 `D:\ClaudeSpace\Project\Utilities\benefit-monitor`，双击 `Start-BenefitMonitor.cmd` 后在浏览器打开 `http://127.0.0.1:17321/`。页面分别配置织境账号、Solum 账号服务器和同步中继；两套账号都会自动获取、保存、刷新 access/refresh token。密码与会话令牌由 Windows 当前用户 DPAPI 加密保存在 `%LOCALAPPDATA%\BenefitMonitor\secrets.dat`，页面/API 不回显。应用预置三个织境渠道，可分别启用检测和恢复通知，也可新增织境渠道 ID 或通用 HTTP JSON 检测。
 
 应用持久化每路上次状态，首次启动只建立基线，只有从非正常恢复到正常才通知；Solum 暂时不可达时保留待发事件并在下一轮重试。配置和状态保存在 `%LOCALAPPDATA%\BenefitMonitor`。旧的 `D:\ClaudeSpace\check-gptplus.ps1` 仍保留为单渠道命令行兼容入口。
 
