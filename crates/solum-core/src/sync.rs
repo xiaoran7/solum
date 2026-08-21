@@ -76,6 +76,22 @@ pub struct SyncOutcome {
     /// was not complete**; the device needs a fresh full copy from a peer
     /// (export → import) rather than more incremental rounds.
     pub history_gap: bool,
+    /// Local ops that could not be uploaded this round and were left behind:
+    /// the relay permanently refused the push (quota, revoked device), or a
+    /// single op exceeded the blob cap and was parked. The pull half still
+    /// ran — that is the whole point of counting instead of failing. Non-zero
+    /// means this device is falling behind on **uploading**; the reason is in
+    /// [`Self::push_block`] and, durably, under [`PUSH_BLOCKED_KEY`].
+    pub push_skipped: usize,
+    /// Why the push half did not finish this round, in user-facing language.
+    /// `None` on a clean round. Also recorded durably (cleared by the next
+    /// successful push) so a background ticker failure is not the only trace.
+    pub push_block: Option<String>,
+    /// A *transient* push failure (network, timeout, server 5xx) that ended
+    /// the push half early. Not durable — the same blob can succeed next
+    /// round, so it must not sit in the sticky status view next to problems
+    /// that need a human. The pull half still ran; that is the point.
+    pub push_failed: Option<String>,
 }
 
 // ---- config -------------------------------------------------------------------
@@ -356,7 +372,10 @@ impl HttpRecoveryEnvelopeTransport {
             ureq::Error::Status(code, _) => {
                 CoreError::Invalid(format!("同步密钥恢复服务暂时不可用（{code}）"))
             }
-            other => CoreError::Invalid(format!("无法连接同步密钥恢复服务：{other}")),
+            other => CoreError::Invalid(format!(
+                "无法连接同步密钥恢复服务：{}",
+                humanize_transport_error(&other)
+            )),
         }
     }
 }
@@ -652,6 +671,10 @@ enum RelayAuth {
 
 enum RelayRequestError {
     Unauthorized,
+    /// The server answered and permanently refused this request (quota,
+    /// revoked device). Retrying — now or after a token refresh — cannot
+    /// change the answer; the caller should stop this half-round.
+    Permanent(String),
     Other(String),
 }
 
@@ -659,8 +682,99 @@ impl std::fmt::Display for RelayRequestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unauthorized => f.write_str("认证失败"),
+            Self::Permanent(message) => f.write_str(message),
             Self::Other(message) => f.write_str(message),
         }
+    }
+}
+
+/// Best-effort read of the relay's machine-readable refusal code from an
+/// error response body (`{"error":"storage_quota_exceeded"}`) — used only to
+/// make the human message precise; an unreadable body degrades to the empty
+/// string, never to a failure.
+fn relay_error_code(resp: ureq::Response) -> String {
+    resp.into_string()
+        .ok()
+        .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+        .and_then(|v| v.get("error").and_then(|c| c.as_str()).map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// True if any error in the cause chain is an io error of `kind`. ureq wraps
+/// its agent-level deadlines as io errors somewhere down the chain, so this
+/// is how a timeout is recognized without matching brittle message strings.
+fn chain_has_io_kind(err: &(dyn std::error::Error + 'static), kind: std::io::ErrorKind) -> bool {
+    let mut current = Some(err);
+    while let Some(e) = current {
+        if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+            if io_err.kind() == kind {
+                return true;
+            }
+        }
+        current = e.source();
+    }
+    false
+}
+
+/// Turn a ureq transport-layer error into one line of Chinese a user can act
+/// on. The relay's own status codes are handled elsewhere; this covers the
+/// road there: DNS, TCP connect, the TLS handshake, and timeouts.
+///
+/// The TLS case is the one that matters (2026-08 真机同步故障): a connection
+/// cut *during the handshake* surfaces in ureq 2.12 as `ConnectionFailed` with
+/// message "tls connection init failed", whose raw English text ("unexpected
+/// end of file" / connection reset) told the user nothing. Live probing
+/// (2026-08-21) showed the cut is *server-side* fingerprint filtering —
+/// rustls' no-GREASE ClientHello is RST-ed while browser-grade ones pass, from
+/// any network path — so the message points there, and never at disabling
+/// certificate verification.
+fn humanize_transport_error(error: &ureq::Error) -> String {
+    match error {
+        ureq::Error::Status(code, _) => format!("服务器返回 {code}"),
+        ureq::Error::Transport(t) => {
+            if chain_has_io_kind(t, std::io::ErrorKind::TimedOut) {
+                return "同步请求超时".to_string();
+            }
+            let detail = t.message().unwrap_or("");
+            match t.kind() {
+                ureq::ErrorKind::Dns => {
+                    "无法解析同步服务器地址（DNS 解析失败），请检查网络连接".to_string()
+                }
+                ureq::ErrorKind::ConnectionFailed if detail.contains("tls") => {
+                    "TLS 握手失败：连接在加密握手阶段被对端或中间设备切断，或证书校验未通过。\
+                     若浏览器能打开同一地址而这里不行，通常是服务器侧对该域名的 TLS 拦截\
+                     （例如云厂商对未备案域名的合规阻断），需要从服务器侧解决"
+                        .to_string()
+                }
+                ureq::ErrorKind::ConnectionFailed => {
+                    "无法连接同步服务器，请检查网络后重试".to_string()
+                }
+                _ => format!("网络错误: {error}"),
+            }
+        }
+    }
+}
+
+/// The statuses the transport classifies as permanent push refusals: the same
+/// bytes re-sent next round get the same answer, so retrying them is the
+/// wedge this classification exists to break. Server codes per
+/// postgres-server.js / solum-cloud: 400 invalid request (legacy relay on an
+/// unusable blob), 403 `device_revoked`, 413 too large, 429
+/// `device_limit_exceeded`, 507 `storage_quota_exceeded`. Everything else —
+/// timeouts, resets, 5xx — can plausibly succeed next round and stays
+/// retryable.
+fn permanent_push_status(code: u16) -> bool {
+    matches!(code, 400 | 403 | 413 | 429 | 507)
+}
+
+/// Human message for those permanent refusals (see `permanent_push_status`).
+fn permanent_push_message(code: u16, server_code: &str) -> String {
+    match (code, server_code) {
+        (507, _) => "同步服务器存储配额已满（507）".to_string(),
+        (403, "device_revoked") => "本设备已被同步服务器撤销（403）".to_string(),
+        (403, _) => "同步服务器拒绝本设备（403）".to_string(),
+        (429, _) => "同步服务器设备数已达上限（429）".to_string(),
+        _ => format!("同步服务器拒绝推送（{code}）"),
     }
 }
 
@@ -699,6 +813,7 @@ impl HttpTransport {
         match &self.auth {
             RelayAuth::Legacy(token) => send(token).map_err(|e| match e {
                 RelayRequestError::Unauthorized => CoreError::Invalid("同步服务器认证失败".into()),
+                RelayRequestError::Permanent(message) => CoreError::SyncPushRejected(message),
                 RelayRequestError::Other(message) => {
                     CoreError::Invalid(format!("同步服务器请求失败: {message}"))
                 }
@@ -715,6 +830,11 @@ impl HttpTransport {
                         send(&session.access_token).map_err(|e| {
                             CoreError::Invalid(format!("刷新账号后重试同步请求失败: {e}"))
                         })
+                    }
+                    Err(RelayRequestError::Permanent(message)) => {
+                        // A refusal that has nothing to do with the token must
+                        // not spend (and rotate) the refresh token on it.
+                        Err(CoreError::SyncPushRejected(message))
                     }
                     Err(RelayRequestError::Other(message)) => {
                         Err(CoreError::Invalid(format!("同步服务器请求失败: {message}")))
@@ -737,7 +857,17 @@ impl SyncTransport for HttpTransport {
                     .send_bytes(blob)
                     .map_err(|error| match error {
                         ureq::Error::Status(401, _) => RelayRequestError::Unauthorized,
-                        other => RelayRequestError::Other(other.to_string()),
+                        // Quota / revocation / size answers are permanent: the
+                        // same blob re-sent next round gets the same refusal.
+                        // Classifying them lets the driver skip the push half
+                        // instead of wedging on it forever.
+                        ureq::Error::Status(code, resp) if permanent_push_status(code) => {
+                            RelayRequestError::Permanent(permanent_push_message(
+                                code,
+                                &relay_error_code(resp),
+                            ))
+                        }
+                        other => RelayRequestError::Other(humanize_transport_error(&other)),
                     })
             })?
             .into_json()
@@ -759,7 +889,7 @@ impl SyncTransport for HttpTransport {
                     .call()
                     .map_err(|error| match error {
                         ureq::Error::Status(401, _) => RelayRequestError::Unauthorized,
-                        other => RelayRequestError::Other(other.to_string()),
+                        other => RelayRequestError::Other(humanize_transport_error(&other)),
                     })
             })?
             .into_reader();
@@ -804,9 +934,14 @@ const PULLED_KEY: &str = "sync_pulled_seq";
 /// warning that only exists in one round's return value is a warning nobody
 /// sees.
 pub const HISTORY_GAP_KEY: &str = "sync_history_gap";
+/// Records why the push half of a sync round could not finish (relay quota
+/// exhausted, device revoked, oversized op parked). Durable for the same
+/// reason as [`HISTORY_GAP_KEY`] — background sync only eprintlns, and the
+/// next successful push clears it, so it never outlives the problem.
+pub const PUSH_BLOCKED_KEY: &str = "sync_push_blocked";
 /// Keep enough room below the relay's 8 MiB hard limit for transport framing
-/// and future protocol fields. A single oversized local row fails loudly
-/// instead of blocking every later operation behind it.
+/// and future protocol fields. A single oversized local row is parked (see
+/// `hold_push_op`) instead of blocking every later operation behind it.
 const MAX_PUSH_BLOB_BYTES: usize = 7 * 1024 * 1024;
 const MAX_PUSH_OPS: i64 = 256;
 
@@ -831,8 +966,18 @@ pub fn sync_once(
     // Push local ops in bounded encrypted blobs. A backlog can grow far past
     // the relay's request cap (especially with health samples), so advance the
     // cursor only after each individual blob is accepted.
+    //
+    // A permanent refusal must not wedge the device: before the poison-pill
+    // handling, a relay 507/403 (or one oversized op) returned Err out of
+    // `sync_once` — and since push runs *before* pull, the device not only
+    // retried the same doomed upload every round forever, it also never
+    // reached the pull half, so it stopped receiving its peers' data too.
+    // The pull side solved the same shape by parking bad blobs; here the
+    // equivalent is skipping the rest of the push half, counting what was
+    // left behind, and recording why durably.
     let mut pushed_cursor = cursor(store, PUSHED_KEY)?;
-    loop {
+    let mut push_block: Option<String> = None;
+    'push: loop {
         let ops = store.local_ops_after_limited(pushed_cursor, MAX_PUSH_OPS)?;
         if ops.is_empty() {
             break;
@@ -853,10 +998,22 @@ pub fn sync_once(
                 if blob.len() > MAX_PUSH_BLOB_BYTES {
                     batch_ops.pop();
                     if batch_ops.is_empty() {
-                        return Err(CoreError::Invalid(format!(
+                        // One op alone exceeds the cap: it can never be
+                        // uploaded. Failing used to stop every later op behind
+                        // it forever. Park it (the oplog row itself is kept,
+                        // so a future build with a larger cap or compression
+                        // can still find it) and move the cursor past it —
+                        // the push-side mirror of `hold_bad_blob`.
+                        let reason = format!(
                             "单条同步变更超过 {} MiB，无法安全上传",
                             MAX_PUSH_BLOB_BYTES / 1024 / 1024
-                        )));
+                        );
+                        store.hold_push_op(*id, op, &reason)?;
+                        pushed_cursor = *id;
+                        store.set_sync_state(PUSHED_KEY, &pushed_cursor.to_string())?;
+                        outcome.push_skipped += 1;
+                        pos += 1;
+                        continue;
                     }
                     break;
                 }
@@ -864,22 +1021,61 @@ pub fn sync_once(
                 pos += 1;
             }
 
+            if batch_ops.is_empty() {
+                continue;
+            }
             let count = batch_ops.len();
             let batch = SyncBatch {
                 device: device.clone(),
                 ops: batch_ops,
             };
             let blob = encrypt(&key, serde_json::to_string(&batch)?.as_bytes())?;
-            transport.push(&device, &blob)?;
-            store.set_sync_state(PUSHED_KEY, &last_id.to_string())?;
-            pushed_cursor = last_id;
-            outcome.pushed += count;
+            match transport.push(&device, &blob) {
+                Ok(_) => {
+                    store.set_sync_state(PUSHED_KEY, &last_id.to_string())?;
+                    pushed_cursor = last_id;
+                    outcome.pushed += count;
+                    // A successful upload is the precise proof that the relay
+                    // accepts us again — the moment a stale push-block marker
+                    // loses its truth. Clearing here (not "any round that
+                    // finished") keeps the marker honest across a round that,
+                    // say, never reached the server at all.
+                    store.clear_sync_state(PUSH_BLOCKED_KEY)?;
+                }
+                Err(CoreError::SyncPushRejected(reason)) => {
+                    // The relay said no and will keep saying no this round.
+                    // Count everything left behind (the failed batch plus the
+                    // rest of the backlog) so "skipped" is a real number, then
+                    // go pull — receiving is exactly what must keep working.
+                    outcome.push_skipped += store.local_ops_count_after(pushed_cursor)? as usize;
+                    push_block = Some(reason);
+                    break 'push;
+                }
+                // Transient failure (network, timeout, 5xx): the same blob can
+                // genuinely succeed next round, so it stays queued and nothing
+                // durable is recorded. But it used to abort the whole round —
+                // which also cancelled the pull half, so a flaky *upload* path
+                // made the device stop *receiving*. Skip the rest of the push
+                // half and let the pull half do what it still can.
+                Err(e) => {
+                    outcome.push_failed = Some(match e {
+                        CoreError::Invalid(message) => message,
+                        other => other.to_string(),
+                    });
+                    break 'push;
+                }
+            }
         }
 
         if ops.len() < MAX_PUSH_OPS as usize {
             break;
         }
     }
+
+    if let Some(reason) = &push_block {
+        store.set_sync_state(PUSH_BLOCKED_KEY, reason)?;
+    }
+    outcome.push_block = push_block;
 
     // Pull + merge everyone else's.
     let since = cursor(store, PULLED_KEY)?;
@@ -1255,6 +1451,248 @@ pub(crate) mod tests {
         let again = sync_once(&store, &relay, &cfg).unwrap();
         assert_eq!(again.pulled_blobs, 0);
         assert_eq!(again.bad_blobs, 0);
+    }
+
+    /// A relay that permanently refuses every push — quota exhausted, device
+    /// revoked — while pulls keep working. Before the poison-pill handling a
+    /// refusal aborted the whole round, and since push runs before pull the
+    /// device stopped *receiving* too: one full answer from the server and the
+    /// device went permanently deaf and mute. `transient` switches it to a
+    /// plain network-style failure instead, for the retryable-error path.
+    struct RefusingTransport {
+        refuse: std::sync::atomic::AtomicBool,
+        transient: std::sync::atomic::AtomicBool,
+        rows: Mutex<Vec<(i64, String, String)>>,
+    }
+    impl RefusingTransport {
+        fn push_blob(&self, device: &str, blob_b64: String) {
+            let mut rows = self.rows.lock().unwrap();
+            let seq = rows.len() as i64 + 1;
+            rows.push((seq, device.to_string(), blob_b64));
+        }
+    }
+    impl Default for RefusingTransport {
+        fn default() -> Self {
+            Self {
+                refuse: std::sync::atomic::AtomicBool::new(true),
+                transient: std::sync::atomic::AtomicBool::new(false),
+                rows: Mutex::new(Vec::new()),
+            }
+        }
+    }
+    impl SyncTransport for RefusingTransport {
+        fn push(&self, _device: &str, _blob: &[u8]) -> Result<i64> {
+            if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
+                if self.transient.load(std::sync::atomic::Ordering::SeqCst) {
+                    Err(CoreError::Invalid("同步服务器请求失败: 连接超时".into()))
+                } else {
+                    Err(CoreError::SyncPushRejected(
+                        "同步服务器存储配额已满（507）".into(),
+                    ))
+                }
+            } else {
+                Ok(0)
+            }
+        }
+        fn pull(&self, since: i64, _device: &str) -> Result<Vec<PulledBlob>> {
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(seq, _, _)| *seq > since)
+                .map(|(seq, dev, b64)| PulledBlob {
+                    seq: *seq,
+                    device: dev.clone(),
+                    blob_b64: b64.clone(),
+                })
+                .collect())
+        }
+    }
+
+    #[test]
+    fn a_permanent_push_refusal_skips_the_push_half_but_still_pulls() {
+        let cfg = test_cfg();
+        let key = cfg.key_bytes().unwrap();
+
+        // A peer blob waiting on the relay — the data this device must not
+        // lose access to just because its own uploads are refused.
+        let peer = Store::open_in_memory().unwrap();
+        peer.insert_event(&sample_event("对端的数据"), None)
+            .unwrap();
+        let peer_ops = peer.local_ops_after(0).unwrap();
+        let peer_batch = SyncBatch {
+            device: "peer".into(),
+            ops: peer_ops.into_iter().map(|(_, op)| op).collect(),
+        };
+        let relay = RefusingTransport::default();
+        relay.push_blob(
+            "peer",
+            B64.encode(
+                encrypt(&key, serde_json::to_string(&peer_batch).unwrap().as_bytes()).unwrap(),
+            ),
+        );
+
+        let store = Store::open_in_memory().unwrap();
+        add_event_with_reminder(&store, "本机推不出去的会议");
+
+        let out = sync_once(&store, &relay, &cfg).unwrap();
+
+        assert!(out.push_block.is_some(), "the refusal must be reported");
+        assert_eq!(out.pushed, 0, "nothing can upload against a 507");
+        assert!(
+            out.push_skipped > 0,
+            "the left-behind backlog must be counted"
+        );
+        // The whole point of skipping instead of failing: the pull half ran.
+        assert!(out.applied > 0, "got applied={}", out.applied);
+        assert!(store
+            .list_events()
+            .unwrap()
+            .iter()
+            .any(|e| e.title == "对端的数据"));
+        // Durable, not just this round's return value — background sync only
+        // logs, so a marker nobody persists is a marker nobody sees.
+        assert!(store.sync_state(PUSH_BLOCKED_KEY).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_transient_push_failure_still_pulls_and_leaves_no_sticky_marker() {
+        let cfg = test_cfg();
+        let key = cfg.key_bytes().unwrap();
+
+        let peer = Store::open_in_memory().unwrap();
+        peer.insert_event(&sample_event("对端的数据"), None)
+            .unwrap();
+        let peer_ops = peer.local_ops_after(0).unwrap();
+        let peer_batch = SyncBatch {
+            device: "peer".into(),
+            ops: peer_ops.into_iter().map(|(_, op)| op).collect(),
+        };
+        let relay = RefusingTransport::default();
+        relay
+            .transient
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        relay.push_blob(
+            "peer",
+            B64.encode(
+                encrypt(&key, serde_json::to_string(&peer_batch).unwrap().as_bytes()).unwrap(),
+            ),
+        );
+
+        let store = Store::open_in_memory().unwrap();
+        add_event_with_reminder(&store, "本机的会议");
+
+        let out = sync_once(&store, &relay, &cfg).unwrap();
+
+        assert!(out.push_failed.is_some(), "the failure must be reported");
+        assert!(out.push_block.is_none(), "transient is not a refusal");
+        // The queue stays queued for the next round…
+        assert!(out.push_skipped == 0 && out.pushed == 0);
+        assert_eq!(
+            cursor(&store, PUSHED_KEY).unwrap(),
+            0,
+            "the push cursor must stay queued for the next round"
+        );
+        // …nothing durable is recorded — a network blip must not sit in the
+        // sticky status view next to problems that need a human.
+        assert_eq!(store.sync_state(PUSH_BLOCKED_KEY).unwrap(), None);
+        // And the pull half still ran.
+        assert!(out.applied > 0);
+    }
+
+    #[test]
+    fn a_backlog_of_only_oversized_ops_terminates_without_pushing_empty_blobs() {
+        let cfg = test_cfg();
+        let relay = MemTransport::default();
+        let store = Store::open_in_memory().unwrap();
+
+        let mut a = sample_event("超大甲");
+        a.title = "巨".repeat(2_500_000);
+        store.insert_event(&a, None).unwrap();
+        let mut b = sample_event("超大乙");
+        b.title = "巨".repeat(2_500_000);
+        store.insert_event(&b, None).unwrap();
+
+        let out = sync_once(&store, &relay, &cfg).unwrap();
+
+        assert_eq!(out.push_skipped, 2);
+        assert_eq!(out.pushed, 0);
+        // MemTransport records every push as a row — an empty list means not
+        // even one (empty) blob was offered. A real relay 400s on an empty
+        // body; only this test's guard keeps that from ever being attempted.
+        assert!(relay.rows.lock().unwrap().is_empty());
+        // The cursor sits past both parked ops, so nothing re-parks next round.
+        assert_eq!(store.sync_state(PUSHED_KEY).unwrap(), Some("2".into()));
+        let again = sync_once(&store, &relay, &cfg).unwrap();
+        assert_eq!((again.pushed, again.push_skipped), (0, 0));
+    }
+
+    /// Locks the status-code table itself: 401 must stay out of the permanent
+    /// set (it belongs to the token-refresh path), and every deterministic
+    /// refusal the servers emit must be in it.
+    #[test]
+    fn permanent_push_statuses_are_exactly_the_deterministic_refusals() {
+        for code in [400, 403, 413, 429, 507] {
+            assert!(permanent_push_status(code), "{code} must be permanent");
+        }
+        for code in [401, 404, 408, 500, 502, 503] {
+            assert!(!permanent_push_status(code), "{code} must stay retryable");
+        }
+    }
+
+    #[test]
+    fn a_later_clean_round_clears_the_push_block_marker() {
+        let cfg = test_cfg();
+        let relay = RefusingTransport::default();
+        let store = Store::open_in_memory().unwrap();
+        add_event_with_reminder(&store, "先被拒绝的");
+
+        sync_once(&store, &relay, &cfg).unwrap();
+        assert!(store.sync_state(PUSH_BLOCKED_KEY).unwrap().is_some());
+
+        // Quota raised / device re-approved: the very next round must both
+        // upload and clear the stale marker — it must not outlive its cause
+        // and cry wolf next to the genuinely sticky history-gap warning.
+        relay
+            .refuse
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let again = sync_once(&store, &relay, &cfg).unwrap();
+        assert!(again.pushed > 0);
+        assert!(again.push_block.is_none());
+        assert_eq!(store.sync_state(PUSH_BLOCKED_KEY).unwrap(), None);
+    }
+
+    #[test]
+    fn an_oversized_single_op_is_parked_and_the_backlog_still_uploads() {
+        let cfg = test_cfg();
+        let relay = MemTransport::default();
+        let store = Store::open_in_memory().unwrap();
+
+        // One row whose payload alone exceeds the blob cap, with ordinary ops
+        // behind it — the shape that used to `return Err` and strand every
+        // later op behind it forever.
+        let mut huge = sample_event("超大单条");
+        huge.title = "巨".repeat(2_500_000); // ~7.5 MB UTF-8 > the 7 MiB cap
+        store.insert_event(&huge, None).unwrap();
+        add_event_with_reminder(&store, "后面正常的");
+
+        let out = sync_once(&store, &relay, &cfg).unwrap();
+
+        assert_eq!(out.push_skipped, 1, "the oversized op is counted");
+        assert_eq!(store.push_hold_count().unwrap(), 1);
+        assert!(
+            out.push_block.is_none(),
+            "parking one oversized op is not a relay-level block"
+        );
+        assert!(
+            out.pushed >= 2,
+            "ops behind the parked one must still upload"
+        );
+        // The parked op stays parked — no re-reading, no re-parking loop.
+        let again = sync_once(&store, &relay, &cfg).unwrap();
+        assert_eq!((again.pushed, again.push_skipped), (0, 0));
+        assert_eq!(store.push_hold_count().unwrap(), 1);
     }
 
     /// A relay that has swept history below this device's cursor. Reproduces

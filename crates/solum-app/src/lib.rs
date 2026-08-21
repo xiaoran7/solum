@@ -2948,6 +2948,14 @@ struct SyncStatusDto {
     /// overflow. Dropped > 0 means recovery material was discarded.
     bad_blobs_held: i64,
     bad_blobs_dropped: i64,
+    /// Why the push half of the last round could not finish (relay quota,
+    /// revoked device). Sticky until a clean push clears it — same reasoning
+    /// as `history_gap`: background failures only log, so the status view is
+    /// where "my changes are not reaching my other devices" must be visible.
+    push_block: Option<String>,
+    /// Local ops parked as too large to ever upload; data stays in the local
+    /// oplog but no peer will receive it.
+    push_holds: i64,
 }
 
 #[tauri::command]
@@ -2965,6 +2973,10 @@ fn sync_status(state: State<AppState>) -> CmdResult<SyncStatusDto> {
     let history_gap = store
         .sync_state(solum_core::sync::HISTORY_GAP_KEY)
         .map_err(core_err)?;
+    let push_block = store
+        .sync_state(solum_core::sync::PUSH_BLOCKED_KEY)
+        .map_err(core_err)?;
+    let push_holds = store.push_hold_count().map_err(core_err)?;
     drop(store);
     Ok(SyncStatusDto {
         configured: cfg.is_some(),
@@ -2973,6 +2985,8 @@ fn sync_status(state: State<AppState>) -> CmdResult<SyncStatusDto> {
         history_gap,
         bad_blobs_held: held,
         bad_blobs_dropped: dropped,
+        push_block,
+        push_holds,
     })
 }
 
@@ -3592,6 +3606,21 @@ fn ticker(app: tauri::AppHandle) {
                             "[sync] {} 个批次无法解密并已暂存（各设备 SOLUM_SYNC_KEY 是否一致？）",
                             r.bad_blobs
                         );
+                    }
+                    if let Some(reason) = &r.push_block {
+                        eprintln!(
+                            "[sync] 推送未完成：{reason}；本轮 {} 条本地变更未上传（拉取不受影响，下轮重试）",
+                            r.push_skipped
+                        );
+                        let _ = app.emit("solum-sync-push-block", reason.clone());
+                    } else if r.push_skipped > 0 {
+                        eprintln!(
+                            "[sync] {} 条本地变更因超过单条体积上限被滞留",
+                            r.push_skipped
+                        );
+                    }
+                    if let Some(reason) = &r.push_failed {
+                        eprintln!("[sync] 推送失败（{reason}），本轮只完成拉取，下轮重试");
                     }
                 }
                 Err(e) => eprintln!("[sync] 后台同步失败（下轮重试）: {e}"),

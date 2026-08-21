@@ -777,6 +777,25 @@ fn main() -> Result<()> {
                     r.bad_blobs
                 );
             }
+            // 推送被永久拒绝时必须说清「这轮不完整」——拉取照常进行，但本机
+            // 的变更没有上去，且下一轮大概率还是同样答案。
+            if let Some(reason) = &r.push_block {
+                println!(
+                    "   ⛔ 推送未完成：{reason}。本轮仍有 {} 条本地变更未上传（拉取不受影响），
+                           请先解决服务器侧问题，否则对端收不到本机的更新。",
+                    r.push_skipped
+                );
+            } else if r.push_skipped > 0 {
+                println!(
+                    "   ⚠ 有 {} 条本地变更因超过单条体积上限被滞留（数据仍在本地 oplog，等后续版本支持拆分/压缩后再上传）",
+                    r.push_skipped
+                );
+            }
+            if let Some(reason) = &r.push_failed {
+                println!(
+                    "   ⚠ 推送失败（{reason}），本轮只完成拉取，下轮自动重试。"
+                );
+            }
             // 无法解密的批次同样要报，包括被上限淘汰掉的——那是被丢弃的恢复材料。
             let (bad_held, bad_dropped) = o.bad_blob_stats().map_err(to_err)?;
             if bad_dropped > 0 {
@@ -816,6 +835,14 @@ fn main() -> Result<()> {
             let (bad_held, bad_dropped) = o.bad_blob_stats().map_err(to_err)?;
             if bad_held > 0 || bad_dropped > 0 {
                 println!("无法解密的批次：暂存 {bad_held} 个，已因超限丢弃 {bad_dropped} 个（核对各设备 SOLUM_SYNC_KEY）");
+            }
+            // 与缺口标记同理：持久化的推送阻塞只在同步那一轮打印一次是不够的。
+            if let Some(block) = o.sync_push_block().map_err(to_err)? {
+                println!("⛔ 推送受阻：{block}。本机变更未上传，对端暂时收不到本机的更新。");
+            }
+            let holds = o.push_hold_count().map_err(to_err)?;
+            if holds > 0 {
+                println!("⚠ 有 {holds} 条本地变更因超过单条体积上限被滞留，尚未上传到服务器。");
             }
         }
         Cmd::Persona => {

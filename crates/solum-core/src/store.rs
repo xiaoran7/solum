@@ -316,6 +316,17 @@ impl Store {
     /// Open (creating if needed) a store at `path` and run migrations.
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
+        // The desktop shell holds two long-lived connections to one database
+        // (`orch` and `sync_store`), so a write started by one can meet a
+        // write started by the other. SQLite's default busy timeout is zero:
+        // the losing side gets SQLITE_BUSY immediately. That error used to
+        // surface mid-`fire_due`, where the ticker's best-effort logging
+        // swallowed it — leaving a notification marked fired with no behavior
+        // log row, i.e. exactly the silent loss this store is not allowed to
+        // do. WAL keeps readers and writers from colliding; the timeout covers
+        // writer-vs-writer, which WAL does not. 5s is far above any write this
+        // schema performs and far below anything a user would notice.
+        conn.busy_timeout(std::time::Duration::from_millis(5_000))?;
         let store = Store { conn };
         store.migrate()?;
         Ok(store)
@@ -896,6 +907,21 @@ impl Store {
                 seq      INTEGER PRIMARY KEY,   -- relay sequence number
                 device   TEXT NOT NULL,
                 blob_b64 TEXT NOT NULL,
+                reason   TEXT NOT NULL,
+                held_at  TEXT NOT NULL
+            );
+
+            -- The push-side sibling of `sync_bad_blobs`: a locally-originated
+            -- op too large to ever upload (single row over the push-blob cap).
+            -- The oplog row itself is kept; this record only marks that the
+            -- push cursor moved past it, so the fact stays visible instead of
+            -- either wedging every later op behind it or silently skipping it.
+            CREATE TABLE IF NOT EXISTS sync_push_holds (
+                oplog_id INTEGER PRIMARY KEY,   -- references sync_oplog(id)
+                tbl      TEXT NOT NULL,
+                guid     TEXT NOT NULL,
+                hlc      TEXT NOT NULL,         -- kept so a future replay can
+                                                -- re-push in original order
                 reason   TEXT NOT NULL,
                 held_at  TEXT NOT NULL
             );
@@ -4057,6 +4083,47 @@ impl Store {
             .query_row("SELECT count(*) FROM sync_bad_blobs", [], |r| r.get(0))?)
     }
 
+    /// Park a locally-originated op that can never be uploaded (single row
+    /// over the push-blob cap). The oplog row itself is kept — this record
+    /// only marks that the push cursor moved past it, so a later build (larger
+    /// cap, compression) can still find the op and push it. `INSERT OR
+    /// REPLACE`: a crash between parking and advancing the cursor re-reads
+    /// the op next round and re-parks it, which must stay harmless.
+    pub fn hold_push_op(
+        &self,
+        oplog_id: i64,
+        op: &crate::sync::SyncOp,
+        reason: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO sync_push_holds(oplog_id, tbl, guid, hlc, reason, held_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%f', 'now'))",
+            params![oplog_id, op.tbl, op.guid, op.hlc, reason],
+        )?;
+        Ok(())
+    }
+
+    /// How many local ops this device has had to park as unuploadable.
+    /// Non-zero means one row is too big for the relay's request cap — the
+    /// data is still in the oplog, but no peer will receive it until a future
+    /// build can split or compress it.
+    pub fn push_hold_count(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("SELECT count(*) FROM sync_push_holds", [], |r| r.get(0))?)
+    }
+
+    /// Backlog size for status displays: locally-originated ops not yet
+    /// confirmed uploaded (push cursor not past them yet).
+    pub fn local_ops_count_after(&self, after: i64) -> Result<i64> {
+        let device = self.device_id()?;
+        Ok(self.conn.query_row(
+            "SELECT count(*) FROM sync_oplog WHERE origin = ?1 AND id > ?2",
+            params![device, after],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Park an op this build cannot apply. `INSERT OR IGNORE`: the same op can
     /// legitimately arrive twice (peer resend, cursor rewind), and holding it
     /// twice would replay it twice.
@@ -4691,6 +4758,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Writer-vs-writer collisions between the shell's two long-lived
+    /// connections (`orch`, `sync_store`) must wait, not error: with SQLite's
+    /// default zero timeout a losing write surfaced as SQLITE_BUSY mid-`fire_due`
+    /// and vanished into the ticker's best-effort logging, silently dropping
+    /// half of a reminder fire. If this value drifts back to 0, that loss
+    /// quietly comes back.
+    #[test]
+    fn open_sets_a_busy_timeout_so_writer_collisions_wait_instead_of_erroring() {
+        let dir = scratch("busy-timeout");
+        let store = Store::open(dir.join("solum.sqlite").to_str().unwrap()).unwrap();
+        let ms: i64 = store
+            .conn
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            ms, 5000,
+            "busy_timeout drifted from the configured 5s writer-wait"
+        );
+    }
+
+    /// A crash between parking an oversized op and advancing the push cursor
+    /// makes the next round re-read and re-park the same op. That must be a
+    /// no-op, not a growing pile of hold rows.
+    #[test]
+    fn hold_push_op_is_idempotent_per_oplog_id() {
+        let store = Store::open_in_memory().unwrap();
+        let op = crate::sync::SyncOp {
+            tbl: "events".into(),
+            guid: "e".repeat(32),
+            op: "upsert".into(),
+            payload: Some(r#"{"title":"超大"}"#.into()),
+            hlc: "2026-08-21T10:00:00.000".into(),
+            origin: "self".into(),
+        };
+        store.hold_push_op(7, &op, "单条超限").unwrap();
+        store.hold_push_op(7, &op, "单条超限").unwrap();
+        assert_eq!(store.push_hold_count().unwrap(), 1);
+        store.hold_push_op(8, &op, "单条超限").unwrap();
+        assert_eq!(store.push_hold_count().unwrap(), 2);
     }
 
     /// The P1 this guards: data committed but still living in the WAL must

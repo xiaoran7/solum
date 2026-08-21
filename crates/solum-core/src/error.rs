@@ -44,6 +44,14 @@ pub enum CoreError {
     /// reminder paths just like every optional external integration.
     #[error("email connector error: {0}")]
     Email(String),
+
+    /// The relay permanently refused a sync push — storage quota exhausted,
+    /// device revoked, device limit reached. Retrying within this round cannot
+    /// succeed, so `sync_once` skips the rest of the push half and still pulls;
+    /// a plain transport error must NOT use this variant, or a flaky network
+    /// would silently stop uploads.
+    #[error("sync push rejected: {0}")]
+    SyncPushRejected(String),
 }
 
 impl From<rusqlite::Error> for CoreError {

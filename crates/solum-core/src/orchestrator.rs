@@ -259,6 +259,17 @@ impl Orchestrator {
         self.store.sync_state(crate::sync::HISTORY_GAP_KEY)
     }
 
+    /// Why the push half of the last sync round could not finish, if it
+    /// could not. Cleared automatically by the next round that pushes cleanly.
+    pub fn sync_push_block(&self) -> Result<Option<String>> {
+        self.store.sync_state(crate::sync::PUSH_BLOCKED_KEY)
+    }
+
+    /// Local ops parked as too large to ever upload (see `hold_push_op`).
+    pub fn push_hold_count(&self) -> Result<i64> {
+        self.store.push_hold_count()
+    }
+
     /// This device's sync identity (shown in status output).
     pub fn sync_device_id(&self) -> Result<String> {
         self.store.device_id()
