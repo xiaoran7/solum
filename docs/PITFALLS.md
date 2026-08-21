@@ -8,11 +8,36 @@
 
 - **Android 构建/打包/真机**：08-19 restart 只退出进程 · 08-14 JNI 预编译跳过注入 / `Os.flock` 不存在 · 08-13 ndk 相对路径 / Release 输出被占用 · 08-12 Kotlin daemon 跨盘 · 08-11 arm64 flavor 配对 / vivo ADB 断连 / CSP nonce 拒内联 style · 07-21 打包三连坑（native-tls / 改名遗留生成文件 / PERL5LIB）· 07-20 改名两坑 · 07-14 构建五连坑 / AlarmManager 三连坑 · 07-12 Health Connect Kotlin 三连坑 · 07-07 Tauri Android 首建三连坑 / app_data_dir
 - **前端验证量具**：08-20 错误脱敏不只账号页 · 07-27 未显示面板零视口 · 07-20 details 几何失效 / offsetParent 对 fixed 恒真 / 后台标签冻结动画 / px 字号不随根字号 / 滚动量具视图切走失效 / 删节点遗留脚本调用 / 连续改状态再采样 · 07-19 hidden 被 display 压过 / harness 集合形状 / data URL 被拒 / 16×16 窗口 · 07-15 重构验证两坑
-- **同步/迁移/SQLite**：08-14 无快照增量不能靠留存回收 · 08-12 服务器隔离了客户端仍可能混库 · 07-20 加列漏触发器 payload / 迁移不在事务撞唯一索引 / 标量列 LWW 吃掉一半 / FK 级联不触发子表触发器 / 不同步表更易漏导出 / 未来表名占位符 · 07-19 合并循环 return Err = 同步永久卡死
+- **同步/迁移/SQLite**：08-21 push 侧毒丸（pull 侧 07-19 条目的孪生）/ 整仓搬迁后 target 缓存引用旧绝对路径 · 08-14 无快照增量不能靠留存回收 · 08-12 服务器隔离了客户端仍可能混库 · 07-20 加列漏触发器 payload / 迁移不在事务撞唯一索引 / 标量列 LWW 吃掉一半 / FK 级联不触发子表触发器 / 不同步表更易漏导出 / 未来表名占位符 · 07-19 合并循环 return Err = 同步永久卡死
 - **服务端/账号/PostgreSQL**：08-14 集成测试要全新空库 / 密码裁剪语义不可猜升级 / 限流键无限+同步 KDF 自成 DoS / 注册成功与本机初始化的部分成功 / 进程内 Mutex 护不了跨进程会话文件 · 08-13 FOR UPDATE 需表级 UPDATE 权限 / git archive CRLF / Node 测试并行 socket 假失败 / 并行测试改环境变量互相覆盖 · 08-12 relay 仪表盘 CORS
 - **安全审核修复期教训（07-21 系列）**：宽松断言给缺陷让路 · 跨进程共享可变文件要换数据结构 · 计数器加锁/rename 都不够 · spool 改造自己丢数据 · 复审打回六条 · 修复期五连坑 · 幂等 receipt 配按龄清理等于重开洞 · 把状态误当事件
 - **Windows/PowerShell/工具链**：08-12 PowerShell 5.1 UTF-8 与 JSON 编码 · 07-21 演示视频三坑 · 07-18 PowerShell round-trip 乱码 · 07-06 link.exe/cl.exe 不在 PATH
 - **时间解析/实体抽取（07-06 系列）**：时钟纳秒穿透 UI / 纯日期漏判 / 中文地点人名贪婪 / 规则抢答压制 LLM 兜底 / datetime-local 连续键入串段
+
+## 2026-08-21 真机同步 TLS EOF：疑因「本地 VPN fake-IP」被现场探针证伪，真凶是服务器侧按 TLS 指纹拦截
+
+- **现象**：Rust 客户端对 `https://solumsync.tannerlab.xyz` 报 TLS `unexpected end of file`，同设备浏览器却正常；TODO 与会话记录一直按「VPN fake-IP 适配 / 浏览器走系统代理而 ureq 直连」的假设挂账。
+- **排查**（scratch 探针项目，ureq 2.12.1 同款栈 + openssl 指纹矩阵）：
+  - 域名解析到 **8.148.11.79（阿里云北京）**，不是 fake-IP；本机 v2rayN/sing-box 在跑但 WinINET 系统代理是关的。
+  - 直连：TCP 三次握手成功，ClientHello 后被 RST（os error 10054）；走本地代理（境外出口）：变成 `unexpected end of file`——**换网络路径不解决**，只是错误形状变了。
+  - openssl 指纹矩阵定案：浏览器级 TLS 1.3 ClientHello（GREASE 齐全）**直连也通过**；rustls 式精简无 GREASE 的 TLS 1.3、以及一切 TLS ≤1.2 栈（Win10 schannel/curl）一律被 RST；对 `example.com` 或无 SNI 则全部放行 → 过滤器按 **SNI=真实 tannerlab.xyz 主机名 + 非浏览器级 ClientHello** 选择性掐断，与来源 IP 无关。
+  - 80 端口返回阿里云「Beaver」ICP 未备案拦截页（beian-block id=00000000005698695009），旁证是阿里云大陆节点的合规阻断在起作用（确切执行组件无法从外部区分，备选解释是源站前有 JA3 过滤 WAF）。
+- **结论**：不是客户端 bug，也不是本地网络问题。rustls 无法伪装浏览器指纹（不支持 GREASE），native-tls 在 Win10 上退到 schannel ≤TLS1.2 同样被掐，走代理也被掐（过滤器在服务器侧）——**客户端无解，只能把这类失败说成人话**（已做：HttpTransport 错误映射）。真正的修复在服务器侧：完成 tannerlab.xyz 的 ICP 备案，或把同步端点迁出阿里云大陆合规范围（香港/国际节点、已备案域名或前置 CDN）。建议先查阿里云控制台的合规通知。
+- **如何避免**：「浏览器行、程序不行」不要条件反射归因于本机代理分叉——先用最小同款栈探针拿到**完整错误链**，再用指纹矩阵对照（换 SNI/换 TLS 版本/换网络路径/裸 TCP），四组对照才能定位过滤器的判定维度。ureq 事实备查：环境变量代理需要非默认 feature `proxy-from-env`（公开 API 是 `AgentBuilder::try_proxy_from_env(bool)`；`Proxy::try_from_system()` 是 pub(crate)，且不读 NO_PROXY）。
+
+## 2026-08-21 整仓搬迁后 target 缓存引用旧绝对路径，`cargo test` 在构建脚本阶段就挂
+
+- **现象**：仓库从 `D:\ClaudeSpace\Project\Desktop_export_2026-07-13\PA\` 迁到现址后，`cargo test --workspace` 直接失败于 solum-app 的 build script：`failed to read plugin permissions: ...Desktop_export_2026-07-13\PA\target\debug\build\tauri-...\out\permissions\...（os error 3）`。TODO 里这条「受阻」挂了两天，因为报错看起来像 Tauri 配置问题而不是缓存问题。
+- **根因**：搬迁时把 23.8 GiB 的 `target/` 原样拷了过来。Tauri 的 build script 把自己的 OUT_DIR 绝对路径记进指纹/dep-info；这些文件里的旧路径已不存在，而 cargo 认为对应单元「fresh」不会重跑 build script，于是读权限文件时直接炸。全 target 有 3000 个文件引用旧路径——不是单点损坏，是整体污染。
+- **解决**：`cargo clean` 全删重建（重建后基线 353 项测试全绿）。没有尝试只清 `build/tauri-*` 的微创方案：污染面是全仓 dep-info，赌不起。
+- **如何避免**：**`target/` 视为一次性缓存，永远不随仓库搬家/备份迁移**；新机器或新路径上第一次构建前先确认没有旧路径残留（`rg -l "旧路径" target | wc -l`）。同类隐患：`gen/android/tauri.settings.gradle` 也是绝对路径生成文件（gitignored），裸 checkout 跑不了 gradle——已用 `scripts/gen-android-ci-settings.mjs` 解决。
+
+## 2026-08-21 push 侧毒丸：一次服务端永久拒绝 = 设备既推不出去也收不进来
+
+- **现象**：审计发现 pull 侧三层防护（坏 blob 暂存 + 隔离区 + 游标前进）在 push 侧完全没有对应物：单条超 7 MiB 的 op 直接 `return Err`；服务端 507（配额满）/403（设备撤销）是永久拒绝。
+- **根因**：`sync_once` 里 push 在 pull **之前**执行且任何 push 错误让整轮以 Err 结束、游标不动。于是同一批注定被拒的 blob 每轮重试，而 pull 半轮永远轮不到——设备表现为「永远同步失败」，实际是**上传被拒连带取消了接收**。这是 [2026-07-19「合并循环 return Err = 同步永久卡死」](#2026-07-19-合并循环-return-err--同步永久卡死) 同一形状的孪生缺陷，只是发生在反方向。
+- **解决**：永久拒绝（400/403/413/429/507）跳过剩余 push 半轮继续 pull，原因持久化 `meta.sync_push_blocked`（下次成功推送自动清除）；超大 op 暂存 `sync_push_holds`（只存 oplog 指针），游标照常前进；瞬时失败同样只跳过 push 半轮。详见 CHANGELOG 当日条目与 ARCHITECTURE §3.8。
+- **如何避免**：给「半轮失败」设计行为时先问一句：**另一半还跑不跑？** 凡是 push/pull 共用一轮的协议，单侧失败默认应该只作废本侧，除非有明确理由联动。
 
 ## 2026-08-20 前端错误脱敏不能只修账号页
 

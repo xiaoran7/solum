@@ -8,11 +8,11 @@
 
 ### P0 立即项
 
-- [ ] **待验证：真机同步 TLS `unexpected EOF` 根因。** 服务端链路全绿但 Rust 客户端对 solumsync 报 TLS EOF（疑 VPN fake-IP 适配），双设备 E2E 收敛因此始终无法验收。先做最小 TLS 诊断（rustls 错误链：SNI/ALPN/证书链/断开阶段），并给 HttpTransport 错误映射加「TLS 握手失败」人话提示——这是当前唯一挡住核心卖点的问题。
-- [ ] **待做：push 侧毒丸防护。** pull 侧已有坏 blob 暂存 + 隔离区三层防护，push 侧没有对应物：单条超限 op 直接 `return Err`，服务端 507 配额超限 / 403 设备撤销是永久拒绝——一旦发生整台设备表现为永远重试同步且再也收不到对端数据。应跳过不可重试的 push 半轮继续 pull，跳过计数可见。
-- [ ] **待做：SQLite 双连接补 `busy_timeout`。** orch 与 sync_store 两条长连接均未设置（默认 0），写撞车即报错且被 ticker 的 `unwrap_or_default` 静默吞掉；核查修正后的定性是 fire_due 半状态（已 mark_fired 未写行为日志）永久缺失 + 违背「丢失必须可见」原则。`Store::open` 一行修复。
-- [x] **已处理：公开仓泄露本机路径（本地侧）。** 根 README 两处 `D:\ClaudeSpace\...` 绝对路径已改为相对描述，tauri command 计数改为「100+」。**遗留**：origin/main 落后本地 16 提交，未推内容含生产账号名/真机型号/内网 URL；需在 AGENTS.md 补 remote 政策（gitea 权威仓、推 origin 前过公开边界清单），16 个提交先做 diff 级审计再定推送节奏（推送需用户当次授权）。
-- [ ] **待做：CI 补到真实开发路径。** CI 只配在 GitHub Actions，主推送目标 Gitea 无 `.gitea/workflows`，最近 16 个提交（含 0.2.5→0.2.8 四次发版）零自动化门禁覆盖；698 行 PostgreSQL 集成测试因 CI 不提供数据库三个环境变量整组静默 skip（生产实现实际只剩正则断言在守）；Kotlin 在本机和 CI 都无编译门，已有三次「只有真编译才暴露」前科 + AlarmReceiver 缺失进生产的 P1。建议：Gitea Actions runner（语法兼容现有 ci.yml）+ CI 加 Android debug 构建 job（aapt 断言合并 manifest 含 AlarmReceiver/BootReceiver/SolumNotificationListener）+ web-and-cloud job 挂 postgres service 让集成测试真正运行。
+- [ ] **已复现/根因明确：真机同步 TLS `unexpected EOF`（2026-08-21 现场探针定案）。** 不是本地 VPN fake-IP：域名解析阿里云北京 8.148.11.79，服务器侧按 **SNI + TLS 指纹**选择性掐断——rustls 无 GREASE 的 ClientHello 被 RST，浏览器级指纹放行，换网络/走代理均无效（80 端口有阿里云 Beaver 未备案拦截页旁证）。客户端唯一能做的已做：HttpTransport 错误映射按 DNS/连接失败/**TLS 握手失败**/超时分类为人话（ureq 2.12 中该故障固定表现为 `ConnectionFailed` + "tls connection init failed"）。**剩余动作在服务器侧、需用户拍板**：① 完成 tannerlab.xyz ICP 备案；② 同步端点迁出阿里云大陆合规范围（香港/国际节点、已备案域名或前置 CDN）；③ 先查阿里云控制台合规通知。完整证据链见 PITFALLS 当日条目。
+- [x] **已做：push 侧毒丸防护（2026-08-21）。** 永久拒绝（507/403/429/400/413）只作废 push 半轮、继续 pull，原因持久化 `meta.sync_push_blocked`（下次成功推送自动清除）；单条超 7 MiB 的 op 暂存 `sync_push_holds`（只存 oplog 指针），游标照常前进；瞬时失败同样只跳过 push 半轮。设计取舍见 MISC 2026-08-21，ARCHITECTURE §3.8 已补条目。**遗留**：pull 侧 403（设备撤销同样阻断 pull）是否也要跳过半轮+持久标记，见下方新增条目。
+- [x] **已做：SQLite 双连接补 `busy_timeout=5000ms`（2026-08-21）。** `Store::open` 一处覆盖 orch 与 sync_store；PRAGMA 断言测试钉住。CoreError::Storage 抹掉 rusqlite 错误码仍是小项（见小项打包）。
+- [x] **已处理：公开仓泄露本机路径（本地侧）。** 根 README 两处 `D:\ClaudeSpace\...` 绝对路径已改为相对描述，tauri command 计数改为「100+」。**遗留**：origin/main 落后本地 17 提交，未推内容含生产账号名/真机型号/内网 URL；remote 政策已补进 AGENTS.md（2026-08-21，gitea 权威仓、推 origin 前过公开边界清单）；**16 个提交的 diff 级审计仍未做**，做完再定推送节奏（推送需用户当次授权）。
+- [x] **已做（仓库侧）：CI 补到真实开发路径（2026-08-21）。** 新增 `.gitea/workflows/ci.yml`（rust 三门含 Tauri Linux 依赖 + web-and-cloud 挂 postgres service，集成测试防静默 skip 有显式断言）；`.github/workflows/ci.yml` 加 android-manifest 门禁（gradle 仅跑到 manifest 合并 + aapt 断言三组件）并升级 web-and-cloud；配套 `scripts/gen-android-ci-settings.mjs` 解决 `tauri.settings.gradle` 为 gitignore 绝对路径生成文件、裸 checkout 无法跑 gradle 的问题（已验证与 tauri CLI 产物一致）。**边界**：Gitea 侧需服务器安装并注册 act_runner（ubuntu-latest 标签、docker 模式）才实际生效；Android job 依赖 GitHub 托管 runner 预装 SDK，自建 runner 需先补 sdkmanager 步骤。
 
 ### 结构性（排期）
 
@@ -28,6 +28,7 @@
 
 ### 小项打包
 
+- [ ] **push 毒丸后续：pull 侧 403 处理。** 设备撤销同样阻断 pull（ARCHITECTURE §3.8）；现在 pull 收到 403 仍以显式错误结束整轮（用户可见）。是否也要「跳过半轮 + 持久标记」待议——注意撤销场景下 pull 失败是**必须显眼**的，不能照抄 push 侧的自愈语义。
 - [ ] 三处多步写漏包 `with_transaction`（persist_event_with_scope / fire_due / set_importance_rule；方法已支持嵌套 savepoint，机械缩进调整 + 「insert_notification 故障时事件回滚」回归测试）。
 - [ ] CoreError::Storage 保留 rusqlite 错误码（BUSY/LOCKED/CONSTRAINT 现被 to_string 抹掉）；row mapper 对损坏 JSON 不再 `unwrap_or_default()` 静默吞（至少 eprintln 带 id 或可见计数）。
 - [ ] push 装箱循环 O(n²) 重复加密改估算式装箱（每加一条 op 就整批重新序列化+ChaCha 加密；积压越大浪费越多，恰是离线回连场景，手机 CPU 上可感知）。
@@ -78,7 +79,7 @@
 - [x] **已通过：模拟器本地核心闭环。** `0.2.7 (1017)` x86_64 Release 已验证隐私门、同意后通知权限请求、guest、英文事件摄取、30 分钟提醒、精确 AlarmManager 注册、进程重启后的事件/alarm 保留、计划/记忆/搜索/设置入口和 Guard 返回键取消。
 - [x] **已通过：生产服务主机侧最小链路。** `https://solumsync.tannerlab.xyz` 的注册、登录、模型目录、用量、AI completion、pull、alerts 与测试会话 logout 均返回成功；该结果只证明服务端链路，不替代 Android 真机验证。
 - [x] **已通过：真机安装状态。** vivo V2405A（Android 16 / API 36）当前安装 `dev.solum.app` `0.2.6 (1016)`，通知、网络、精确 alarm、开机恢复、前台 data sync 与 wake lock 权限已授予；应用数据保持原样。
-- [ ] **受阻：干净 target 的 workspace 测试基线。** 仓库迁移后旧 Tauri 缓存仍引用 `D:\ClaudeSpace\Project\Desktop_export_2026-07-13\PA\target`，默认 `cargo test --workspace` 在执行测试前失败；需用独立 `CARGO_TARGET_DIR` 完成一次无旧路径缓存的基线。
+- [x] **已通过：干净 target 的 workspace 测试基线（2026-08-21 解决）。** 根因是整仓搬迁时把 23.8 GiB 旧 `target/` 原样拷来，3000 个文件引用旧绝对路径，tauri build script 读不存在的权限文件即挂；`cargo clean` 全删重建后基线 **353 项全绿**（现 361 项，见 CHANGELOG 当日条目）。教训记入 PITFALLS 当日条目：target 永不随仓库迁移。
 - [x] **已通过：真机 QA 事件入库与 alarm 注册证据。** “今天晚上十点十分开会，QA真机提醒测试2” 写入事件 `2026-08-19 22:10`，生成 `21:40` 提前 30 分钟提醒；系统显示 exact `RTC_WAKEUP`、`exactAllowReason=policy_permission`。到点未产生通知，原因见上方生产 APK receiver 缺失。
 - [ ] **受阻：完整后台回收提醒。** `am kill dev.solum.app` 未终止进程，因为通知监听 `dataSync` 前台服务仍在运行；不能用 force-stop 代替（会由系统取消 alarm）。需后续提供不改用户配置的进程级故障注入/构建版测试入口。
 
