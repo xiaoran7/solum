@@ -31,13 +31,103 @@ jobs:
     name: Frontend and cloud service
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # The PostgreSQL integration tests skip themselves unless all three
+    # SOLUM_TEST_* variables are present — which used to mean they never ran
+    # anywhere, leaving production schema behavior guarded only by regex
+    # assertions. A disposable postgres here makes them real.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: solum_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-owner-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SOLUM_TEST_DATABASE_URL: postgres://solum_runtime:ci-app-password@127.0.0.1:5432/solum_test
+      SOLUM_TEST_OWNER_DATABASE_URL: postgres://postgres:ci-owner-password@127.0.0.1:5432/solum_test
+      SOLUM_TEST_DATABASE_IS_DISPOSABLE: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Provision least-privilege roles exactly as production init does
+        run: |
+          chmod +x server/db/init/00-roles.sh
+          SOLUM_DB_APP_PASSWORD=ci-app-password \
+          POSTGRES_USER=postgres POSTGRES_DB=solum_test \
+          PGHOST=127.0.0.1 PGPASSWORD=ci-owner-password \
+          server/db/init/00-roles.sh
       - name: Frontend static checks
         run: node scripts/check-frontend.mjs
+      - name: Assert the integration environment is really wired up
+        run: |
+          test "$SOLUM_TEST_DATABASE_IS_DISPOSABLE" = "true"
+          test -n "$SOLUM_TEST_DATABASE_URL"
+          test -n "$SOLUM_TEST_OWNER_DATABASE_URL"
       - name: Solum Cloud tests
         working-directory: server
-        run: npm test
+        run: |
+          npm test 2>&1 | tee /tmp/solum-cloud-tests.log
+          # If the integration group ever silently skips again, its tests are
+          # reported as skipped, not ok — fail loudly instead of passing on a
+          # regex-only guard.
+          grep -Eq "^ok [0-9]+ - PostgreSQL roles retain" /tmp/solum-cloud-tests.log || {
+            echo "::error::PostgreSQL integration tests did not run (skipped or renamed?)"
+            exit 1
+          }
+
+  android-manifest:
+    name: Android manifest merge gate
+    # Three production P1s (AlarmReceiver missing from the merged manifest
+    # among them) were only caught on a real device because Kotlin has no
+    # compile gate on this machine or in CI. Merging the manifest needs no
+    # Rust toolchain, no NDK and no .so files — gradle resolves the plugin
+    # projects and merges their manifests — so it is cheap enough to run on
+    # every push. GitHub-hosted ubuntu images ship an Android SDK; a Gitea
+    # runner would need sdkmanager steps here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: crates/solum-app/gen/android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # tauri.settings.gradle is gitignored (the tauri CLI writes it with
+      # machine-local paths), so regenerate it from Cargo.lock + the registry
+      # before gradle can include the plugin projects.
+      - name: Materialize cargo registry sources for the settings generator
+        run: |
+          cargo --version || rustup toolchain install stable --profile minimal
+          cargo metadata --format-version 1 > /dev/null
+      - name: Regenerate tauri.settings.gradle
+        run: node scripts/gen-android-ci-settings.mjs
+      - name: Merge the debug manifest
+        run: ./gradlew --no-daemon :app:processDebugMainManifest
+      - name: Assert the three reminder-chain receivers are in the merged manifest
+        run: |
+          AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+          MANIFEST=$(find app/build/intermediates -name "AndroidManifest.xml" -path "*merged*" | head -1)
+          test -n "$MANIFEST" || { echo "::error::merged manifest not found"; exit 1; }
+          echo "checking $MANIFEST"
+          for component in dev.solum.alarm.AlarmReceiver dev.solum.alarm.BootReceiver dev.solum.app.SolumNotificationListener; do
+            "$AAPT" dump xmltree --file AndroidManifest.xml "$MANIFEST" | grep -q "$component" || {
+              echo "::error::merged manifest is missing $component"
+              exit 1
+            }
+          done
+          echo "all three components present in the merged manifest"

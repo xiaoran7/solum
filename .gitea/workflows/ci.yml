@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Mirror of .github/workflows/ci.yml for the primary remote (gitea — the
+# authoritative repo). Recent releases shipped with zero automated gate
+# coverage because only GitHub had workflows; this makes the core gates run
+# where development actually lands.
+#
+# Deliberately no Android job here: a self-hosted runner image rarely has the
+# Android SDK preinstalled the way GitHub-hosted ubuntu images do. Add
+# sdkmanager install steps before enabling one.
+#
+# actions/checkout@v4 works on Gitea's act_runner (it fetches from github.com
+# unless the runner is configured otherwise); every other step is plain shell.
+
+jobs:
+  rust:
+    name: Rust quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # The workspace tests build solum-app, which links Tauri — on Linux that
+      # means the GTK/WebKit stack (on Windows CI the WebView2 SDK comes via
+      # nuget and no system packages are needed).
+      - name: Install Tauri Linux build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+      - name: Select stable Rust
+        run: |
+          rustup default stable
+          rustup component add rustfmt clippy
+      - name: Formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
+
+  web-and-cloud:
+    name: Frontend and cloud service
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Same shape as the GitHub job: without these three variables the
+    # PostgreSQL integration tests skip themselves silently.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: solum_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-owner-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SOLUM_TEST_DATABASE_URL: postgres://solum_runtime:ci-app-password@127.0.0.1:5432/solum_test
+      SOLUM_TEST_OWNER_DATABASE_URL: postgres://postgres:ci-owner-password@127.0.0.1:5432/solum_test
+      SOLUM_TEST_DATABASE_IS_DISPOSABLE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Provision least-privilege roles exactly as production init does
+        run: |
+          chmod +x server/db/init/00-roles.sh
+          SOLUM_DB_APP_PASSWORD=ci-app-password \
+          POSTGRES_USER=postgres POSTGRES_DB=solum_test \
+          PGHOST=127.0.0.1 PGPASSWORD=ci-owner-password \
+          server/db/init/00-roles.sh
+      - name: Frontend static checks
+        run: node scripts/check-frontend.mjs
+      - name: Assert the integration environment is really wired up
+        run: |
+          test "$SOLUM_TEST_DATABASE_IS_DISPOSABLE" = "true"
+          test -n "$SOLUM_TEST_DATABASE_URL"
+          test -n "$SOLUM_TEST_OWNER_DATABASE_URL"
+      - name: Solum Cloud tests
+        working-directory: server
+        run: |
+          npm test 2>&1 | tee /tmp/solum-cloud-tests.log
+          grep -Eq "^ok [0-9]+ - PostgreSQL roles retain" /tmp/solum-cloud-tests.log || {
+            echo "PostgreSQL integration tests did not run (skipped or renamed?)"
+            exit 1
+          }
