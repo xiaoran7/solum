@@ -24,6 +24,7 @@
   - 80 端口返回阿里云「Beaver」ICP 未备案拦截页（beian-block id=00000000005698695009），旁证是阿里云大陆节点的合规阻断在起作用（确切执行组件无法从外部区分，备选解释是源站前有 JA3 过滤 WAF）。
 - **结论**：不是客户端 bug，也不是本地网络问题。rustls 无法伪装浏览器指纹（不支持 GREASE），native-tls 在 Win10 上退到 schannel ≤TLS1.2 同样被掐，走代理也被掐（过滤器在服务器侧）——**客户端无解，只能把这类失败说成人话**（已做：HttpTransport 错误映射）。真正的修复在服务器侧：完成 tannerlab.xyz 的 ICP 备案，或把同步端点迁出阿里云大陆合规范围（香港/国际节点、已备案域名或前置 CDN）。建议先查阿里云控制台的合规通知。
 - **如何避免**：「浏览器行、程序不行」不要条件反射归因于本机代理分叉——先用最小同款栈探针拿到**完整错误链**，再用指纹矩阵对照（换 SNI/换 TLS 版本/换网络路径/裸 TCP），四组对照才能定位过滤器的判定维度。ureq 事实备查：环境变量代理需要非默认 feature `proxy-from-env`（公开 API 是 `AgentBuilder::try_proxy_from_env(bool)`；`Proxy::try_from_system()` 是 pub(crate)，且不读 NO_PROXY）。
+- **同域连带（2026-08-21 实测）**：`git push` 到 `git.tannerlab.xyz` 同样被掐（schannel/直连均 `Recv failure: Connection was aborted`），走 `HTTPS_PROXY=http://127.0.0.1:10808 git push` 即成功——整个 tannerlab.xyz 域在过滤范围内，不是 solumsync 独有。服务器侧修复前，git 操作记得挂代理。
 
 ## 2026-08-21 整仓搬迁后 target 缓存引用旧绝对路径，`cargo test` 在构建脚本阶段就挂
 
