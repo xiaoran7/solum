@@ -1,6 +1,24 @@
 # 踩坑集
 
 > 强制记录：任何调试超过几分钟、走过弯路、被坑过的问题都要写在这里，不管最后是否解决。格式：现象 / 根因 / 解决方式 / 如何避免。
+>
+> 插入规则（2026-08-21 定）：新条目插在本行下方、保持全文件新→旧；**不要追加到文件尾部**——历史上尾部追加造成时序错乱（2026-08-21 已修正归位）。
+
+## 主题索引（检索用，正文按日期新→旧）
+
+- **Android 构建/打包/真机**：08-19 restart 只退出进程 · 08-14 JNI 预编译跳过注入 / `Os.flock` 不存在 · 08-13 ndk 相对路径 / Release 输出被占用 · 08-12 Kotlin daemon 跨盘 · 08-11 arm64 flavor 配对 / vivo ADB 断连 / CSP nonce 拒内联 style · 07-21 打包三连坑（native-tls / 改名遗留生成文件 / PERL5LIB）· 07-20 改名两坑 · 07-14 构建五连坑 / AlarmManager 三连坑 · 07-12 Health Connect Kotlin 三连坑 · 07-07 Tauri Android 首建三连坑 / app_data_dir
+- **前端验证量具**：08-20 错误脱敏不只账号页 · 07-27 未显示面板零视口 · 07-20 details 几何失效 / offsetParent 对 fixed 恒真 / 后台标签冻结动画 / px 字号不随根字号 / 滚动量具视图切走失效 / 删节点遗留脚本调用 / 连续改状态再采样 · 07-19 hidden 被 display 压过 / harness 集合形状 / data URL 被拒 / 16×16 窗口 · 07-15 重构验证两坑
+- **同步/迁移/SQLite**：08-14 无快照增量不能靠留存回收 · 08-12 服务器隔离了客户端仍可能混库 · 07-20 加列漏触发器 payload / 迁移不在事务撞唯一索引 / 标量列 LWW 吃掉一半 / FK 级联不触发子表触发器 / 不同步表更易漏导出 / 未来表名占位符 · 07-19 合并循环 return Err = 同步永久卡死
+- **服务端/账号/PostgreSQL**：08-14 集成测试要全新空库 / 密码裁剪语义不可猜升级 / 限流键无限+同步 KDF 自成 DoS / 注册成功与本机初始化的部分成功 / 进程内 Mutex 护不了跨进程会话文件 · 08-13 FOR UPDATE 需表级 UPDATE 权限 / git archive CRLF / Node 测试并行 socket 假失败 / 并行测试改环境变量互相覆盖 · 08-12 relay 仪表盘 CORS
+- **安全审核修复期教训（07-21 系列）**：宽松断言给缺陷让路 · 跨进程共享可变文件要换数据结构 · 计数器加锁/rename 都不够 · spool 改造自己丢数据 · 复审打回六条 · 修复期五连坑 · 幂等 receipt 配按龄清理等于重开洞 · 把状态误当事件
+- **Windows/PowerShell/工具链**：08-12 PowerShell 5.1 UTF-8 与 JSON 编码 · 07-21 演示视频三坑 · 07-18 PowerShell round-trip 乱码 · 07-06 link.exe/cl.exe 不在 PATH
+- **时间解析/实体抽取（07-06 系列）**：时钟纳秒穿透 UI / 纯日期漏判 / 中文地点人名贪婪 / 规则抢答压制 LLM 兜底 / datetime-local 连续键入串段
+
+## 2026-08-20 前端错误脱敏不能只修账号页
+
+- **现象**：账号/云端入口已经有人话映射，但通知管线、捕获、息壤和邮件页仍可能把 `String(e)` 直接放进 toast、状态区或空状态。
+- **修复**：所有生产可见的异常文本先经过 `safeUserError`；详细异常只写控制台。`scripts/check-frontend.mjs` 对高风险文本渲染模式做语法级回归检查。
+- **边界**：`toast(..., "danger")` 内部本身会再次经过 `safeUserError`，但新增代码仍应优先显式调用，避免未来替换 toast 实现时重新暴露底层错误。
 
 ## 2026-08-19：Tauri 的通用 restart 在 Android 上只会退出进程
 
@@ -135,6 +153,29 @@
 - **解决**：让 `app/build.gradle.kts` 的 buildDir 接受 `solumBuildDir` Gradle 属性覆盖，在独立目录构建新版本；构建产物目录用 `app/build-*/` 忽略。旧 APK 原样保留作为回滚产物。
 - **避免**：不要为释放构建产物而强杀未知进程；版本化或临时 buildDir 比破坏式清理更可审计。
 
+## 2026-08-12：PowerShell 5.1 的 UTF-8 脚本和本机 JSON 响应要显式声明编码
+
+**现象**：独立监控应用脚本包含中文默认渠道名时，Windows PowerShell 5.1 会把无 BOM 的 UTF-8 脚本按系统代码页读取；本机 HTTP JSON 若只写 `application/json`，部分 PowerShell 客户端也会把 UTF-8 中文显示成乱码。
+
+**根因**：PowerShell 5.1 对无 BOM UTF-8 的默认识别与 PowerShell 7 不同；HTTP 客户端的 JSON 编码推断也并不完全一致。
+
+**处理**：`BenefitMonitor.ps1` 必须保存为 UTF-8 BOM；HTTP 响应统一带 `charset=utf-8`。验证不能只用浏览器，应同时做 PowerShell 5.1 语法/BOM 检查和 `Invoke-RestMethod` 中文 round-trip。
+
+## 2026-08-12：本机监控的上游账号凭据不能放进公开配置
+
+**现象**：用织境邮箱/密码替代手动 access token 后，若直接把密码或 refresh token 写进 `config.json`，浏览器读取 `/api/config` 时也会拿到长期凭据；只隐藏输入框并不能形成秘密边界。
+
+**处理**：`config.json` 只保存邮箱和非秘密配置；密码、access token、refresh token 与到期时间整体用 Windows 当前用户 DPAPI 加密到 `secrets.dat`。`/api/config` 仅返回 `password_set/status/expires_at` 等脱敏状态。新账号保存采用先登录验证、失败回滚 secrets/state 的事务式流程，避免错误密码破坏现有会话。
+
+**边界**：DPAPI 密文绑定当前 Windows 用户和系统环境，换用户或重装系统后通常需要重新登录。织境若启用 CAPTCHA 或 2FA，也必须扩展显式交互，不能把持续重试当作兼容方案。
+
+## 2026-08-12 服务器按账号隔离了，客户端仍可能把 Alice 的库同步进 Bob
+
+- **现象**：relay 的 SQL 已经处处带 `tenant_id`，Alice 的 token 也确实读不到 Bob 的 blob；但客户端运行中只有一份 `solum.sqlite`。如果只热切换登录令牌，数据库里 Alice 尚未上传的 oplog 会被 Bob 的 token 推进 Bob 租户，服务端隔离越正确，错误数据反而越稳定地留在 Bob 分区。
+- **根因**：把“请求授权隔离”误当成了“数据归属隔离”。服务器只能判断当前令牌属于谁，无法判断客户端送来的密文原本是谁的本地库；用户名也不是稳定主键，改名或大小写规则变化都会换租户/路径。
+- **解决**：账号由 solum-cloud 生成不可变 UUID；令牌 `sub`、relay 租户、本地 profile 与 Web Storage/IndexedDB 全部使用同一 UUID。登录先完成网络鉴权但不落盘，拿到旧 profile 的同步锁后才原子保存新会话并整进程重启，关闭所有旧连接和后台任务后再开另一 profile，不做只换 reasoner/token 的半热切换。进程自己注入的配置路径带 managed 标记，重启后跟随新 profile 重算；运维显式提供的环境变量不覆盖。桌面壳、CLI、Android 前台服务和通知监听器都必须复用同一 active-profile 规则，不能因为原生代码拿不到 Rust 环境变量就退回根目录。旧 guest 数据不自动认领给新账号。
+- **避免**：任何“切账号”实现都列出进程内持久化与缓存清单逐项核对：数据库连接、后台队列/游标、配置文件、内存上下文、Web Storage、IndexedDB。判据不是“新账号的请求鉴权了吗”，而是“旧账号的任何字节还有没有路径被新账号的令牌发出去”。
+
 ## 2026-08-12 relay 仪表盘直接登录账号服务必须显式处理 CORS
 
 - **现象**：relay 的静态仪表盘和 `solum-cloud` 通常是两个域名；页面直接调用 `/v1/auth/login` 时，curl/原生客户端正常，浏览器却会在预检阶段拦截。
@@ -156,12 +197,33 @@
 - **解决**：继续读取完整 Gradle 结果。当前插件会自动显示 `Using fallback strategy: Compile without Kotlin daemon`，非 daemon 编译随后完成，最终以末尾 `BUILD SUCCESSFUL` 为准。本次明确运行 `.\gradlew.bat :app:compileArmDebugKotlin --console=plain`，新告警服务成功编译。
 - **避免**：不要在看到 daemon 堆栈第一屏时提前终止或误报代码失败；需要减少噪声时可停 daemon 后以非增量模式重跑。验证结论必须同时写明前置回退和最终构建状态。
 
+## 2026-08-11 vivo 系统设置跳转会让 USB ADB 短暂 offline
+
+- **现象**：真机点击通知监听设置入口后，`adb` 短暂报告设备 `offline`，随后设备从列表消失；Solum 进程本身没有崩溃。
+- **根因**：vivo 系统设置切换重置了 USB 调试传输，Windows 设备管理器随后也显示该手机 `Present=False`，不是 Activity 或 Rust 进程异常。
+- **解决**：设备仍在线时可执行 `adb reconnect offline`，重连后再用 `dumpsys activity`、`pidof dev.solum.app` 和 `settings get secure enabled_notification_listeners` 分别确认前台、进程和权限状态；USB 设备已消失时只能重新插线并确认调试授权。
+- **避免**：OEM 设置页跳转期间的 ADB 断连只能算传输层事件；重连并复查应用状态之前，不得把它记成应用崩溃。
+
+## 2026-08-11 Tauri production CSP nonce 会拒绝现有内联 style 属性
+
+- **现象**：arm64 debug APK 的页面能够加载、IPC 也正常执行，但 Android WebView 控制台连续报告 `style-src` 拒绝内联样式；初次 GPU 绘制较慢时，单张过早截图还会误判成白屏。
+- **根因**：配置同时声明 `style-src 'unsafe-inline'`，Tauri production 构建又自动注入 nonce。按 CSP 规则，只要同一 directive 存在 nonce，浏览器就忽略 `'unsafe-inline'`，因此 HTML 中的 `style="..."` 属性被拒绝。
+- **现状**：CDP 实测 DOM、计算样式、隐私门矩形和文本都存在，稳定帧能够正常显示；但被拒绝的显隐/尺寸属性仍是功能风险，且控制台噪声会掩盖真正错误。
+- **避免**：优先把内联 style 迁入具名 CSS class，再保持严格 CSP；不要为了消日志直接开启 `dangerousDisableAssetCspModification`，除非单独完成安全评审并接受弱化 CSP 的代价。截图判白屏前先检查 DOM、控制台并等待稳定帧。
+
 ## 2026-08-11 预构建 arm64 库必须配 `assembleArm64*`，跳错 Gradle 任务会产出无原生库 APK
 
 - **现象**：`cargo tauri android build --debug --target aarch64` 已成功产出 `target/aarch64-linux-android/debug/libsolum_app_lib.so`，随后仍因 Windows 未开开发者模式而在 symlink 步骤失败。手工复制后若跑 `assembleArmDebug -x rustBuildArmDebug`，Gradle 会成功产出 APK，但日志明确提示 `armeabi-v7a` 没有 `.so`；这个包不能运行 Solum。
 - **根因**：Gradle flavor 名 `arm` 对应 `armeabi-v7a`，`aarch64` 对应的是 `arm64`。`-x rustBuild...` 还会完全绕开仓库已经提供的 `SOLUM_PREBUILT_JNILIBS` 逃生门，让“任务成功”和“目标库进包”失去关联。
 - **解决**：把已编译库复制到 `app/src/main/jniLibs/arm64-v8a/libsolum_app_lib.so`，设置 `SOLUM_PREBUILT_JNILIBS=1`，再运行 `gradlew :app:assembleArm64Debug`。最后不能只看 `BUILD SUCCESSFUL`：用 ZIP 条目确认 `lib/arm64-v8a/libsolum_app_lib.so` 存在，并用 `aapt dump badging` 核对 versionName/versionCode。
 - **避免**：目标、flavor、ABI 必须成对：`aarch64 → arm64 → arm64-v8a`，`armv7 → arm → armeabi-v7a`。任何手工逃生构建都把“包内 native 条目 + badging”作为完成判据。
+
+## 2026-07-29 Android 首启隐私门把失败提示藏在自己后面，拒绝路径也没有可靠退出
+
+- **现象**：Android 首启页点击“同意并开始使用”或“不同意并退出”看起来都没有反应。
+- **根因**：移动端未给 `SOLUM_PRIVACY_CONSENT` 注入应用私有数据目录，落盘失败时仅用 z-index 更低的 toast 提示，提示被隐私门完全盖住；拒绝路径只调用 WebView 窗口关闭 API，不能保证 Android 进程退出。
+- **解决**：启动时把同意记录路径设到与 SQLite 相同的 app-data 目录；错误文本显示在门内；新增原生 `privacy_consent_decline` 命令并由前端调用 `app.exit(0)`。
+- **避免**：全屏首启门内的所有失败反馈必须放在门自身层级；移动端“退出应用”必须走原生进程路径，不能只假设 WebView 窗口 API 等同于退出。
 
 ## 2026-07-29 切一页刷新全站、每次改动同步序列化，会把“数据正确”做成“界面迟钝”
 
@@ -776,49 +838,3 @@ mock-IPC 走查「账号登录」UI 时用的是 Claude Code 应用内浏览器�
 - **根因**：负向字符类没排除连接词/动词，Han 字符一路吃到底。中文没有空格分词，正则边界不好定。
 - **解决**：用 Rust regex 的字符类集合运算 `[\p{Han}&&[^和跟与同的开吃上见聊休去到做…]]` 做「Han 减去停用字」；地点还额外跳过「现在/正在」等 `在` 的假匹配。标题清洗再把已抽出的地点/人名片段一并剔除，标题就干净成「开会」。
 - **避免**：中文实体抽取别用「贪婪 + 长度上限」，用「停用字集合差集」更稳；Phase 3 若接入云端 NER 可整体替换这套启发式。
-## 2026-07-29 Android 首启隐私门把失败提示藏在自己后面，拒绝路径也没有可靠退出
-
-- **现象**：Android 首启页点击“同意并开始使用”或“不同意并退出”看起来都没有反应。
-- **根因**：移动端未给 `SOLUM_PRIVACY_CONSENT` 注入应用私有数据目录，落盘失败时仅用 z-index 更低的 toast 提示，提示被隐私门完全盖住；拒绝路径只调用 WebView 窗口关闭 API，不能保证 Android 进程退出。
-- **解决**：启动时把同意记录路径设到与 SQLite 相同的 app-data 目录；错误文本显示在门内；新增原生 `privacy_consent_decline` 命令并由前端调用 `app.exit(0)`。
-- **避免**：全屏首启门内的所有失败反馈必须放在门自身层级；移动端“退出应用”必须走原生进程路径，不能只假设 WebView 窗口 API 等同于退出。
-
-## 2026-08-11 vivo 系统设置跳转会让 USB ADB 短暂 offline
-
-- **现象**：真机点击通知监听设置入口后，`adb` 短暂报告设备 `offline`，随后设备从列表消失；Solum 进程本身没有崩溃。
-- **根因**：vivo 系统设置切换重置了 USB 调试传输，Windows 设备管理器随后也显示该手机 `Present=False`，不是 Activity 或 Rust 进程异常。
-- **解决**：设备仍在线时可执行 `adb reconnect offline`，重连后再用 `dumpsys activity`、`pidof dev.solum.app` 和 `settings get secure enabled_notification_listeners` 分别确认前台、进程和权限状态；USB 设备已消失时只能重新插线并确认调试授权。
-- **避免**：OEM 设置页跳转期间的 ADB 断连只能算传输层事件；重连并复查应用状态之前，不得把它记成应用崩溃。
-
-## 2026-08-11 Tauri production CSP nonce 会拒绝现有内联 style 属性
-
-- **现象**：arm64 debug APK 的页面能够加载、IPC 也正常执行，但 Android WebView 控制台连续报告 `style-src` 拒绝内联样式；初次 GPU 绘制较慢时，单张过早截图还会误判成白屏。
-- **根因**：配置同时声明 `style-src 'unsafe-inline'`，Tauri production 构建又自动注入 nonce。按 CSP 规则，只要同一 directive 存在 nonce，浏览器就忽略 `'unsafe-inline'`，因此 HTML 中的 `style="..."` 属性被拒绝。
-- **现状**：CDP 实测 DOM、计算样式、隐私门矩形和文本都存在，稳定帧能够正常显示；但被拒绝的显隐/尺寸属性仍是功能风险，且控制台噪声会掩盖真正错误。
-- **避免**：优先把内联 style 迁入具名 CSS class，再保持严格 CSP；不要为了消日志直接开启 `dangerousDisableAssetCspModification`，除非单独完成安全评审并接受弱化 CSP 的代价。截图判白屏前先检查 DOM、控制台并等待稳定帧。
-## 2026-08-12：PowerShell 5.1 的 UTF-8 脚本和本机 JSON 响应要显式声明编码
-
-**现象**：独立监控应用脚本包含中文默认渠道名时，Windows PowerShell 5.1 会把无 BOM 的 UTF-8 脚本按系统代码页读取；本机 HTTP JSON 若只写 `application/json`，部分 PowerShell 客户端也会把 UTF-8 中文显示成乱码。
-
-**根因**：PowerShell 5.1 对无 BOM UTF-8 的默认识别与 PowerShell 7 不同；HTTP 客户端的 JSON 编码推断也并不完全一致。
-
-**处理**：`BenefitMonitor.ps1` 必须保存为 UTF-8 BOM；HTTP 响应统一带 `charset=utf-8`。验证不能只用浏览器，应同时做 PowerShell 5.1 语法/BOM 检查和 `Invoke-RestMethod` 中文 round-trip。
-
-## 2026-08-12：本机监控的上游账号凭据不能放进公开配置
-
-**现象**：用织境邮箱/密码替代手动 access token 后，若直接把密码或 refresh token 写进 `config.json`，浏览器读取 `/api/config` 时也会拿到长期凭据；只隐藏输入框并不能形成秘密边界。
-
-**处理**：`config.json` 只保存邮箱和非秘密配置；密码、access token、refresh token 与到期时间整体用 Windows 当前用户 DPAPI 加密到 `secrets.dat`。`/api/config` 仅返回 `password_set/status/expires_at` 等脱敏状态。新账号保存采用先登录验证、失败回滚 secrets/state 的事务式流程，避免错误密码破坏现有会话。
-
-**边界**：DPAPI 密文绑定当前 Windows 用户和系统环境，换用户或重装系统后通常需要重新登录。织境若启用 CAPTCHA 或 2FA，也必须扩展显式交互，不能把持续重试当作兼容方案。
-## 2026-08-12 服务器按账号隔离了，客户端仍可能把 Alice 的库同步进 Bob
-
-- **现象**：relay 的 SQL 已经处处带 `tenant_id`，Alice 的 token 也确实读不到 Bob 的 blob；但客户端运行中只有一份 `solum.sqlite`。如果只热切换登录令牌，数据库里 Alice 尚未上传的 oplog 会被 Bob 的 token 推进 Bob 租户，服务端隔离越正确，错误数据反而越稳定地留在 Bob 分区。
-- **根因**：把“请求授权隔离”误当成了“数据归属隔离”。服务器只能判断当前令牌属于谁，无法判断客户端送来的密文原本是谁的本地库；用户名也不是稳定主键，改名或大小写规则变化都会换租户/路径。
-- **解决**：账号由 solum-cloud 生成不可变 UUID；令牌 `sub`、relay 租户、本地 profile 与 Web Storage/IndexedDB 全部使用同一 UUID。登录先完成网络鉴权但不落盘，拿到旧 profile 的同步锁后才原子保存新会话并整进程重启，关闭所有旧连接和后台任务后再开另一 profile，不做只换 reasoner/token 的半热切换。进程自己注入的配置路径带 managed 标记，重启后跟随新 profile 重算；运维显式提供的环境变量不覆盖。桌面壳、CLI、Android 前台服务和通知监听器都必须复用同一 active-profile 规则，不能因为原生代码拿不到 Rust 环境变量就退回根目录。旧 guest 数据不自动认领给新账号。
-- **避免**：任何“切账号”实现都列出进程内持久化与缓存清单逐项核对：数据库连接、后台队列/游标、配置文件、内存上下文、Web Storage、IndexedDB。判据不是“新账号的请求鉴权了吗”，而是“旧账号的任何字节还有没有路径被新账号的令牌发出去”。
-## 2026-08-20 前端错误脱敏不能只修账号页
-
-- **现象**：账号/云端入口已经有人话映射，但通知管线、捕获、息壤和邮件页仍可能把 `String(e)` 直接放进 toast、状态区或空状态。
-- **修复**：所有生产可见的异常文本先经过 `safeUserError`；详细异常只写控制台。`scripts/check-frontend.mjs` 对高风险文本渲染模式做语法级回归检查。
-- **边界**：`toast(..., "danger")` 内部本身会再次经过 `safeUserError`，但新增代码仍应优先显式调用，避免未来替换 toast 实现时重新暴露底层错误。

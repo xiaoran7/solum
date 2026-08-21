@@ -61,7 +61,7 @@ crates/
     tests/closed_loop.rs   文件落库的集成测试（关库再开验证持久化）
   solum-cli/         # headless 演示 CLI（二进制名 `solum`）
   solum-app/         # Tauri 2 桌面/移动壳（纯静态前端 dist/index.html，无 npm 依赖）
-    src/lib.rs         106 个 tauri command + 常驻 ticker（系统时钟，OS 通知，自动同步，穿戴轮询、通知批处理）
+    src/lib.rs         100+ 个 tauri command + 常驻 ticker（系统时钟，OS 通知，自动同步，穿戴轮询、通知批处理）
     dist/index.html    20 视图（今天 / 记忆 / 计划 / 搜索四个一级根入口）：今天承载对话与当日状态；
                        记忆收纳台账·行为日志·穿戴·复盘·通知回看；计划收纳日程·提醒·建议；搜索在已加载
                        的本地数据中统一找回上下文。邮箱、设置（人格·主动度·隐私·数据入口·同步·云端·
@@ -197,9 +197,9 @@ solum sync-status    # 查看配置与本机设备标识
 
 客户端现已启用“登录即恢复”：首台设备随机生成同步主密钥，并用账号密码与不可变 user UUID 在本地导出的包装密钥生成恢复信封；新设备登录同一账号后自动解开信封，无需再填写独立同步密码。就同步数据而言，服务器只保存包装后的密钥与业务密文，拿到数据库或 access token 也不能读取同步正文。新注册密码按原始输入精确处理；旧 `password_version=1` 账号先做精确校验，仅在输入确实含首尾空白时回退历史裁剪校验，并保持 v1，直到未来显式改密同时重包恢复信封。旧 guest 数据不会自动归入登录账号。
 
-Windows 独立监控应用位于 `D:\ClaudeSpace\Project\Utilities\benefit-monitor`，双击 `Start-BenefitMonitor.cmd` 后在浏览器打开 `http://127.0.0.1:17321/`。页面分别配置织境账号、Solum 账号服务器和同步中继；两套账号都会自动获取、保存、刷新 access/refresh token。密码与会话令牌由 Windows 当前用户 DPAPI 加密保存在 `%LOCALAPPDATA%\BenefitMonitor\secrets.dat`，页面/API 不回显。应用预置三个织境渠道，可分别启用检测和恢复通知，也可新增织境渠道 ID 或通用 HTTP JSON 检测。
+Windows 独立监控应用（benefit-monitor，独立仓库，不在本仓内）通过 `Start-BenefitMonitor.cmd` 启动后在浏览器打开 `http://127.0.0.1:17321/`。页面分别配置织境账号、Solum 账号服务器和同步中继；两套账号都会自动获取、保存、刷新 access/refresh token。密码与会话令牌由 Windows 当前用户 DPAPI 加密保存在 `%LOCALAPPDATA%\BenefitMonitor\secrets.dat`，页面/API 不回显。应用预置三个织境渠道，可分别启用检测和恢复通知，也可新增织境渠道 ID 或通用 HTTP JSON 检测。
 
-应用持久化每路上次状态，首次启动只建立基线，只有从非正常恢复到正常才通知；Solum 暂时不可达时保留待发事件并在下一轮重试。配置和状态保存在 `%LOCALAPPDATA%\BenefitMonitor`。旧的 `D:\ClaudeSpace\check-gptplus.ps1` 仍保留为单渠道命令行兼容入口。
+应用持久化每路上次状态，首次启动只建立基线，只有从非正常恢复到正常才通知；Solum 暂时不可达时保留待发事件并在下一轮重试。配置和状态保存在 `%LOCALAPPDATA%\BenefitMonitor`。旧的 `check-gptplus.ps1`（开发机本地脚本，不入库）仍保留为单渠道命令行兼容入口。
 
 桌面壳配置好后顶栏出现同步按钮，ticker 每 5 分钟自动同步。审计日志按设计不同步（§4）。换掉主密钥即吊销所有旧设备。
 

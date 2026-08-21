@@ -1,6 +1,25 @@
 # MISC 杂项记录
 
 > 强制记录：不适合写进 CHANGELOG（没有对应"功能变更"）、但有留存价值的内容——讨论过又否决的方案、临时决定的原因、非功能性观察等。
+>
+> 插入规则（2026-08-21 定）：新条目插在本行下方、保持全文件新→旧；**不要追加到文件尾部**——历史上尾部追加造成时序错乱，最新条目沉底（2026-08-21 已修正归位）。
+
+## 主题索引（检索用，正文按日期新→旧）
+
+- 账号/云服务：2026-08-14 refresh 后继确定性 · 2026-08-14 设备 PKI 减法 · 2026-08-11 私有 Git 非凭据库 / 通知上云 opt-in
+- Android 生产链：2026-08-19 生产链路审计待办与仓库迁移缓存边界（含修复轮）
+- 前端/UI：2026-07-29 UI 状态持久化与业务缓存两套 · 2026-07-15 UI 全面重构设计决策 · 2026-07-15 前端设计 Skill 安装
+- 同步：2026-07-19 隔离区与「版本协商不可行」· 2026-07-12 sync v1 取舍（LWW / 触发器 / guid）
+- 通知管线 F20：2026-07-19 设计稿 · 双车道实现取舍 · 红线重划（同步/上云解耦）· 三档动作边界
+- GenUI/组件 F18/F19：2026-07-19 F19 设计稿与竖切取舍 · 2026-07-18 立项与后续方向 · 2026-07-14 理念立项 · 2026-07-20 Phase 11 各步验收
+- 隐私边界：2026-07-27（晚）裁定推翻与移植判据 · 2026-07-18 三级分级立项 · 2026-07-17 通知隐私边界优先
+- 流程纪律：2026-07-19 提交纪律 / AGENTS 补规 / 文档迁址 · 2026-07-17 AGENTS 扩写 · 2026-07-16 rustfmt 统一与仓库卫生
+- 对外材料：2026-07-22 演示视频 v3 · 2026-07-21 开源发布与 CSP 边界 · 2026-07-15 Build Week 类别与演示视频
+- 早期实现取舍：2026-07-06/07/12 系列（ticker 时钟、persona、导入提取、通知监听、Health Connect、pa-app 壳等）
+
+## 2026-08-20 验收回修：生产可见错误出口
+
+通知管线、通知捕获、息壤拉取和邮件页面属于同一条 Android/桌面 WebView 展示边界：底层异常保留在控制台诊断，用户界面统一显示可重试的人话提示。新增前端检查会拒绝 `String(e)` 直接写入文本节点、空状态或隐私状态，避免后续页面绕过 `safeUserError`。
 
 ## 2026-08-19 Android 生产链路审计待办与仓库迁移缓存边界
 
@@ -656,6 +675,15 @@ GPT-5.6 is used for: chat replies with **Generative UI envelopes** (the model co
 - **双 token 的刷新必须立即持久化**：Soulous refresh token 会轮换，因此即使随后某个业务 endpoint 拉取失败，也要先把已刷新的 access/refresh token 写回本机配置；否则下次启动会丢失唯一可用的 refresh token，离线缓存虽还在却无法恢复联网。
 - **打卡历史明确降级**：现有 `/api/checkin` 仅为今日快照，8.1 不通过“连续天数”反推历史；需要历史周报素材时，等 Soulous 增加只读聚合接口后再扩展，保持 PA 只读且不臆造事实。
 
+## 2026-07-18 Phase 8.2：受控日程推送的边界选择
+
+**用户授权与范围**：用户明确授权修改 Soull 接收端；首批仅允许 PA 日程事件，并且只能在 Soulous 接收用户自行开启 AI 记忆后才进入 RAG。由此把实现收窄为一个可关闭的类别和一条单向接收链路，而非泛化的“同步”。
+
+- **不做后台自动推送。** 即使用户已打开类别白名单，仍须在每条日程上显式点「推送」并通过 Sensitive Tool 的一次性 Guard 确认；这是当前“用户允许才可以”的代码化表达。自动批量同步、重要度/任务/场景/穿戴等新类别都需新的用户拍板。
+- **投影比架构 L2 总表更窄。** v1 只发送标题、类型、开始/结束时间和地点；不因为字段“也许属于 L2”就带上重要度、参与人或任何来源线索。预览直接由将要序列化的投影生成，防止界面承诺和实际 payload 脱节。
+- **`local_only` 在核心层二次兜底。** 前端隐藏入口不作为安全边界；任意 IPC/CLI 调用若试图推送第三方通知来源的事件，`pa-core` 都会拒绝。推送 HTTP 不调用 ingest、提醒 ticker 或 sync，避免派生副作用。
+- **Soull 只入、不回流。** 接收端按 JWT 用户隔离、稳定外部 ID 幂等覆盖、严格拒绝未列 payload 字段，且刻意不提供 PA 读取这些外部上下文的 API；这样 RAG 中带 `source=pa` 的事实不会经现有 Soulous → PA 拉取路径回声放大。AI 记忆关闭时仍可保留用户自己的外部事实记录，但绝不新建 embedding。
+
 ## 2026-07-17 桌面壳 computer-use 全流程走查（QA 观察，未改代码）
 
 > **2026-07-18 更新**：下列发现除注明外已全部修复，见 CHANGELOG 当日条目；发现 11（杂窗）查明为 debug 构建的控制台窗口（`main.rs` 只在 release 挂 `windows_subsystem = "windows"`），release 无此窗口，**非 bug 不修**——关它等于杀进程属控制台正常行为。
@@ -890,6 +918,16 @@ Work incrementally: brief.rs + its unit tests first, then orchestrator wiring + 
 
 **补充（同日）配音**：用户反馈纯静音演示太枯燥，加了旁白。本机 Windows SAPI 自带语音包，`System.Speech.Synthesis` 离线合成 6 段解说词（对应六个画面阶段：开场/核心抽取/F18 概念/第二个例子/按钮回流/记忆台账），`ffmpeg adelay` 按画面实际出现时间对齐每段起始点后 `amix` 混合，再 `-c:a aac` 复用进视频。全离线合成，不依赖任何云端 TTS。视频总长顺带从 140s 延到 150s，给记忆台账收尾段留够旁白时间。先做的中文版（`Microsoft Huihui Desktop`），用户改口要纯英文，又用 `Microsoft Zira Desktop`（en-US）重新合成一版英文解说词换上——时间轴 offset 复用同一套（各画面阶段的起止秒数不变，只是语音源换了语言），最终提交版是纯英文配音。
 
+## 2026-07-15 装了两个第三方前端设计 Claude Skill（impeccable + taste-skill）
+
+**背景**：用户要求给 Claude 装两个 GitHub 上的前端"品味"技能，用来在写 UI 代码时约束设计质量、防止生成风格平庸的界面。两者都通过 `npx <pkg> install` 交互式安装脚本完成（下载并执行第三方脚本，用户自己在终端跑的，不是 Claude 代为自动执行——涉及"从不可信来源下载执行代码"，按规矩这类操作只能由用户本人触发）。
+
+**装了什么、落在哪**：
+- **impeccable@3.2.1**（[pbakaus/impeccable](https://github.com/pbakaus/impeccable)）——项目级安装到 `.claude/skills/impeccable/`（`SKILL.md` + `reference/` + `scripts/`），并在 `.claude/settings.local.json` 注册了一个 `PostToolUse` hook：每次 `Edit|Write|MultiEdit` 之后跑 `scripts/hook.mjs`，检测 UI 文件改动、把发现的问题回灌成 system reminder。本地配置落在 `.impeccable/config.local.json`。**这个 hook 会在此后每次改前端代码时自动触发**，如果发现它误报太多或拖慢节奏，可以用 `/impeccable hooks off` 关掉。
+- **taste-skill v1**（design-taste-frontend-v1，[Leonxlnx/taste-skill](https://github.com/leonxlnx/taste-skill)）——通过另一个安装器（`npx skills add`）装的，选择目标是 "Claude Code"，但实际落地在 `.agents/skills/design-taste-frontend-v1/SKILL.md`（"Universal" 目录，多个 CLI agent 共享的约定），**没有**像 impeccable 一样出现在 `.claude/skills/` 下。仓库根目录新增了 `skills-lock.json`（该安装器的版本锁定文件）。**已查证 Claude Code 目前不读 `.agents/skills`**：官方文档只提到项目技能来自 `.claude/skills/`（从工作目录向上扫到仓库根），支持 `.agents/skills` 还只是一个 open 的 feature request（[anthropics/claude-code#66352](https://github.com/anthropics/claude-code/issues/66352)）。因此把 `SKILL.md` 又复制了一份到 `.claude/skills/design-taste-frontend-v1/`，两边内容目前一致；`.agents/skills/` 下的原始安装保留不动（给其他也支持这个约定的工具用），以后 taste-skill 升级要记得两边都更新，或者干脆等 Claude Code 原生支持 `.agents/skills` 后删掉 `.claude/skills/` 里这份手动拷贝。
+
+**`.gitignore` 更新（用户 2026-07-15 拍板）**：`.claude/`、`.agents/`、`.impeccable/`、`skills-lock.json` 整体作为"本机 AI agent 工具配置"忽略，不进仓库——用户明确选择"本机工具"而非"团队共享技能"这条路，所以连 `skills/impeccable/`、`.agents/skills/` 这些技能内容本身也一并忽略，不只是 `*local*` 配置文件。以后想让这两个 skill 对其他协作者也生效，需要单独把对应子路径从忽略规则里摘出来再提交。
+
 ## 2026-07-14 交互式生成（Generative UI）理念立项讨论
 
 **背景**：用户提出，要把 PA 打造成真正意义上的个人 agent，「交互式生成」必不可少——即 agent 的回应不再局限于纯文本 + 预置视图，而是能按对话语境**动态生成可交互的 UI**（卡片、表单、选择器、确认面板），用户在生成的 UI 上的操作再回流给 agent 形成闭环。此前项目里只有精神上相近的两处：F9 导入的"先预览再确认"、F7 HITL 确认弹窗——都是**预置的**交互面，不是生成的。
@@ -920,12 +958,6 @@ Work incrementally: brief.rs + its unit tests first, then orchestrator wiring + 
 - **`minSdk` 从 24 提到 26**：Health Connect client 库本身要求 API 26+（Health Connect app/模块要 28+，但那是运行时 `getSdkStatus()` 判断，不是编译期硬约束）。Gradle 的 manifest merger 要求消费方 app 的 `minSdk` ≥ 每个库模块的 `minSdk`，所以整个 `pa-app` 的 Android 最低支持版本被动提高。对自用应用是可接受的代价（API 26 = Android 8.0，2017 年发布，覆盖面早已足够）。
 - **轮询频率对齐同步频率（5 分钟一次），不是每分钟**：ticker 本来每分钟跑一轮到点提醒检查，但 Health Connect 读取是真实跨进程 IPC 调用（不是本地文件读取），没必要每分钟都打一次；复用了 F17 后台同步已有的"每 5 个 tick 一次"节流模式。
 
-## 2026-07-07 通知监听的实现取舍（F1 v1）
-- **文件队列（JSONL inbox）而非正经 tauri Android 插件（JNI 直调）**：插件方案要为一个"传几行文本"的需求引入完整的插件工程（Kotlin 插件类 + Rust binding + 权限声明）；v1 用应用私有目录里的 append-only 文件 + ticker 轮询，跨语言接口就是"一行一个 JSON"，两侧都好测。将来要做"应用内一键跳转通知使用权设置页"时反正要建插件，届时再迁移。
-- **读后即删的竞态窗口（读与删之间新追加的行会丢）**：接受。捕获是辅助性输入而非审计记录，丢一条的代价是"少记一个日程"，而消除竞态需要文件锁或轮换协议，v1 不值得。已在代码注释与本条留痕。
-- **隐私门放在 pa-core（`ingest_captured`）而不是壳层**：第三方通知文本绝不进云端（连规则解析失败时的 LLM 兜底也不走），这个不变量跟 HITL Guard 一样应该由核心层保证，壳层只是搬运工。丢弃的文本不落任何表——不囤积。
-- **PA 自己的提醒通知会被监听服务捕获成回环**：Kotlin 侧按包名过滤自家通知，这是必须的第一道闸（否则"PA 提醒你开会"又被抽取成新事件）。
-
 ## 2026-07-12 多设备同步的实现取舍（sync v1）
 - **行级 LWW 而非 CRDT 字段级合并**：架构稿原建议 CRDT，实际评估后 v1 用"行级 last-write-wins（毫秒 UTC 时钟 + 设备 id 决平局）"。理由：本项目的行几乎都是"单动作产物"（一次 ingest、一次 dismiss），同一行被两台设备并发改不同字段的场景近乎不存在；CRDT 的复杂度花在这里买不到东西。数据模型里天然并发的部分（人格版本历史）本来就是 append-only，用"版本号本地重编号 + guid 去重"就消化了冲突。将来如果出现真实的字段级并发编辑需求（如共享编辑一条日程的不同字段），再升级。
 - **变更捕获放 SQLite 触发器而不是 Rust 写路径**：写路径有十几处（含级联删除、`INSERT OR IGNORE`），逐处手动记 oplog 必漏；触发器在库层兜底，级联删除天然被捕获。代价是两条不变量必须守住：① 应用远端操作前必须置 `sync_applying` meta 标志（防回声），封装在 `apply_remote_ops` 单一入口里；② 新增同步表时要同步加触发器 + guid 列（migrate_sync 里模板化生成，照抄即可）。
@@ -933,6 +965,12 @@ Work incrementally: brief.rs + its unit tests first, then orchestrator wiring + 
 - **hlc 用墙钟毫秒而非真 HLC/向量钟**：自用两三台设备、同步间隔分钟级，时钟偏差造成的错序窗口远小于实际并发窗口；平局用设备 id 决定，保证两边收敛到同一结果（收敛性 > 谁赢）。
 - **老库迁移即 bootstrap**：guid 回填 UPDATE 放在触发器创建之后执行，回填本身生成全量 upsert 操作——新设备第一次 sync 就拿到完整历史，不需要单独的"首次全量导出"路径。
 - **oplog 只增不删**：v1 不做修剪。体量估算：个人日程/日志量级下一年也就几万行，SQLite 无压力；将来要剪也容易（保留每 guid 最新一条即可）。
+
+## 2026-07-07 通知监听的实现取舍（F1 v1）
+- **文件队列（JSONL inbox）而非正经 tauri Android 插件（JNI 直调）**：插件方案要为一个"传几行文本"的需求引入完整的插件工程（Kotlin 插件类 + Rust binding + 权限声明）；v1 用应用私有目录里的 append-only 文件 + ticker 轮询，跨语言接口就是"一行一个 JSON"，两侧都好测。将来要做"应用内一键跳转通知使用权设置页"时反正要建插件，届时再迁移。
+- **读后即删的竞态窗口（读与删之间新追加的行会丢）**：接受。捕获是辅助性输入而非审计记录，丢一条的代价是"少记一个日程"，而消除竞态需要文件锁或轮换协议，v1 不值得。已在代码注释与本条留痕。
+- **隐私门放在 pa-core（`ingest_captured`）而不是壳层**：第三方通知文本绝不进云端（连规则解析失败时的 LLM 兜底也不走），这个不变量跟 HITL Guard 一样应该由核心层保证，壳层只是搬运工。丢弃的文本不落任何表——不囤积。
+- **PA 自己的提醒通知会被监听服务捕获成回环**：Kotlin 侧按包名过滤自家通知，这是必须的第一道闸（否则"PA 提醒你开会"又被抽取成新事件）。
 
 ## 2026-07-07 F9 导入提取的实现取舍（persona_import）
 - **不引入分词库，用"语气词词表 + 中文 3–4 字 n-gram"凑高频短语**：加 jieba 类依赖只为一个初稿功能不值；n-gram 的代价是重叠窗口噪音（同一句「稳了稳了哈哈哈」会产出 稳了稳了/了稳了哈/冲就完事 等一堆计数相同的碎片），迭代了三轮才收敛：① 中文 gram 只取 3–4 字（2 字 gram 基本全是边界碎片，真实 2 字口头禅由词表覆盖）；② 贪心选取时，与已选短语共享任意 2 字片段的候选直接压掉；③ 平局排序加"以结构助词/笑字开头者降权"（只罚开头不罚结尾——中文口头禅常以「了」结尾如「完事了」，但以「了」开头必是窗口滑过词边界）+ 字典序兜底保证确定性（HashMap 迭代序不稳定，同分候选会随机换人）。
@@ -989,25 +1027,3 @@ Work incrementally: brief.rs + its unit tests first, then orchestrator wiring + 
 - **护栏用「能力型令牌」在类型层面兜底**：`Grant` 只能由 `guard.rs` 内部构造，`Tool::execute` 必须收 `&Grant`，因此模块外无法绕过 Guard 直接执行高危工具——把架构 §3.3「执行层本身没有直接调用权限」落成了编译期约束，而非仅运行期检查。
 - **新增依赖 `regex`**（架构未列）：中文时间/实体解析离不开它，且纯 Rust、构建无副作用。其余依赖（chrono/rusqlite-bundled/serde/thiserror/getrandom/clap/anyhow）均在架构选型范围内。
 - **`Reasoner`（云端 LLM 网关）只留了 trait + `NullReasoner` 占位**，没接真实 Claude API：headless 无 key/无网时无法测，且离线兜底（F16）本就要求不依赖云端。真实网关（脱敏/最小化上下文，架构 §3.6）在有 key 的环境再实现，接口已就位。
-
-## 2026-07-15 装了两个第三方前端设计 Claude Skill（impeccable + taste-skill）
-
-**背景**：用户要求给 Claude 装两个 GitHub 上的前端"品味"技能，用来在写 UI 代码时约束设计质量、防止生成风格平庸的界面。两者都通过 `npx <pkg> install` 交互式安装脚本完成（下载并执行第三方脚本，用户自己在终端跑的，不是 Claude 代为自动执行——涉及"从不可信来源下载执行代码"，按规矩这类操作只能由用户本人触发）。
-
-**装了什么、落在哪**：
-- **impeccable@3.2.1**（[pbakaus/impeccable](https://github.com/pbakaus/impeccable)）——项目级安装到 `.claude/skills/impeccable/`（`SKILL.md` + `reference/` + `scripts/`），并在 `.claude/settings.local.json` 注册了一个 `PostToolUse` hook：每次 `Edit|Write|MultiEdit` 之后跑 `scripts/hook.mjs`，检测 UI 文件改动、把发现的问题回灌成 system reminder。本地配置落在 `.impeccable/config.local.json`。**这个 hook 会在此后每次改前端代码时自动触发**，如果发现它误报太多或拖慢节奏，可以用 `/impeccable hooks off` 关掉。
-- **taste-skill v1**（design-taste-frontend-v1，[Leonxlnx/taste-skill](https://github.com/leonxlnx/taste-skill)）——通过另一个安装器（`npx skills add`）装的，选择目标是 "Claude Code"，但实际落地在 `.agents/skills/design-taste-frontend-v1/SKILL.md`（"Universal" 目录，多个 CLI agent 共享的约定），**没有**像 impeccable 一样出现在 `.claude/skills/` 下。仓库根目录新增了 `skills-lock.json`（该安装器的版本锁定文件）。**已查证 Claude Code 目前不读 `.agents/skills`**：官方文档只提到项目技能来自 `.claude/skills/`（从工作目录向上扫到仓库根），支持 `.agents/skills` 还只是一个 open 的 feature request（[anthropics/claude-code#66352](https://github.com/anthropics/claude-code/issues/66352)）。因此把 `SKILL.md` 又复制了一份到 `.claude/skills/design-taste-frontend-v1/`，两边内容目前一致；`.agents/skills/` 下的原始安装保留不动（给其他也支持这个约定的工具用），以后 taste-skill 升级要记得两边都更新，或者干脆等 Claude Code 原生支持 `.agents/skills` 后删掉 `.claude/skills/` 里这份手动拷贝。
-
-**`.gitignore` 更新（用户 2026-07-15 拍板）**：`.claude/`、`.agents/`、`.impeccable/`、`skills-lock.json` 整体作为"本机 AI agent 工具配置"忽略，不进仓库——用户明确选择"本机工具"而非"团队共享技能"这条路，所以连 `skills/impeccable/`、`.agents/skills/` 这些技能内容本身也一并忽略，不只是 `*local*` 配置文件。以后想让这两个 skill 对其他协作者也生效，需要单独把对应子路径从忽略规则里摘出来再提交。
-
-## 2026-07-18 Phase 8.2：受控日程推送的边界选择
-
-**用户授权与范围**：用户明确授权修改 Soull 接收端；首批仅允许 PA 日程事件，并且只能在 Soulous 接收用户自行开启 AI 记忆后才进入 RAG。由此把实现收窄为一个可关闭的类别和一条单向接收链路，而非泛化的“同步”。
-
-- **不做后台自动推送。** 即使用户已打开类别白名单，仍须在每条日程上显式点「推送」并通过 Sensitive Tool 的一次性 Guard 确认；这是当前“用户允许才可以”的代码化表达。自动批量同步、重要度/任务/场景/穿戴等新类别都需新的用户拍板。
-- **投影比架构 L2 总表更窄。** v1 只发送标题、类型、开始/结束时间和地点；不因为字段“也许属于 L2”就带上重要度、参与人或任何来源线索。预览直接由将要序列化的投影生成，防止界面承诺和实际 payload 脱节。
-- **`local_only` 在核心层二次兜底。** 前端隐藏入口不作为安全边界；任意 IPC/CLI 调用若试图推送第三方通知来源的事件，`pa-core` 都会拒绝。推送 HTTP 不调用 ingest、提醒 ticker 或 sync，避免派生副作用。
-- **Soull 只入、不回流。** 接收端按 JWT 用户隔离、稳定外部 ID 幂等覆盖、严格拒绝未列 payload 字段，且刻意不提供 PA 读取这些外部上下文的 API；这样 RAG 中带 `source=pa` 的事实不会经现有 Soulous → PA 拉取路径回声放大。AI 记忆关闭时仍可保留用户自己的外部事实记录，但绝不新建 embedding。
-## 2026-08-20 验收回修：生产可见错误出口
-
-通知管线、通知捕获、息壤拉取和邮件页面属于同一条 Android/桌面 WebView 展示边界：底层异常保留在控制台诊断，用户界面统一显示可重试的人话提示。新增前端检查会拒绝 `String(e)` 直接写入文本节点、空状态或隐私状态，避免后续页面绕过 `safeUserError`。

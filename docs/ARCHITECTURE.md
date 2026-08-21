@@ -1,6 +1,6 @@
 # 息壤 Solum（Personal Agent）架构文档
 
-> 状态：本文档是设计的唯一权威（AGENTS.md 开工前必读）。**Phase 1–11 已全部落地，Phase 12 已交付首项 F21 邮箱连接器（2026-07-20）**；各阶段的完成时间、范围与验收见本文 §6 路线图与 [CHANGELOG.md](CHANGELOG.md)，实现相对设计稿的具体取舍记录在 [MISC.md](MISC.md)。（2026-07-27 文档整治：原状态段的逐阶段流水与 §6 重复且长期滞后于 §6，已删去，此处只维护一句总体状态。）模块划分、数据流、隐私边界与 MVP 范围如下。代码：`crates/solum-core`（核心库）+ `crates/solum-cli`（headless 演示 CLI）+ `crates/solum-app`（Tauri 2 桌面/Android 壳）+ `crates/solum-sync-server`（自托管同步中转）+ `crates/solum-notif-access`（Android 通知权限/前台处理本地插件）+ `crates/solum-health-connect`（Android Health Connect 只读插件）+ `crates/solum-alarm`（Android AlarmManager 系统级提醒插件，app 进程死了提醒也准点响），上手见根目录 `README.md`。
+> 状态：本文档是设计的唯一权威（AGENTS.md 开工前必读）。**Phase 1–12 已全部落地**（Phase 12 首项 F21 邮箱连接器 2026-07-20 交付）。**2026-08 主线：统一账号中心**——`solum-cloud` + PostgreSQL 中心库（0.4.0→0.6.4）承载账号登录即恢复 E2E 同步主密钥、AI 配额与模型回退、按租户强制 RLS 隔离（§3.6 第 8–11 条、§3.8）；Android 发布链推进至 0.2.8（versionCode 1018），生产真机验证矩阵见 [TODO.md](TODO.md)。各阶段的完成时间、范围与验收见本文 §6 路线图与 [CHANGELOG.md](CHANGELOG.md)，实现相对设计稿的具体取舍记录在 [MISC.md](MISC.md)。（2026-07-27 文档整治：原状态段的逐阶段流水与 §6 重复且长期滞后于 §6，已删去，此处只维护一句总体状态。）模块划分、数据流、隐私边界与 MVP 范围如下。代码：`crates/solum-core`（核心库）+ `crates/solum-cli`（headless 演示 CLI）+ `crates/solum-app`（Tauri 2 桌面/Android 壳）+ `crates/solum-sync-server`（自托管同步中转）+ `crates/solum-notif-access`（Android 通知权限/前台处理本地插件）+ `crates/solum-health-connect`（Android Health Connect 只读插件）+ `crates/solum-alarm`（Android AlarmManager 系统级提醒插件，app 进程死了提醒也准点响），上手见根目录 `README.md`。
 
 ## 0. 项目定位
 
@@ -392,7 +392,7 @@
 1. ✅ **8.1 BloomXP → Solum 只读拉取（L3，2026-07-18）**：`solum-core::soulous` 调用 BloomXP 现有 REST API，使用现有 JWT 双 token 并在 401 时自动刷新；服务器地址与 token 仅存 gitignore 的本地 `solum-soulous.json`，缺配置时整体静默关闭。课表/考试/任务/打卡/专注时长以原子快照进入 schema v6 独立 `soulous_facts` 表，强制 `source=soulous`、稳定 guid、同步触发器与行级 LWW；**不写入 `memory_facts`、不进 recall 语料**。考试数据接 Importance Classifier，考试/任务接 F10 Suggestion Engine，全部五类数据接 F14 周报素材；CLI 提供 `solum soulous pull/status`，桌面壳「设置 → 云端」提供本地配置和手动拉取。网络或解析失败绝不覆写上次完整缓存，也不进入 `ingest`/提醒/ticker 链路（F16）。**接口偏差**：当前 `GET /api/checkin` 只提供“今日是否打卡/连续天数/余额”，没有历史打卡列表；本实现仅于成功拉取时保存当日快照，不伪造历史记录。若日后需要完整历史，再由 BloomXP 另行增加只读聚合端点。
 2. ✅ **8.2 Solum → BloomXP 受控推送（L2，2026-07-18）**：Solum 增加默认关闭的 `push_schedule_events` 单类白名单、F12 可见状态与逐日程 `soulous_push_event` Sensitive Tool；一次性 Guard 确认展示与实际 HTTP 请求同源的最小投影（标题、类型、开始/结束时间、地点），`local_only` 第三方通知来源一律拒绝。401 复用现有 refresh token 轮换，推送不经过 ingest、ticker 或同步。BloomXP 增加认证的单向 `/api/external-context` 接收端及 schema v23/v24，按 `user + source + type + externalId` 幂等更新、严格拒绝白名单外字段、固定 `source=pa`，没有反向读取端点；入库事实仅在接收用户的 `aiMemoryEnabled` 开启时由 `RetrievalService` 写入 RAG。
 
-**下一步待做队列（2026-07-19 排期，按依赖顺序）**：
+**Phase 9–12（2026-07-19 排期，✅ 已全部完成，按依赖顺序）**：
 
 **Phase 9（通知上云地基，✅ 2026-07-19 完成；默认值 2026-08-11 收紧）**：设置开关「通知上云」已接入 core、CLI 与「设置 → 隐私」；最初按作者自用取舍为 opt-out，现改为新安装默认关闭、用户显式开启。`ingest_captured` 在捕获时读取开关，令 raw input/event/notification 共享 `local_only` scope，既有同步触发器列驱动自动生效（§3.8）。§3.10 recall 在开时只纳入 `local_only=0` 的通知派生语料、关时全部排除；历史 `local_only=1` 行不回填，开关本身保持设备本地。
 
