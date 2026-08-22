@@ -9,10 +9,22 @@
 - **Android 构建/打包/真机**：08-19 restart 只退出进程 · 08-14 JNI 预编译跳过注入 / `Os.flock` 不存在 · 08-13 ndk 相对路径 / Release 输出被占用 · 08-12 Kotlin daemon 跨盘 · 08-11 arm64 flavor 配对 / vivo ADB 断连 / CSP nonce 拒内联 style · 07-21 打包三连坑（native-tls / 改名遗留生成文件 / PERL5LIB）· 07-20 改名两坑 · 07-14 构建五连坑 / AlarmManager 三连坑 · 07-12 Health Connect Kotlin 三连坑 · 07-07 Tauri Android 首建三连坑 / app_data_dir
 - **前端验证量具**：08-20 错误脱敏不只账号页 · 07-27 未显示面板零视口 · 07-20 details 几何失效 / offsetParent 对 fixed 恒真 / 后台标签冻结动画 / px 字号不随根字号 / 滚动量具视图切走失效 / 删节点遗留脚本调用 / 连续改状态再采样 · 07-19 hidden 被 display 压过 / harness 集合形状 / data URL 被拒 / 16×16 窗口 · 07-15 重构验证两坑
 - **同步/迁移/SQLite**：08-21 push 侧毒丸（pull 侧 07-19 条目的孪生）/ 整仓搬迁后 target 缓存引用旧绝对路径 · 08-14 无快照增量不能靠留存回收 · 08-12 服务器隔离了客户端仍可能混库 · 07-20 加列漏触发器 payload / 迁移不在事务撞唯一索引 / 标量列 LWW 吃掉一半 / FK 级联不触发子表触发器 / 不同步表更易漏导出 / 未来表名占位符 · 07-19 合并循环 return Err = 同步永久卡死
-- **服务端/账号/PostgreSQL**：08-14 集成测试要全新空库 / 密码裁剪语义不可猜升级 / 限流键无限+同步 KDF 自成 DoS / 注册成功与本机初始化的部分成功 / 进程内 Mutex 护不了跨进程会话文件 · 08-13 FOR UPDATE 需表级 UPDATE 权限 / git archive CRLF / Node 测试并行 socket 假失败 / 并行测试改环境变量互相覆盖 · 08-12 relay 仪表盘 CORS
+- **服务端/账号/PostgreSQL**：08-22 生产迁移海外 VPS 核实 / 恢复演练要预建 solum_api·solum_runtime 角色 / 业务表不在 public schema / 空 crontab 下管道式安装会静默失败 · 08-14 集成测试要全新空库 / 密码裁剪语义不可猜升级 / 限流键无限+同步 KDF 自成 DoS / 注册成功与本机初始化的部分成功 / 进程内 Mutex 护不了跨进程会话文件 · 08-13 FOR UPDATE 需表级 UPDATE 权限 / git archive CRLF / Node 测试并行 socket 假失败 / 并行测试改环境变量互相覆盖 · 08-12 relay 仪表盘 CORS
 - **安全审核修复期教训（07-21 系列）**：宽松断言给缺陷让路 · 跨进程共享可变文件要换数据结构 · 计数器加锁/rename 都不够 · spool 改造自己丢数据 · 复审打回六条 · 修复期五连坑 · 幂等 receipt 配按龄清理等于重开洞 · 把状态误当事件
 - **Windows/PowerShell/工具链**：08-12 PowerShell 5.1 UTF-8 与 JSON 编码 · 07-21 演示视频三坑 · 07-18 PowerShell round-trip 乱码 · 07-06 link.exe/cl.exe 不在 PATH
 - **时间解析/实体抽取（07-06 系列）**：时钟纳秒穿透 UI / 纯日期漏判 / 中文地点人名贪婪 / 规则抢答压制 LLM 兜底 / datetime-local 连续键入串段
+
+## 2026-08-22 生产已在海外 VPS + Cloudflare：本机直连 RST 的真凶是本地 VPN；备份与恢复演练落地
+
+- **现象（接上条）**：08-21 定案「源站迁出阿里云」后生产实际状态一度不明。08-22 会话实测发现 solum-cloud 与 gitea 容器已在海外 VPS（34.104.162.153，1Panel/openresty）运行（Up 2 days），DNS 已全量托管 Cloudflare（橙云）；但**本开发机不走代理直连 `solumsync`/`git.tannerlab.xyz` 仍被 RST**——看起来「迁移没用」。
+- **排查与根因**：从阿里云中转机（干净国内网络）走完整 CF 链路请求 `https://solumsync.tannerlab.xyz/v1/health` 连续 3 次 200（0.15–0.48s），`git.tannerlab.xyz` 200；openssl s_client 对 CF 边缘握手证书验证 OK；VPS 本地链（openresty :8443 → 容器 127.0.0.1:18083）健康。公网路径完全正常 → **本机 RST 是本地 VPN TUN 模式对直连流量的干扰**，属客户端环境问题。08-21 的指纹过滤结论仍成立，但源站离开阿里云后该过滤路径不再被经过，问题随之消解。
+- **现架构（2026-08-22 快照）**：客户端 → CF 边缘 :443 → VPS openresty :8443（LE 证书）→ 各容器：`solumsync.tannerlab.xyz`→127.0.0.1:18083（solum-cloud 0.6.4/11c1e246 + 独立 postgres）；`git.tannerlab.xyz`→gitea-ee :3000。阿里云 8.148.11.79 只剩 legacy 中转容器（solum-cn-relay 默认欢迎页、bloom-hut-relay），host nginx 还留着指向已无流量的 solumsync vhost——待清理后可考虑退掉整机。
+- **同日落地**：① PG 备份编排 `/usr/local/bin/solum-pg-backup.sh` + root crontab（每日 UTC 03:23，保留 14 份，目录 `/opt/1panel/backup/solum-cloud/`）；② 恢复演练通过：全新 postgres:17-alpine 起库、预建角色、恢复、10 表行数逐一比对一致、0 错误；手册同目录 `RESTORE.md`。release keystore 已做仓库外加密备份（Deliverables，密码在独立密码管理器）。
+- **如何避免（本条四个坑）**：
+  - pg_dump 含 `solum_api`/`solum_runtime` 的 OWNER/GRANT 语句，恢复进全新实例必须**先建这两个 NOLOGIN 角色**再 restore，否则刷一批 ERROR（数据仍会进库但属主错误）。
+  - 业务表在 `ai`/`auth`/`sync`/`vault` 四个 schema，public 为空——按 public 过滤 pg_tables 会得出「0 张表」的假结论。
+  - 空 crontab 下 `( crontab -l | grep -v X ; echo …) | crontab -` 可能静默失败，装完必须回读 `crontab -l` 验证（本次就中招了）。
+  - 「浏览器行、程序不行」在迁移后依然先怀疑**本机 VPN TUN**：换一台干净网络机器跑对照 curl 一测即分清是公网问题还是本机环境。
 
 ## 2026-08-21 真机同步 TLS EOF：疑因「本地 VPN fake-IP」被现场探针证伪，真凶是服务器侧按 TLS 指纹拦截
 

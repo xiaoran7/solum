@@ -10,6 +10,12 @@
 > Solum Android：0.2.8（1018 文案/时间解析/发布输入修复）· 0.2.7（1017 图标校正）· 0.2.6（1016 启动图标）· 0.2.5（1015 登录闪退修复）· 0.2.4（1014 后端复审收口）· 0.2.3（1013 默认模型/配额）· 0.2.2（1012 账户外壳/UI 重构）· 0.2.1（1011 中心化账号入口）· 0.2.0（1010 登录即恢复密钥）· 0.1.9（1009 UUID 隔离）· 0.1.8（1008 同步按账号隔离）· 0.1.7（1007 福利监控）· 0.1.5（1005 安全默认值收口）· 0.1.4（1004 排版/缓存）· 0.1.3（1003 导航重构）· 0.1.2（1002 UI 重构）· 0.1.1（1001 隐私门文案）· 0.1.0（1000 首个 release）
 > solum-cloud：0.6.4（密码语义/限流收口）· 0.6.3（刷新令牌权限）· 0.6.2（迁移与清理修复）· 0.6.1（AI 代理加固）· 0.6.0（模型目录/额度）· 0.5.1（中心化入口）· 0.5.0（恢复信封）· 0.4.0（PostgreSQL 中心库）
 
+- **文档整治第三批 + 生产运维收口（2026-08-22，纯文档与运维动作，零产品代码）**：
+  - **远端政策拍板（用户）**：GitHub 公开仓暂停维护，「专心做 gitea」——gitea 成为唯一权威远端。AGENTS.md 远端条款更新；本地 remote `origin` 更名 `github-paused` 防误推；公开边界清单条款保留备将来恢复。
+  - **生产架构核实记录**（PITFALLS 2026-08-22 条）：solum-cloud 与 gitea 已在海外 VPS 经 Cloudflare 回源运行（CF 边缘 :443 → openresty :8443 → 容器），公网路径实测通畅；08-21 定案的阿里云 TLS 指纹拦截随源站迁出而消解。TODO P0「TLS EOF 服务器侧处置」标记解决；vivo 真机同步复测仍待设备可用。
+  - **PG 备份编排 + 恢复演练落地**（TODO 云服务小加固部分收口）：每日 UTC 03:23 自动 pg_dump（保留 14 份，`/opt/1panel/backup/solum-cloud/`）；全新容器演练通过（预建 `solum_api`/`solum_runtime` 角色后 0 错误、10 表行数逐一比对一致），手册同目录 RESTORE.md。该项剩余：refresh/logout IP 限流、usage_events 保留期清理、recovery envelope 集成测试。
+  - release keystore 仓库外加密备份已建（Deliverables，AES-256/PBKDF2，解密回环验证通过；密码在独立密码管理器）。
+
 - **同步可靠性加固：push 侧毒丸防护 + SQLite busy_timeout + TLS 错误人话化（2026-08-21，客户端代码；未打包，版本号随下次发版递增）**——落实当日 TODO P0 三项：
   - **push 毒丸防护**（pull 侧坏 blob 暂存的对称补齐）：服务端永久拒绝（507 配额满 / 403 设备撤销 / 429 设备数上限 / 400、413 请求本身不可接受）不再让整轮同步失败——此前 push 在 pull 之前执行且任何错误直接 `return Err`，一次拒绝意味着设备永远重试同一批上传**并且再也收不到对端数据**。现在跳过剩余 push 半轮继续 pull，跳过数量计入 `SyncOutcome.push_skipped`，原因持久化到 `meta.sync_push_blocked`（下一次成功推送自动清除，与 history_gap 的人工确认不同）。单条超过 7 MiB 的 op 从「直接报错卡死后续所有 op」改为暂存进新表 `sync_push_holds`（只存 oplog 指针不存正文——oplog 永不清理，未来放宽上限后可回放重推），游标照常前进。瞬时失败（网络/超时/5xx）同样只跳过 push 半轮继续 pull 并以 `SyncOutcome.push_failed` 报告，不再让上传路径的抖动连带取消接收。CLI `sync`/`sync-status`、桌面 ticker 日志与设置页同步状态横幅均展示新状态。
   - **SQLite 双连接补 `busy_timeout=5000ms`**（`Store::open` 一处覆盖 orch 与 sync_store 两条长连接）：默认 0 时写撞车立即报 SQLITE_BUSY 且被 ticker 的 best-effort 日志吞掉，定性为 fire_due 半状态（已 mark_fired 未写行为日志）静默丢失；WAL 解决读写冲突，busy_timeout 补的是写写冲突。

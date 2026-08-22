@@ -8,10 +8,10 @@
 
 ### P0 立即项
 
-- [ ] **已复现/根因明确：真机同步 TLS `unexpected EOF`（2026-08-21 现场探针定案）。** 不是本地 VPN fake-IP：域名解析阿里云北京 8.148.11.79，服务器侧按 **SNI + TLS 指纹**选择性掐断——rustls 无 GREASE 的 ClientHello 被 RST，浏览器级指纹放行，换网络/走代理均无效（80 端口有阿里云 Beaver 未备案拦截页旁证）。客户端唯一能做的已做：HttpTransport 错误映射按 DNS/连接失败/**TLS 握手失败**/超时分类为人话（ureq 2.12 中该故障固定表现为 `ConnectionFailed` + "tls connection init failed"）。**剩余动作在服务器侧、需用户拍板**：① 完成 tannerlab.xyz ICP 备案；② 同步端点迁出阿里云大陆合规范围（香港/国际节点、已备案域名或前置 CDN）；③ 先查阿里云控制台合规通知。完整证据链见 PITFALLS 当日条目。
+- [x] **已解决（2026-08-22）：真机同步 TLS `unexpected EOF`——服务器侧处置完成。** 三选一（ICP 备案 / 迁出阿里云 / 前置 CDN）以「源站整体迁海外 VPS + DNS 托管 Cloudflare 橙云」形式落地：solum-cloud 与 gitea 容器均已在海外 VPS，链路为客户端 → CF 边缘 :443 → openresty :8443（LE 证书）→ 容器。公网路径实测通畅（阿里云中转机连续 3 次 HTTP 200，0.15–0.48s），08-21 定案的指纹拦截随源站离开阿里云而不再被触发。详见 PITFALLS 2026-08-22 条。**遗留**：vivo 真机上的同步复测仍待设备可用（见下方真机矩阵）；本开发机直连被本地 VPN TUN 干扰属本机环境问题，git/直连操作挂代理即可。
 - [x] **已做：push 侧毒丸防护（2026-08-21）。** 永久拒绝（507/403/429/400/413）只作废 push 半轮、继续 pull，原因持久化 `meta.sync_push_blocked`（下次成功推送自动清除）；单条超 7 MiB 的 op 暂存 `sync_push_holds`（只存 oplog 指针），游标照常前进；瞬时失败同样只跳过 push 半轮。设计取舍见 MISC 2026-08-21，ARCHITECTURE §3.8 已补条目。**遗留**：pull 侧 403（设备撤销同样阻断 pull）是否也要跳过半轮+持久标记，见下方新增条目。
 - [x] **已做：SQLite 双连接补 `busy_timeout=5000ms`（2026-08-21）。** `Store::open` 一处覆盖 orch 与 sync_store；PRAGMA 断言测试钉住。CoreError::Storage 抹掉 rusqlite 错误码仍是小项（见小项打包）。
-- [x] **已处理：公开仓泄露本机路径（本地侧）。** 根 README 两处 `D:\ClaudeSpace\...` 绝对路径已改为相对描述，tauri command 计数改为「100+」。**遗留**：origin/main 落后本地 17 提交，未推内容含生产账号名/真机型号/内网 URL；remote 政策已补进 AGENTS.md（2026-08-21，gitea 权威仓、推 origin 前过公开边界清单）；**16 个提交的 diff 级审计仍未做**，做完再定推送节奏（推送需用户当次授权）。
+- [x] **已处理：公开仓泄露本机路径（本地侧）。** 根 README 两处 `D:\ClaudeSpace\...` 绝对路径已改为相对描述，tauri command 计数改为「100+」。**收尾（2026-08-22 用户拍板）：GitHub 公开仓暂停维护、专心做 gitea——diff 级审计与推送节奏随之消解**；AGENTS.md 远端政策已更新，本地 remote `origin` 更名 `github-paused` 防误推，公开边界清单条款保留备将来恢复。
 - [x] **已做（仓库侧）：CI 补到真实开发路径（2026-08-21）。** 新增 `.gitea/workflows/ci.yml`（rust 三门含 Tauri Linux 依赖 + web-and-cloud 挂 postgres service，集成测试防静默 skip 有显式断言）；`.github/workflows/ci.yml` 加 android-manifest 门禁（gradle 仅跑到 manifest 合并 + aapt 断言三组件）并升级 web-and-cloud；配套 `scripts/gen-android-ci-settings.mjs` 解决 `tauri.settings.gradle` 为 gitignore 绝对路径生成文件、裸 checkout 无法跑 gradle 的问题（已验证与 tauri CLI 产物一致）。**边界**：Gitea 侧需服务器安装并注册 act_runner（ubuntu-latest 标签、docker 模式）才实际生效；Android job 依赖 GitHub 托管 runner 预装 SDK，自建 runner 需先补 sdkmanager 步骤。
 
 ### 结构性（排期）
@@ -23,7 +23,7 @@
 - [ ] **中继清扫定时化 + gap 水位线**：Rust 中继留存清理只在启动时跑一次（常驻进程形同虚设），照 Node 侧 setInterval 模式改定时执行并在 /v1/stats 暴露 last_sweep_at；history_gap 判定改用 swept_through 水位线收紧（现按全局 seq 判定有多租户误报边角，误报代价是粘性警告诱导用户全量重灌）。
 - [ ] **memory_ledger 分页**：全表加载无 LIMIT，作为 F12 日常界面在长寿命设备上内存与 JSON 载荷线性无界；加 (layer, limit, cursor) 按层懒加载，导出继续走 export.rs 独立路径。
 - [ ] **CSP 去 unsafe-inline 收尾**（MISC 2026-07-21 明记「别忘了」）：tauri.conf.json script-src 仍带 unsafe-inline，245KB 内联 script 未拆（此后 17 个提交文件又涨 45%）。拆 dist/app.js 时 check-frontend.mjs 必须同步改为校验 app.js——否则 `<script src>` 被捕获为空内容、vm.Script("") 静默通过，静态检查空转。
-- [ ] **云服务小加固打包**：/v1/auth/refresh|logout 补 IP 限流（认证面唯一没节流的未鉴权入口，垃圾 token 也打满一次 DB 事务 + advisory lock）；ai.usage_events 增加保留期清理（全库唯一无清理表）；compose 增加 pg_dump 备份编排（PG 卷是密文历史与恢复信封的唯一云端副本，目前零自动备份）+ 恢复演练一次记入 PITFALLS；recovery envelope 与 /v1/devices 补运行时集成测试（现仅 contract 正则断言，create-only 语义测不出来）。
+- [ ] **云服务小加固打包**：/v1/auth/refresh|logout 补 IP 限流（认证面唯一没节流的未鉴权入口，垃圾 token 也打满一次 DB 事务 + advisory lock）；ai.usage_events 增加保留期清理（全库唯一无清理表）；~~compose 增加 pg_dump 备份编排 + 恢复演练~~ ✅ **已做（2026-08-22）**：每日 UTC 03:23 自动 pg_dump（保留 14 份，`/opt/1panel/backup/solum-cloud/`），全新容器恢复演练通过（10 表行数比对一致、0 错误，手册 RESTORE.md 同目录）；recovery envelope 与 /v1/devices 补运行时集成测试（现仅 contract 正则断言，create-only 语义测不出来）。
 - [x] **已完成：文档检索层**（本批）：PITFALLS/MISC 尾部时序错乱修正 + 头部主题索引与插入规则；CHANGELOG 版本速查索引；docs/README.md 导航升级；ARCHITECTURE 状态句与 §6 标题更正。详见 CHANGELOG 当日条目。
 
 ### 小项打包
