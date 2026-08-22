@@ -2,6 +2,18 @@
 
 > 状态约定：`待验证` 尚未在目标环境跑通；`已通过` 已有可复查证据；`已复现` 已稳定观察到缺陷；`受阻` 受设备、权限或外部环境限制。Android 真机测试默认使用已安装的生产版客户端与 `https://solumsync.tannerlab.xyz`，不得卸载应用、清空数据或删除用户内容。
 
+## 2026-08-22 单客户端、单服务器架构收口（用户拍板）
+
+> 定案：保留多设备同步能力，但不再把同步中继作为第二套服务器。产品只保留一套 Solum 客户端代码与一个 `solum-cloud + PostgreSQL` 服务端；账号、AI、同步和必要的 Agent 元数据使用同一个 HTTPS origin、同一账号 access token 和同一 `user_id / tenant_id`。不同业务使用不同 API 路径是正常分层，不得再演变成不同服务或不同权威数据源。
+
+- [ ] **移除网页端与网页登录入口。** 删除 `server/src/dashboard.html` 及 `GET /` 的 HTML 页面；根路径改为 404、204 或不含用户功能的机器可读响应。注册、登录、设备和同步状态只在 Solum 客户端 UI 中提供。同步收紧浏览器 Origin/CORS 策略；文档不得把“没有网页 UI”夸大成“协议上任何非官方程序都绝对无法调用 API”，若未来要求客户端身份强证明，另行设计设备密钥、mTLS 或平台 App Attestation。
+- [ ] **客户端只认一个服务器地址。** 删除“账号服务器 / 同步服务器”双地址心智与配置入口；登录会话的 `server_url` 同时作为 `/v1/auth/*`、`/v1/ai/*`、`/v1/push|pull`、`/v1/keys/*` 的唯一 base URL。保留现有同源校验，服务端只从已验证 token 的不可变 `sub` 选择租户，拒绝客户端在 query/body 自报用户身份。
+- [ ] **退役独立 Rust/SQLite 中继。** 先盘点仍使用旧 `{url,token,key}` / `legacy` 租户的客户端和数据，按“停写 → 备份 → 映射账号 UUID → 导入 PostgreSQL → 数量核对 → 旧库只读观察”完成迁移；确认无旧写入后，从 Cargo workspace、构建/测试/部署链和文档删除 `crates/solum-sync-server`。不得让旧中继与 PostgreSQL 中心同时接受同一租户写入。
+- [ ] **收掉服务端 SQLite 兼容实现。** 数据迁移完成后删除 `server/src/server.js`、`npm run start:sqlite` 及只为双实现维护的契约分支；生产与开发默认都以 PostgreSQL 实现为唯一权威。一次性迁移器与必要的只读归档说明可独立保留，不得继续暴露第二套可写服务。
+- [ ] **统一域名与命名。** `solumsync.tannerlab.xyz` 只可在迁移期作为统一 `solum-cloud` 的兼容别名，不能再代表独立同步系统；选定最终统一 API 域名后，客户端、监控、反向代理、生产验证和文档一次切换，旧域名保留限时重定向/别名并记录下线条件。
+- [ ] **明确服务器数据边界并补契约测试。** 账号、会话、设备、恢复信封、AI 权益/用量、结构化告警和同步密文由服务器保存；日程、记忆、人格、通知、健康和聊天等业务正文仍以客户端本地库为权威，只作为端到端加密同步 blob 中转。测试钉住：同账号不同设备进入同一租户、不同账号严格隔离、pull 增量虽可因游标不同而不同但最终本地状态收敛一致。
+- [ ] **同步更新权威文档和产品文案。** 实施时更新 ARCHITECTURE §2/§3.8、PRIVACY、README、server/README、部署配置和设置页术语；把“Sync Server”统一改成“统一服务中的同步数据面”，避免用户继续理解成第二台服务器。
+
 ## 2026-08-21 全仓优化审计行动清单
 
 > 2026-08-21 会话对全仓做了七维度并行审计（Rust 核心 / 前端 / Node 云服务 / 同步加密 / Android / CI 发布 / 文档流程），每条发现经独立核查员对照代码与已拍板红线复核（证据不实杀掉、打分不当修正），同步维度由会话逐条抽查源码确认。以下为收敛后的行动清单，均未开工（标注 ✅ 的为当批已完成部分）；完整证据行号见当次会话记录。
@@ -17,10 +29,10 @@
 ### 结构性（排期）
 
 - [ ] **store.rs（5996 行）/ orchestrator.rs（5736 行）拆分**：占 solum-core 近半，分节注释完整即天然拆分线；Rust 多 impl 块机制下零 API 破坏，测试耦合已验证极低。每步独立提交三绿再进下一步；拆到哪节补哪节测试（email/soulous/notification_intelligence/store-sync 段测试密度与风险不成比例）。
-- [ ] **server 双实现收敛**：postgres-server.js 与 server.js 约 500 行复制粘贴，安全相关漂移已双向发生（waitForDrain 断连检查只有 sqlite 版有、parseAllowedOrigins 行为不同、AI 代理语义分叉最大）。照 http-security.js 先例抽 `src/http-core.js` + `src/ai-proxy.js`（quota-store 接口参数化），纯 Node 零新依赖，加契约测试钉住两入口同源。
+- [x] **已被 2026-08-22“单服务器架构收口”取代：不再收敛双实现。** PostgreSQL `postgres-server.js` 保留为唯一服务实现；SQLite `server.js` 在迁移完成后直接退役，不再为两入口抽公共层或继续投入功能建设。
 - [ ] **发布核对脚本化**：`scripts/verify-android-release.mjs`（aapt badging / ZIP 条目 / apksigner / manifest 三组件断言，末尾输出 CHANGELOG 可粘贴证据块）+ 版本三元组一致性检查（tauri.conf.json version / versionCode / Cargo.toml workspace version）+ Android 启动时 AlarmReceiver 自检绊线（PackageManager.getReceiverInfo，缺失时设置页显式告警）。0.2.6 生产 P1 正是从手工核对网缝隙漏出的。
 - [ ] **sync_oplog 保守压实设计**：本地 oplog 永不修剪（health_samples 按分钟写入，一年数十万行），但 oplog 同时是 LWW 比较基线不能裸删。方案：每 (tbl,guid) 仅留 hlc 最新一条、只处理早于留存期且已被推送游标越过的行、delete op 墓碑加倍保留、压实后把最大 (hlc,origin) 写入 meta 作比较基线；先 CLI `--dry-run` 报告可回收行数。动手前先在 MISC 记录取舍。
-- [ ] **中继清扫定时化 + gap 水位线**：Rust 中继留存清理只在启动时跑一次（常驻进程形同虚设），照 Node 侧 setInterval 模式改定时执行并在 /v1/stats 暴露 last_sweep_at；history_gap 判定改用 swept_through 水位线收紧（现按全局 seq 判定有多租户误报边角，误报代价是粘性警告诱导用户全量重灌）。
+- [x] **已被 2026-08-22“退役独立中继”取代：不再扩建 Rust 中继清扫。** PostgreSQL 同步历史在快照/压缩协议出现前继续永久保留并以租户硬配额拒绝新写入；旧 Rust 中继只完成迁移和下线，不再增加定时清扫、统计或水位线能力。
 - [ ] **memory_ledger 分页**：全表加载无 LIMIT，作为 F12 日常界面在长寿命设备上内存与 JSON 载荷线性无界；加 (layer, limit, cursor) 按层懒加载，导出继续走 export.rs 独立路径。
 - [ ] **CSP 去 unsafe-inline 收尾**（MISC 2026-07-21 明记「别忘了」）：tauri.conf.json script-src 仍带 unsafe-inline，245KB 内联 script 未拆（此后 17 个提交文件又涨 45%）。拆 dist/app.js 时 check-frontend.mjs 必须同步改为校验 app.js——否则 `<script src>` 被捕获为空内容、vm.Script("") 静默通过，静态检查空转。
 - [ ] **云服务小加固打包**：/v1/auth/refresh|logout 补 IP 限流（认证面唯一没节流的未鉴权入口，垃圾 token 也打满一次 DB 事务 + advisory lock）；ai.usage_events 增加保留期清理（全库唯一无清理表）；~~compose 增加 pg_dump 备份编排 + 恢复演练~~ ✅ **已做（2026-08-22）**：每日 UTC 03:23 自动 pg_dump（保留 14 份，`/opt/1panel/backup/solum-cloud/`），全新容器恢复演练通过（10 表行数比对一致、0 错误，手册 RESTORE.md 同目录）；recovery envelope 与 /v1/devices 补运行时集成测试（现仅 contract 正则断言，create-only 语义测不出来）。
