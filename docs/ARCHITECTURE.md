@@ -165,6 +165,39 @@
 - **恢复安全**：登录仅决定可访问哪个租户；密码派生包装密钥只在新手机本地解开恢复信封。下载后必须先验认证标签、哈希、容量和迁移兼容性，在临时库完成导入/完整性检查后原子切换；本机已有数据时禁止静默覆盖。
 - **保留策略与接管**：服务端保存多个完整版本而非不可重建的无限增量历史；上传采用幂等、原子提交，失败或半包不能替换最近可恢复版本。账号维护单调递增的 active generation，新手机经用户确认接管后提升代次，旧手机后续上传必须被拒绝。容量、单包大小、版本数量、用户删除和灾备恢复都必须有可测试的明确规则。
 
+#### 备份数据覆盖清单（2026-08-23 审计基线）
+
+“存在于某个本地文件”不等于“应原样复制到新手机”。本清单按**可移植数据**、**仅恢复意图**、
+**永不进入普通备份载荷**三类逐源定案；其中“待补”表示数据属于备份目标，但当前 `solum-export` v2
+还不能安全、幂等地恢复。任何新增 SQLite 表或新的持久化文件/浏览器存储，都必须先加入该清单并选择
+恢复语义；core 测试会把未分类的新 SQLite 表视为失败。只有所有“待补”项都有稳定跨平台 schema、
+尺寸规则和恢复测试后，才可把 TODO 的“完整逻辑载荷”划完。
+
+| 持久化源 | 分类 | v2 状态与恢复语义 |
+|---|---|---|
+| SQLite `raw_inputs`、`events`、`notifications`、`behavior_log`、`suggestions`、`persona_versions`、`health_samples`、`memory_facts`、`routines`、`soulous_facts`、`widget_defs` / `widget_fields` / `widget_records` | 可移植 | 已在 `_restore` 中以稳定 guid/FK 形状可幂等恢复；可读层只是副本，不作为恢复输入。 |
+| SQLite `meta.rule_table`、`meta.proactivity`、`meta.persona_active` | 可移植 | 已在 `_restore.meta` 中恢复；`persona_active` 以人格版本 guid 翻译，不能复制设备本地行号。 |
+| SQLite `notification_captures`、`notification_filter_proposals` | 可移植，待补 | 通知处理结果属于用户台账；载荷 v3 需增加稳定身份，并把 capture 的 raw input / event 引用改成 guid，不能复制 SQLite id。 |
+| SQLite `notification_action_proposals` | 可移植历史，待补 | 可保存用户看过的处理历史；恢复时所有 `pending` 必须失效为仅供回看，绝不能在新设备复活一个可能已过期的危险操作。 |
+| SQLite `audit_log` | 可移植，待补 | 进入加密备份，但需先定义稳定身份与 append-only 合并；恢复不得 UPDATE/DELETE 既有审计，也不得重复追加同一条。 |
+| WebView `pa.chat-sessions.v1[.<profile>]` | 可移植，待补 | 完整会话与消息进入逻辑载荷；`contextTurns` 是可重建缓存，不作为第二份权威。平台适配器必须在生成快照时提交同一 profile 的一致切片。 |
+| `solum.ui-state.v1[.<profile>].chatDrafts` | 可移植，待补 | 未发送文本是用户内容，按会话稳定 id 迁移；last view、滚动位置等 UI 状态不迁移。 |
+| IndexedDB `pa-local-documents-v1[.<profile>]/documents` | 可移植附件，待补 | manifest 进入逻辑载荷，blob 走独立分块/附件密文；最多 30×20 MiB，不能塞入当前 64 MiB 容器或以内存 base64 冒充完成。每块须绑定账号、backup id、附件 id、序号与摘要。 |
+| `notif-spool/*.json`、`notif-spool/failed/*.json` 与升级遗留 notification inbox | 可移植，待补 | 是尚未被 SQLite 接受的原始通知，不是可丢缓存；生成快照前须冻结/排空，仍失败的条目以稳定内容身份进入待导入区，恢复后继续经过白名单与解析边界。 |
+| LLM 的非秘密 provider/base URL/model 选择 | 可移植 Agent 设置，待补 | 进入逻辑载荷；API key 不得跟随该对象序列化。环境变量覆盖和本机路径不迁移。 |
+| `notification_intelligence.filter_rules` 与批处理间隔 | 可移植设置，待补 | 当前与设备授权混在一个 meta JSON；载荷前必须拆分字段语义，不能因为恢复规则而顺带授予通知读取/写日程权限。 |
+| `notif_cloud`、通知 app 白名单、auto-event app 白名单、邮箱/Soulous 连接、健康数据源与后台提醒 | 仅恢复意图 | 新设备可提示“曾启用/曾连接”并展示非秘密标识，但默认仍关闭，核对已安装 app 与提供商后由用户重新授权；OS 权限和系统闹钟依据已恢复日程重新注册。 |
+| 邮箱/Soulous 的非秘密账户标识与 provider 配置 | 条件可移植，待提供商审计 | 只有提供商条款允许且新隐私政策明确覆盖时才进入版本化 credential 区；否则只恢复重新连接意图。恢复后必须验证凭据是否过期或撤销。 |
+| `meta.device_id` / HLC / overflow 与 drop 计数、`sync_oplog`、`sync_quarantine`、`sync_bad_blobs`、`sync_push_holds`、`capture_loss_receipts`、overflow marker、Android alert cursor | 永不备份 | 设备身份、迁移态传输队列、游标和故障收据不是用户业务状态；新设备重新建立，不能重放旧同步内部状态。 |
+| `notif-policy.json` | 永不备份 | 由已确认的通知配置投影给原生 listener，恢复设置并重新授权后再生成，不能作为第二份权威。 |
+| `widget_schema_rejections` | 永不备份 | 仅用于本机产品能力诊断，既不影响用户组件，也不作为恢复输入。 |
+| 账号 access/refresh token 与密码、备份主密钥/恢复码/包装密钥、旧同步 key/token、LLM API key、邮箱密码/OAuth token、Soulous token | 永不进入普通逻辑载荷 | 密钥不得被自己加密，账号会话不得克隆。将来若某提供商明确允许凭据迁移，也只能进入独立、版本化、可撤销的 credential 区，不能混入通用 Agent 设置。 |
+| 隐私同意记录、OS 权限、硬件密钥句柄、系统闹钟镜像、本机路径、UI 导航/滚动、guest 选择 | 永不备份 | 都绑定设备、安装或当次法律文本；新设备重新同意、授权、注册或选择。 |
+
+本轮审计因此**不提升 `solum-export` 版本**：在会话适配器、附件协议和上述无 guid 行的恢复身份尚未
+落地前，仅增加字段会制造“看起来导出了、实际上还原不了”的 v3。实现顺序固定为：稳定领域身份与
+schema → 平台适配器一致快照 → 纯验证的恢复计划 → 临时库事务恢复；每一步都不得把待补项写成已完成。
+
 #### `solum-backup` protocol v1（F17 加密备份地基，2026-08-23）
 
 本节只定义**平台无关容器和端侧 codec**，不是完整云备份闭环。v1 内层暂时复用

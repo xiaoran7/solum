@@ -33,6 +33,193 @@ pub const FORMAT: &str = "solum-export";
 /// 格式本身一个字节都没变，变的只有这个名字。
 pub const LEGACY_FORMAT: &str = "pa-export";
 
+/// Audited recovery disposition for every persistent source. This is kept
+/// beside the logical export contract so a new storage table cannot silently
+/// become either "backed up" or "forgotten" by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackupCoverage {
+    /// Present in `solum-export` v2's guid-bearing `_restore` section.
+    RestorableV2,
+    /// User-owned data, but a stable cross-platform restore shape is pending.
+    PortablePending,
+    /// Only the fact that a capability was configured may move; the target
+    /// device must obtain a fresh grant or connection before enabling it.
+    RestoreIntent,
+    /// One physical source mixes fields with different recovery semantics.
+    SplitByField,
+    /// Device identity, secrets, caches, or operational transport state.
+    Excluded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersistenceCoverage {
+    pub source: &'static str,
+    pub coverage: BackupCoverage,
+}
+
+/// Every application-owned SQLite table created by [`Store`]. A schema change
+/// must update this list and choose a recovery disposition; a unit test checks
+/// it against `sqlite_schema` rather than trusting this inventory by itself.
+pub const SQLITE_BACKUP_COVERAGE: &[PersistenceCoverage] = &[
+    PersistenceCoverage {
+        source: "meta",
+        coverage: BackupCoverage::SplitByField,
+    },
+    PersistenceCoverage {
+        source: "raw_inputs",
+        coverage: BackupCoverage::RestorableV2,
+    },
+    PersistenceCoverage {
+        source: "events",
+        coverage: BackupCoverage::RestorableV2,
+    },
+    PersistenceCoverage {
+        source: "notifications",
+        coverage: BackupCoverage::RestorableV2,
+    },
+    PersistenceCoverage {
+        source: "behavior_log",
+        coverage: BackupCoverage::RestorableV2,
+    },
+    PersistenceCoverage {
+        source: "suggestions",
+        coverage: BackupCoverage::RestorableV2,
+    },
+    PersistenceCoverage {
+        source: "persona_versions",
+        coverage: BackupCoverage::RestorableV2,
+    },
+    PersistenceCoverage {
+        source: "health_samples",
+        coverage: BackupCoverage::RestorableV2,
+    },
+    PersistenceCoverage {
+        source: "memory_facts",
+        coverage: BackupCoverage::RestorableV2,
+    },
+    PersistenceCoverage {
+        source: "routines",
+        coverage: BackupCoverage::RestorableV2,
+    },
+    PersistenceCoverage {
+        source: "soulous_facts",
+        coverage: BackupCoverage::RestorableV2,
+    },
+    PersistenceCoverage {
+        source: "notification_captures",
+        coverage: BackupCoverage::PortablePending,
+    },
+    PersistenceCoverage {
+        source: "notification_filter_proposals",
+        coverage: BackupCoverage::PortablePending,
+    },
+    PersistenceCoverage {
+        source: "notification_action_proposals",
+        coverage: BackupCoverage::PortablePending,
+    },
+    PersistenceCoverage {
+        source: "widget_defs",
+        coverage: BackupCoverage::RestorableV2,
+    },
+    PersistenceCoverage {
+        source: "widget_fields",
+        coverage: BackupCoverage::RestorableV2,
+    },
+    PersistenceCoverage {
+        source: "widget_records",
+        coverage: BackupCoverage::RestorableV2,
+    },
+    PersistenceCoverage {
+        source: "widget_schema_rejections",
+        coverage: BackupCoverage::Excluded,
+    },
+    PersistenceCoverage {
+        source: "audit_log",
+        coverage: BackupCoverage::PortablePending,
+    },
+    PersistenceCoverage {
+        source: "sync_oplog",
+        coverage: BackupCoverage::Excluded,
+    },
+    PersistenceCoverage {
+        source: "sync_quarantine",
+        coverage: BackupCoverage::Excluded,
+    },
+    PersistenceCoverage {
+        source: "capture_loss_receipts",
+        coverage: BackupCoverage::Excluded,
+    },
+    PersistenceCoverage {
+        source: "sync_bad_blobs",
+        coverage: BackupCoverage::Excluded,
+    },
+    PersistenceCoverage {
+        source: "sync_push_holds",
+        coverage: BackupCoverage::Excluded,
+    },
+];
+
+/// Non-SQLite persistence that future platform adapters must also account for.
+/// These identifiers are protocol-facing descriptions, not filesystem paths.
+pub const PLATFORM_BACKUP_COVERAGE: &[PersistenceCoverage] = &[
+    PersistenceCoverage {
+        source: "webview:pa.chat-sessions.v1",
+        coverage: BackupCoverage::PortablePending,
+    },
+    PersistenceCoverage {
+        source: "webview:solum.ui-state.v1/chatDrafts",
+        coverage: BackupCoverage::PortablePending,
+    },
+    PersistenceCoverage {
+        source: "webview:solum.ui-state.v1/navigation-and-scroll",
+        coverage: BackupCoverage::Excluded,
+    },
+    PersistenceCoverage {
+        source: "indexeddb:pa-local-documents-v1/documents",
+        coverage: BackupCoverage::PortablePending,
+    },
+    PersistenceCoverage {
+        source: "file:notif-spool-and-legacy-inbox",
+        coverage: BackupCoverage::PortablePending,
+    },
+    PersistenceCoverage {
+        source: "file:notif-policy.json",
+        coverage: BackupCoverage::Excluded,
+    },
+    PersistenceCoverage {
+        source: "file:solum-llm.json",
+        coverage: BackupCoverage::SplitByField,
+    },
+    PersistenceCoverage {
+        source: "file:solum-email.json",
+        coverage: BackupCoverage::SplitByField,
+    },
+    PersistenceCoverage {
+        source: "file:solum-soulous.json",
+        coverage: BackupCoverage::SplitByField,
+    },
+    PersistenceCoverage {
+        source: "file:solum-account.json",
+        coverage: BackupCoverage::Excluded,
+    },
+    PersistenceCoverage {
+        source: "file:solum-sync.json",
+        coverage: BackupCoverage::Excluded,
+    },
+    PersistenceCoverage {
+        source: "file:solum-privacy-consent.json",
+        coverage: BackupCoverage::Excluded,
+    },
+    PersistenceCoverage {
+        source: "native:permissions-connections-and-alarms",
+        coverage: BackupCoverage::RestoreIntent,
+    },
+    PersistenceCoverage {
+        source: "native:notification-overflow-and-alert-cursors",
+        coverage: BackupCoverage::Excluded,
+    },
+];
+
 /// Aggregate everything the user owns into one JSON document.
 pub fn build_export(store: &Store, now: NaiveDateTime) -> Result<serde_json::Value> {
     Ok(json!({
@@ -166,6 +353,86 @@ mod tests {
             .unwrap()
             .and_hms_opt(h, 0, 0)
             .unwrap()
+    }
+
+    #[test]
+    fn every_sqlite_table_has_an_explicit_backup_disposition() {
+        use std::collections::BTreeSet;
+
+        let unique = format!(
+            "solum-backup-coverage-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        {
+            let store = Store::open(path.to_str().unwrap()).unwrap();
+            assert!(store.schema_version().unwrap() > 0);
+        }
+
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        let mut statement = connection
+            .prepare(
+                "SELECT name FROM sqlite_schema \
+                 WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )
+            .unwrap();
+        let actual: BTreeSet<String> = statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        drop(statement);
+        drop(connection);
+
+        let declared: BTreeSet<String> = SQLITE_BACKUP_COVERAGE
+            .iter()
+            .map(|entry| entry.source.to_string())
+            .collect();
+        assert_eq!(
+            actual, declared,
+            "every new SQLite table must choose a backup disposition"
+        );
+        assert_eq!(
+            declared.len(),
+            SQLITE_BACKUP_COVERAGE.len(),
+            "coverage registry contains a duplicate table"
+        );
+
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    #[test]
+    fn v2_restore_tables_match_the_audited_restorable_set() {
+        use std::collections::BTreeSet;
+
+        let store = Store::open_in_memory().unwrap();
+        let restore = store.export_restore_rows().unwrap();
+        let actual: BTreeSet<&str> = restore.keys().map(String::as_str).collect();
+        let mut expected: BTreeSet<&str> = SQLITE_BACKUP_COVERAGE
+            .iter()
+            .filter(|entry| entry.coverage == BackupCoverage::RestorableV2)
+            .map(|entry| entry.source)
+            .collect();
+        // `meta` is field-classified: only rule_table, proactivity and
+        // persona_active are present in v2, never the whole table.
+        expected.insert("meta");
+        assert_eq!(actual, expected);
+
+        let platform_sources: BTreeSet<&str> = PLATFORM_BACKUP_COVERAGE
+            .iter()
+            .map(|entry| entry.source)
+            .collect();
+        assert_eq!(
+            platform_sources.len(),
+            PLATFORM_BACKUP_COVERAGE.len(),
+            "platform coverage registry contains a duplicate source"
+        );
     }
 
     #[test]
