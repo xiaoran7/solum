@@ -13,7 +13,7 @@
 - [ ] **停止桌面产品开发，建立移动平台路线。** 不再发布 Windows/macOS/Linux 安装包，也不为桌面端新增功能或修复非共享核心问题。Android 是当前唯一开发/验收目标；核心协议、领域模型、备份夹具和 UI 语义从一开始保持移动平台中立，成熟后依次补 iOS 与 HarmonyOS。Tauri 可继续承载 Android/iOS；鸿蒙若需独立原生壳，也必须复用同一服务端契约与备份规范。CLI 仅作核心回归/迁移工具。
 - [ ] **备份验收后退役多主同步。** 先盘点生产账号与 `legacy` 租户，生成最后一个可验证备份并保留旧库只读；随后删除客户端 `/v1/push|pull|stats` 调度、`sync_oplog`/LWW/游标/隔离区/毒丸等只为多主同步存在的复杂度，以及服务端 `sync.blobs`/设备同步路由。不得在用户仍只有旧增量历史、尚无可恢复快照时关闭或删除远端数据。
 - [ ] **退役独立 Rust/SQLite 中继与服务端 SQLite 入口。** 从 Cargo workspace、构建/测试/部署链和文档删除 `crates/solum-sync-server`；迁移完成后删除 `server/src/server.js`、`npm run start:sqlite` 及双实现契约分支。一次性只读迁移器和归档说明可以保留，不得继续暴露第二套可写服务器。
-- [ ] **移除网页端与网页登录入口。** 删除 `server/src/dashboard.html` 及 `GET /` HTML；根路径改为 404、204 或无用户功能的机器响应。注册、登录、备份和恢复只在移动客户端 UI 提供，并收紧 Origin/CORS。若未来要求证明官方安装包身份，另立设备密钥、mTLS 或平台 App Attestation 设计，不能靠 User-Agent。
+- [ ] **移除网页端与网页登录入口。** 删除 PostgreSQL 入口 `server/src/postgres-server.js` 当前使用的 `server/src/dashboard.html` 及其 `GET /` HTML；旧 SQLite 入口 `server/src/server.js` 本来就没有 Dashboard 或 `GET /`，无需虚构删除项。根路径改为 404、204 或无用户功能的机器响应。注册、登录、备份和恢复只在移动客户端 UI 提供，并收紧 Origin/CORS。若未来要求证明官方安装包身份，另立设备密钥、mTLS 或平台 App Attestation 设计，不能靠 User-Agent。
 - [ ] **统一域名、接口与产品术语。** 所有移动端只保存一个 `server_url`，供 `/v1/auth/*`、`/v1/ai/*`、`/v1/backups/*`、`/v1/keys/*` 共用。`solumsync.tannerlab.xyz` 只作迁移期兼容别名，最终不再代表独立同步系统；把产品和文档中的“多设备同步 / Sync Server”改为“端到端加密云备份 / 换机恢复”。
 
 ### 备份地基之后的移动端核心优化
@@ -21,7 +21,7 @@
 - [ ] **信息源注册表 + 平台能力矩阵。** 统一声明通知、分享、日历、健康、邮箱、位置等来源在 Android/iOS/HarmonyOS 的支持状态、授权、最后成功时间、错误、AI/记忆/备份资格与删除入口；UI 如实显示平台差异，不伪造三端能力一致。
 - [ ] **统一候选信息与来源追溯。** 定义平台中立的 source/external id、发生/采集时间、原始证据引用、敏感级别、可信度、有效期、用途许可和候选动作；原始证据、派生事实与执行动作分层，AI 推测不得冒充来源事实。
 - [ ] **跨来源去重与关联。** 用稳定 ID、内容指纹、时间邻近和实体匹配合并日历、邮件、通知和用户输入的同一事件；默认可信度为用户确认 > 权威结构化来源 > 原始邮件/订单 > 通知 > AI 推测，冲突必须可见。
-- [ ] **优先补系统分享与日历。** Android 先交付“分享给 Solum”和系统日历只读，再做经确认的日历写入；随后以同一领域契约适配 iOS/HarmonyOS。邮箱方向收窄为高价值事件提取，不继续扩张完整邮件客户端。
+- [ ] **优先补系统分享与日历，并重做移动邮箱授权边界。** Android 先交付“分享给 Solum”和系统日历只读，再做经确认的日历写入；随后以同一领域契约适配 iOS/HarmonyOS。邮箱方向收窄为高价值事件提取，不继续扩张完整邮件客户端；现有 F21 来自桌面壳的 loopback + PKCE，不能直接视为移动端已成熟，Android/iOS/HarmonyOS 必须分别完成系统浏览器返回、原生应用 OAuth redirect、凭据安全存储和后台限制验收。
 - [ ] **记忆质量闭环。** 长期记忆增加来源、可信度、最后验证时间、有效期和纠错入口；区分确认事实、来源信息、Agent 推测、建议和待确认动作。用户纠错可形成待确认来源规则，短生命周期信息自动过期，健康原始采样优先转本地趋势摘要。
 - [ ] **移动首页与状态文案收口。** 保持“今天 / 记忆 / 计划 / 搜索”四根入口；今天页按“现在 → 需要确认 → 接下来 → 今日观察 → 快速输入”组织，信息源进入设置，正常备份只显示最近成功时间。逐步删除 push/pull/blob/seq/relay 等实现词和桌面表格/侧栏心智。
 - [ ] **冻结非核心扩张。** 在 Android 备份恢复、信息源和 Agent 质量达到 `MOBILE-ROADMAP.md` 成熟门槛前，不新增桌面功能、实时同步、福利监控、BloomXP 双向能力、复杂组件/GenUI 类型、完整邮件客户端或新的高敏感来源，也不提前展开 iOS/HarmonyOS 实现。
@@ -32,34 +32,36 @@
 
 ### P0 立即项
 
-- [x] **已解决（2026-08-22）：真机同步 TLS `unexpected EOF`——服务器侧处置完成。** 三选一（ICP 备案 / 迁出阿里云 / 前置 CDN）以「源站整体迁海外 VPS + DNS 托管 Cloudflare 橙云」形式落地：solum-cloud 与 gitea 容器均已在海外 VPS，链路为客户端 → CF 边缘 :443 → openresty :8443（LE 证书）→ 容器。公网路径实测通畅（阿里云中转机连续 3 次 HTTP 200，0.15–0.48s），08-21 定案的指纹拦截随源站离开阿里云而不再被触发。详见 PITFALLS 2026-08-22 条。**遗留**：vivo 真机上的同步复测仍待设备可用（见下方真机矩阵）；本开发机直连被本地 VPN TUN 干扰属本机环境问题，git/直连操作挂代理即可。
+- [x] **已解决（2026-08-22）：真机同步 TLS `unexpected EOF`——服务器侧链路最终恢复。** 期间曾发生“文档称橙云、Cloudflare 权威 DNS 实际仍灰云指向阿里云 `8.148.11.79`”的误判；随后又短暂灰云直指海外 VPS `34.104.162.153`，导致公网 `:443` 落到 TannerLab Authorization Server、`/v1/health` 返回 401，而正确 Solum Center 只在 `:8443` 返回 200。用户最终启用橙云后，Cloudflare 与 Google DoH 均返回边缘 IP `104.21.64.111` / `172.67.182.236`，独立公网 HTTPS trace 命中 CF 边缘，`/v1/health` 返回 `0.6.4 / 11c1e246…` 200。现链路才真正是客户端 → CF 边缘 :443 → VPS openresty :8443 → solum-cloud；阿里云 TLS 指纹过滤已退出主链路。详见 PITFALLS 同日最新条目。
+- [ ] **待验证：vivo 上用现有生产数据复测 CF 后的 Rust 同步。** 服务器侧前提已满足，但不能用浏览器、远端抓取或主机 curl 代替 rustls 真机结果。设备可用后等待 DNS TTL、重连网络/VPN，再执行一次登录态 push/pull 并保存状态码/错误链；不得卸载、清数据或删除用户内容。若仍失败，先比较设备解析结果与 CF 边缘响应，避免把本地 DNS/SNI 缓存误判为生产回退灰云。
 - [x] **已做：push 侧毒丸防护（2026-08-21）。** 永久拒绝（507/403/429/400/413）只作废 push 半轮、继续 pull，原因持久化 `meta.sync_push_blocked`（下次成功推送自动清除）；单条超 7 MiB 的 op 暂存 `sync_push_holds`（只存 oplog 指针），游标照常前进；瞬时失败同样只跳过 push 半轮。设计取舍见 MISC 2026-08-21，ARCHITECTURE §3.8 已补条目。**遗留**：pull 侧 403（设备撤销同样阻断 pull）是否也要跳过半轮+持久标记，见下方新增条目。
 - [x] **已做：SQLite 双连接补 `busy_timeout=5000ms`（2026-08-21）。** `Store::open` 一处覆盖 orch 与 sync_store；PRAGMA 断言测试钉住。CoreError::Storage 抹掉 rusqlite 错误码仍是小项（见小项打包）。
-- [x] **已处理：公开仓泄露本机路径（本地侧）。** 根 README 两处 `D:\ClaudeSpace\...` 绝对路径已改为相对描述，tauri command 计数改为「100+」。**收尾（2026-08-22 用户拍板）：GitHub 公开仓暂停维护、专心做 gitea——diff 级审计与推送节奏随之消解**；AGENTS.md 远端政策已更新，本地 remote `origin` 更名 `github-paused` 防误推，公开边界清单条款保留备将来恢复。
+- [x] **已处理：公开仓泄露本机路径（仓库内容侧）。** 根 README 与后续文档复核发现的本机盘符路径已改为相对描述或脱敏占位，tauri command 计数改为「100+」。**收尾（2026-08-22 用户拍板）：GitHub 公开仓暂停维护、专心做 gitea**；AGENTS.md 远端政策已更新，本地 remote `origin` 更名 `github-paused`，公开边界清单条款保留备将来恢复。注意 remote 改名本身不会改分支级上游，裸 `git push` 的剩余缺口见下一项。
+- [ ] **防误推：把本机 `main` 上游改为 `gitea/main`。** 当前 `branch.main.remote=github-paused`，所以在 `main` 裸跑 `git push` 仍会指向已暂停的 GitHub；执行并核对 `git branch --set-upstream-to=gitea/main main`，随后用 `git status -sb` / `git branch -vv` 确认。该项只改变本机 Git 配置，不代表授权执行 push。
 - [x] **已做（仓库侧）：CI 补到真实开发路径（2026-08-21）。** 新增 `.gitea/workflows/ci.yml`（rust 三门含 Tauri Linux 依赖 + web-and-cloud 挂 postgres service，集成测试防静默 skip 有显式断言）；`.github/workflows/ci.yml` 加 android-manifest 门禁（gradle 仅跑到 manifest 合并 + aapt 断言三组件）并升级 web-and-cloud；配套 `scripts/gen-android-ci-settings.mjs` 解决 `tauri.settings.gradle` 为 gitignore 绝对路径生成文件、裸 checkout 无法跑 gradle 的问题（已验证与 tauri CLI 产物一致）。**边界**：Gitea 侧需服务器安装并注册 act_runner（ubuntu-latest 标签、docker 模式）才实际生效；Android job 依赖 GitHub 托管 runner 预装 SDK，自建 runner 需先补 sdkmanager 步骤。
 
 ### 结构性（排期）
 
-- [ ] **store.rs（5996 行）/ orchestrator.rs（5736 行）拆分**：占 solum-core 近半，分节注释完整即天然拆分线；Rust 多 impl 块机制下零 API 破坏，测试耦合已验证极低。每步独立提交三绿再进下一步；拆到哪节补哪节测试（email/soulous/notification_intelligence/store-sync 段测试密度与风险不成比例）。
+- [ ] **拆分 `store.rs` / `orchestrator.rs` 两个超大模块。** 2026-08-22 复核分别为 6104 / 5747 行；数字会继续变化，不再把旧行数当稳定锚点。分节注释完整即天然拆分线；Rust 多 impl 块机制下零 API 破坏，测试耦合已验证极低。每步独立提交三绿再进下一步；拆到哪节补哪节测试（email/soulous/notification_intelligence/store-sync 段测试密度与风险不成比例）。
 - [x] **已被 2026-08-22“单服务器架构收口”取代：不再收敛双实现。** PostgreSQL `postgres-server.js` 保留为唯一服务实现；SQLite `server.js` 在迁移完成后直接退役，不再为两入口抽公共层或继续投入功能建设。
 - [ ] **发布核对脚本化**：`scripts/verify-android-release.mjs`（aapt badging / ZIP 条目 / apksigner / manifest 三组件断言，末尾输出 CHANGELOG 可粘贴证据块）+ 版本三元组一致性检查（tauri.conf.json version / versionCode / Cargo.toml workspace version）+ Android 启动时 AlarmReceiver 自检绊线（PackageManager.getReceiverInfo，缺失时设置页显式告警）。0.2.6 生产 P1 正是从手工核对网缝隙漏出的。
 - [x] **已被 2026-08-22“加密云备份取代多主同步”取消：不再设计 sync_oplog 压实。** oplog 在新备份/恢复闭环验收前仅维持现状以保护迁移；随后整体退役，不再为其增加长期维护机制。
 - [x] **已被 2026-08-22“退役独立中继”取代：不再扩建 Rust 中继清扫。** PostgreSQL 同步历史在快照/压缩协议出现前继续永久保留并以租户硬配额拒绝新写入；旧 Rust 中继只完成迁移和下线，不再增加定时清扫、统计或水位线能力。
 - [ ] **memory_ledger 分页**：全表加载无 LIMIT，作为 F12 日常界面在长寿命设备上内存与 JSON 载荷线性无界；加 (layer, limit, cursor) 按层懒加载，导出继续走 export.rs 独立路径。
-- [ ] **CSP 去 unsafe-inline 收尾**（MISC 2026-07-21 明记「别忘了」）：tauri.conf.json script-src 仍带 unsafe-inline，245KB 内联 script 未拆（此后 17 个提交文件又涨 45%）。拆 dist/app.js 时 check-frontend.mjs 必须同步改为校验 app.js——否则 `<script src>` 被捕获为空内容、vm.Script("") 静默通过，静态检查空转。
+- [ ] **CSP 去 unsafe-inline 收尾**（MISC 2026-07-21 明记「别忘了」）：tauri.conf.json script-src 仍带 unsafe-inline。2026-08-22 实测 `index.html` 为 394,377 UTF-8 字节、其中唯一内联脚本 256,535 字节；相对 07-21 的 268,890 / 184,401 字节分别增长约 46.7% / 39.1%，不能把整文件增幅误写成脚本增幅。拆 `dist/app.js` 时 `check-frontend.mjs` 必须同步改为校验 `app.js`——否则 `<script src>` 被捕获为空内容、`vm.Script("")` 静默通过，静态检查空转。
 - [ ] **云服务小加固打包**：/v1/auth/refresh|logout 补 IP 限流（认证面唯一没节流的未鉴权入口，垃圾 token 也打满一次 DB 事务 + advisory lock）；ai.usage_events 增加保留期清理（全库唯一无清理表）；~~compose 增加 pg_dump 备份编排 + 恢复演练~~ ✅ **已做（2026-08-22）**：每日 UTC 03:23 自动 pg_dump（保留 14 份，`/opt/1panel/backup/solum-cloud/`），全新容器恢复演练通过（10 表行数比对一致、0 错误，手册 RESTORE.md 同目录）；recovery envelope 与 /v1/devices 补运行时集成测试（现仅 contract 正则断言，create-only 语义测不出来）。
 - [x] **已完成：文档检索层**（本批）：PITFALLS/MISC 尾部时序错乱修正 + 头部主题索引与插入规则；CHANGELOG 版本速查索引；docs/README.md 导航升级；ARCHITECTURE 状态句与 §6 标题更正。详见 CHANGELOG 当日条目。
 
 ### 小项打包
 
 - [x] **已被 2026-08-22“加密云备份取代多主同步”取消：不再扩展 pull 侧 403 语义。** 当前错误保持显式可见直到迁移；资源投入转向备份坏包防护、设备代次接管和换机恢复。
-- [ ] 三处多步写漏包 `with_transaction`（persist_event_with_scope / fire_due / set_importance_rule；方法已支持嵌套 savepoint，机械缩进调整 + 「insert_notification 故障时事件回滚」回归测试）。
+- [ ] `orchestrator.rs` 三处多步写漏包 `with_transaction`（`persist_event_with_scope` / `fire_due` / `set_importance_rule`；方法已支持嵌套 savepoint，机械缩进调整 + 「insert_notification 故障时事件回滚」回归测试）。
 - [ ] CoreError::Storage 保留 rusqlite 错误码（BUSY/LOCKED/CONSTRAINT 现被 to_string 抹掉）；row mapper 对损坏 JSON 不再 `unwrap_or_default()` 静默吞（至少 eprintln 带 id 或可见计数）。
 - [ ] push 装箱循环 O(n²) 重复加密改估算式装箱（每加一条 op 就整批重新序列化+ChaCha 加密；积压越大浪费越多，恰是离线回连场景，手机 CPU 上可感知）。
 - [ ] 根目录约 35MB 一次性产物（output/ 旧 APK、演示视频、playwright 日志）移仓库外归档目录。**注意：根目录 `solum.sqlite*` 是「桌面与 CLI 共库」的刻意设计（MISC 有记录），勿清。**
 - [ ] 通知渠道 ID `pa_notification_pipeline` 改名残留：与 2026-07-20 改名决议矛盾（同批改了 pa_reminders 渠道），改名（带 deleteChannel 迁移）或补进刻意保留清单，二选一显式拍板。
 - [ ] TODO 受阻项代码侧推进：debug-only 进程自杀入口（前台服务随进程死、alarm 由系统持有，正好复现「后台回收后 alarm 存活」场景，替代被禁用的 force-stop）；福利告警测试无需新代码——POST `/v1/alerts` status 含 "test" 即可触发客户端「福利监控测试」通知，把配方写死即可从受阻转待验证。
-- [ ] CHANGELOG 全史切版（161 条全部堆在唯一 `[Unreleased]` 下、单条最长 2242 字符）：需逐条定版本归属，属专门批次；本轮以头部版本速查索引缓解。
+- [ ] CHANGELOG 全史切版：大量粗体顶层条目仍堆在唯一 `[Unreleased]` 下，并存在千字级单行；条目数和最长行会随文档提交变化，不再用易过时数字描述。需逐条定版本归属，属专门批次；当前以头部版本速查索引缓解。
 
 ## 2026-08-20 验收回修
 
@@ -93,7 +95,7 @@
 - [ ] **待验证：Health Connect。** 检查系统可用性与当前授权状态；未经用户明确操作不新增健康权限，不读取或记录真实健康明细。
 - [ ] **待验证：退出登录隔离。** 确认退出后回到 guest profile，账号数据不出现在 guest；不以清数据方式验证。
 - [x] **已通过：同机生产 AI 最小问答。** 真机现有 `xiaorana` 会话读取到模型 `mimo-v2.5`、权益 `standard 1000`，发送 `OK` 后收到“收到！有什么我能帮你的吗？”。默认输入法临时切换到已安装 ADB 键盘仅用于注入，随后已恢复讯飞输入法。
-- [x] **已通过：生产服务与真机浏览器 HTTPS 对照。** 真机 Chrome 打开 `https://solumsync.tannerlab.xyz/v1/health` 返回 `status=ok`、`0.6.4 / 11c1e246` 且显示安全连接；Solum Rust 同机请求 `/v1/pull` 仍报 TLS `unexpected end of file`，因此同步失败更像客户端 TLS/VPN fake-IP 适配问题，不是服务端宕机。
+- [x] **历史对照已保留、当时归因已被后续探针推翻。** 真机 Chrome 曾打开 `https://solumsync.tannerlab.xyz/v1/health` 得到 `status=ok`、`0.6.4 / 11c1e246`，同机 Solum Rust `/v1/pull` 报 TLS `unexpected end of file`。后续 TLS 指纹矩阵证明当时是阿里云侧按 SNI + ClientHello 过滤，并非客户端 fake-IP；2026-08-22 橙云最终启用后服务器侧路径已更换，仍需按上方新项做 vivo rustls 复测。
 - [x] **已通过：通知监听授权状态。** `enabled_notification_listeners` 与 `dumpsys notification` 均包含 `dev.solum.app.SolumNotificationListener`；当前通知白名单仍为空，应用页正确显示“还没有已捕获通知”。
 - [x] **已通过：Health Connect 权限页可达，未授权真实数据。** “穿戴 → 去授权”打开系统 Health Connect 权限页，列出步数、睡眠、心率；按隐私边界未点击“允许”，所以真实健康读取仍未验证。
 - [ ] **受阻：通知监听端到端捕获。** 权限已存在，但当前应用白名单为空；为了不改变用户隐私设置，未擅自加入 QQ/其他应用，也未读取个人通知正文。
@@ -109,6 +111,6 @@
 
 ### 证据
 
-- 审计记录：`D:\ClaudeSpace\_scratch\solum-android-prod-audit-20260819.md`
-- 截图：`D:\ClaudeSpace\_scratch\solum-027-*.png`
+- 审计记录：工作区外 `_scratch/solum-android-prod-audit-20260819.md`
+- 截图：工作区外 `_scratch/solum-027-*.png`
 - 当前代码基线：`088f184`（`main`，本地分支；生产服务版本需以实时只读检查为准）

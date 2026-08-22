@@ -2,7 +2,7 @@
 
 > 强制记录：每次新增/完善/修改功能都要在 `Unreleased` 下加一条。格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 >
-> 版本纪律：Solum 与鸿蒙版每次功能更新或问题修复都必须分别递增各自的应用版本和平台构建号，并把新版本、构建号和产物信息写入各自的变更文档。同一改动涉及两端时，两端都要更新；不得只改代码、不改版本。
+> 版本纪律：当前只对实际发布的 Android 产品递增 Solum 应用版本和 versionCode，并把产物信息写入变更记录；纯文档、规划和未打包代码批次不得伪造已发布版本。iOS/HarmonyOS 开始实际开发后各自维护平台构建号，只有同一改动确实涉及对应平台时才同步递增；Android-first 阶段不为尚未开发的平台制造空版本。
 
 ## [Unreleased]
 
@@ -10,9 +10,16 @@
 > Solum Android：0.2.8（1018 文案/时间解析/发布输入修复）· 0.2.7（1017 图标校正）· 0.2.6（1016 启动图标）· 0.2.5（1015 登录闪退修复）· 0.2.4（1014 后端复审收口）· 0.2.3（1013 默认模型/配额）· 0.2.2（1012 账户外壳/UI 重构）· 0.2.1（1011 中心化账号入口）· 0.2.0（1010 登录即恢复密钥）· 0.1.9（1009 UUID 隔离）· 0.1.8（1008 同步按账号隔离）· 0.1.7（1007 福利监控）· 0.1.5（1005 安全默认值收口）· 0.1.4（1004 排版/缓存）· 0.1.3（1003 导航重构）· 0.1.2（1002 UI 重构）· 0.1.1（1001 隐私门文案）· 0.1.0（1000 首个 release）
 > solum-cloud：0.6.4（密码语义/限流收口）· 0.6.3（刷新令牌权限）· 0.6.2（迁移与清理修复）· 0.6.1（AI 代理加固）· 0.6.0（模型目录/额度）· 0.5.1（中心化入口）· 0.5.0（恢复信封）· 0.4.0（PostgreSQL 中心库）
 
+- **生产 DNS 最终验收 + 文档事实复核（2026-08-22，纯文档与生产只读验证，零产品代码）**：
+  - 纠正此前“`solumsync` 已是橙云”的过早结论：首次权威核验仍为灰云 `8.148.11.79`，中间态灰云直指海外 VPS `34.104.162.153` 又让公网 443 落到错误的 Authorization Server。用户最终打开橙云后，两家 DoH 返回 CF 边缘 IP，`CF-RAY` / HTTPS trace 与独立公网 `/v1/health` 200 同时成立；服务器侧 TLS EOF 前提至此才真正解决，vivo rustls push/pull 仍单列待验证。
+  - 根 README 明确原 F17 多设备同步与桌面壳只是迁移态，目标 F17 是加密备份/换机恢复；`MOBILE-ROADMAP` 补当前实现/生产快照，`ARCHITECTURE` 收口当前密文同步与目标备份的隐私措辞，并把已完成的 keystore 加密备份从风险项划掉。`PRODUCT` / F21 同步声明完整邮箱客户端是历史实现，移动方向收窄为高价值事件提取，桌面 loopback OAuth 不再冒充移动端已成熟能力。
+  - 修正文档数字与归属：同步加固为 8 个新测试、353→361；超大 Rust 文件复核为 6104 / 5747 行；前端整文件与内联脚本体积/增幅分别记录；Dashboard/`GET /` 只存在于 PostgreSQL 入口；三处漏事务函数都位于 `orchestrator.rs`。易漂移的 CHANGELOG 条目数和最长行不再硬编码；`MISC` 三条改名前 `pa-app/pa-core` 坏链接更新到现仓路径并标明行号是历史值；其余文档中的本机盘符路径改为仓库相对路径或脱敏占位。
+  - 记录防误推剩余缺口：remote 更名没有改变 `branch.main.remote=github-paused`，需另把 `main` 上游设为 `gitea/main`；该动作不等于授权 push。
+  - 版本纪律改为按实际受影响平台递增：Android-first 阶段不再要求每次 Android 变更同时制造尚未开发的 HarmonyOS 空版本；纯文档/规划批次也不冒充已打包发布。
+
 - **文档整治第三批 + 生产运维收口（2026-08-22，纯文档与运维动作，零产品代码）**：
-  - **远端政策拍板（用户）**：GitHub 公开仓暂停维护，「专心做 gitea」——gitea 成为唯一权威远端。AGENTS.md 远端条款更新；本地 remote `origin` 更名 `github-paused` 防误推；公开边界清单条款保留备将来恢复。
-  - **生产架构核实记录**（PITFALLS 2026-08-22 条）：solum-cloud 与 gitea 已在海外 VPS 经 Cloudflare 回源运行（CF 边缘 :443 → openresty :8443 → 容器），公网路径实测通畅；08-21 定案的阿里云 TLS 指纹拦截随源站迁出而消解。TODO P0「TLS EOF 服务器侧处置」标记解决；vivo 真机同步复测仍待设备可用。
+  - **远端政策拍板（用户）**：GitHub 公开仓暂停维护，「专心做 gitea」——gitea 成为唯一权威远端。AGENTS.md 远端条款更新；本地 remote `origin` 更名 `github-paused`，公开边界清单条款保留备将来恢复。后续复核发现分支级上游仍指向 `github-paused/main`，故“防误推”尚需单独修改 upstream，见最新 TODO。
+  - **生产架构初次核实记录（后被同日最新条目纠正）**：海外 VPS 容器和 `:8443` 本地链健康属实，但当时没有用权威 DNS + `CF-RAY` 证明 `solumsync` 已经橙云，不能据中转机连续 200 直接宣布公网路径完成。最终恢复证据见上方最新条目与 PITFALLS 同日首条。
   - **PG 备份编排 + 恢复演练落地**（TODO 云服务小加固部分收口）：每日 UTC 03:23 自动 pg_dump（保留 14 份，`/opt/1panel/backup/solum-cloud/`）；全新容器演练通过（预建 `solum_api`/`solum_runtime` 角色后 0 错误、10 表行数逐一比对一致），手册同目录 RESTORE.md。该项剩余：refresh/logout IP 限流、usage_events 保留期清理、recovery envelope 集成测试。
   - release keystore 仓库外加密备份已建（Deliverables，AES-256/PBKDF2，解密回环验证通过；密码在独立密码管理器）。
 
@@ -20,7 +27,7 @@
   - **push 毒丸防护**（pull 侧坏 blob 暂存的对称补齐）：服务端永久拒绝（507 配额满 / 403 设备撤销 / 429 设备数上限 / 400、413 请求本身不可接受）不再让整轮同步失败——此前 push 在 pull 之前执行且任何错误直接 `return Err`，一次拒绝意味着设备永远重试同一批上传**并且再也收不到对端数据**。现在跳过剩余 push 半轮继续 pull，跳过数量计入 `SyncOutcome.push_skipped`，原因持久化到 `meta.sync_push_blocked`（下一次成功推送自动清除，与 history_gap 的人工确认不同）。单条超过 7 MiB 的 op 从「直接报错卡死后续所有 op」改为暂存进新表 `sync_push_holds`（只存 oplog 指针不存正文——oplog 永不清理，未来放宽上限后可回放重推），游标照常前进。瞬时失败（网络/超时/5xx）同样只跳过 push 半轮继续 pull 并以 `SyncOutcome.push_failed` 报告，不再让上传路径的抖动连带取消接收。CLI `sync`/`sync-status`、桌面 ticker 日志与设置页同步状态横幅均展示新状态。
   - **SQLite 双连接补 `busy_timeout=5000ms`**（`Store::open` 一处覆盖 orch 与 sync_store 两条长连接）：默认 0 时写撞车立即报 SQLITE_BUSY 且被 ticker 的 best-effort 日志吞掉，定性为 fire_due 半状态（已 mark_fired 未写行为日志）静默丢失；WAL 解决读写冲突，busy_timeout 补的是写写冲突。
   - **传输层错误人话映射**：ureq 传输错误按 DNS 失败 / 无法连接 / **TLS 握手失败** / 请求超时分类为中文提示，不再把英文原始错误串漏进 UI；push/pull 与恢复信封接口三处共用。其中 TLS 握手失败的文案按当日现场探针定案的根因撰写（服务器侧按 SNI+TLS 指纹选择性拦截，rustls 无 GREASE 指纹被 RST、浏览器级放行、换网络/走代理无效——详见 PITFALLS 当日条目），指向服务器侧解决而非误导用户折腾本机网络。
-  - 新增回归测试 7 项（永久拒绝仍拉取+自动清除标记、瞬时失败不留粘性标记、纯超大积压终止且不推空 blob、状态码表锁定、hold 幂等、busy_timeout 钉住等）；`cargo test --workspace` 基线 353 → 360 全绿。
+  - 新增回归测试 8 项（永久拒绝仍拉取+自动清除标记、瞬时失败不留粘性标记、纯超大积压终止且不推空 blob、状态码表锁定、hold 幂等、busy_timeout 钉住等）；`cargo test --workspace` 基线 353 → 361 全绿。
 - **CI 补到真实开发路径（2026-08-21）**：新增 `.gitea/workflows/ci.yml`（主推送目标 Gitea 此前零自动化门禁，最近十余个提交含四次发版全靠手工核对）：rust 三门（fmt/clippy/test，含 Tauri Linux 系统依赖安装）+ web-and-cloud job 挂 postgres:17 service，用生产同款 `server/db/init/00-roles.sh` 供给最小权限角色，三个 `SOLUM_TEST_*` 变量就位，698 行 PostgreSQL 集成测试不再静默 skip（另加显式断言：集成组没有真的跑起来就直接挂）。GitHub 侧 `.github/workflows/ci.yml` 同步升级 web-and-cloud，并新增 android-manifest 门禁 job：gradle 只跑到 manifest 合并（无需 Rust/NDK），aapt 断言合并结果含 AlarmReceiver/BootReceiver/SolumNotificationListener 三组件——0.2.6 生产 P1（AlarmReceiver 缺失进生产）正是无 Kotlin 编译门漏出的。配套新增 `scripts/gen-android-ci-settings.mjs`：`tauri.settings.gradle` 是 gitignore 的绝对路径生成文件，裸 checkout 跑不了 gradle，该脚本从 Cargo.toml/Cargo.lock/本地 registry 重建同形文件（已验证与 tauri CLI 产物功能一致）。
 
 - **文档整治第二批（2026-08-21，纯文档，零代码）**——按当日全仓优化审计（七维度并行分析 + 对抗核查）结论精简/更新文档：
@@ -80,7 +87,7 @@
 - **Solum 0.1.8（Android versionCode 1008，2026-08-12）——同步与福利通知按 Solum 账号隔离。** `solum-cloud` 继续签发 HMAC access token，`solum-sync-server` 使用同一 `SOLUM_AUTH_SECRET` 验签并以 token `sub` 选择租户；客户端不能提交租户 ID。blob、告警、游标、幂等事件和统计均限定在账号内，旧数据自动进入 `legacy`，旧 `SOLUM_SYNC_SERVER_TOKEN` 只能访问该迁移租户。桌面同步设置只保存中继 URL 和设备端加密 key，账号 access/refresh token 独立存于 `solum-account.json`，401 时统一刷新、原子保存并重试；旧三种同步配置继续可读。
   - Android 福利告警改读账号会话，按用户名隔离游标并在 401 后轮换会话；独立 Benefit Monitor 改为分别配置账号服务器和同步中继，Solum 密码与 access/refresh token 和织境凭据一起由 Windows DPAPI 加密保存。relay 仪表盘用账号登录并只展示该账号统计，账号服务新增 `SOLUM_ALLOWED_ORIGINS` 精确 CORS 白名单；Harmony 的同源 `server/` 契约同步更新。
   - 验证：`cargo test --workspace` 331 个非零测试全绿，Clippy `-D warnings`、fmt、前端静态检查和两份 solum-cloud Node 测试（各 3 项，含 CORS）通过；PowerShell 5.1 语法与 UTF-8 BOM、Android debug/release Kotlin 编译通过。真实浏览器在 1280×720 与 390×844 验证 relay 账号登录后只返回 `tenant=alice`、密码清空且账号 token 不进 localStorage；Benefit Monitor 以同一账号登录并发送测试告警，relay 反查 `alice` 租户内收到 1 条 `benefit-monitor/test`，本机 `/api/config` 不回显密码/access/refresh token；两页均无横向溢出，干净会话控制台零错误。最终 0.1.8 / 1008 arm64 Debug APK 478,846,504 字节（SHA-256 `64858550D5A4B95985BED80C5F34A828A6DF9BDDD3FE47B3F3179F5562CE1A42`）；arm64 Release APK 237,629,285 字节（SHA-256 `BAD9FA38DED0075C065FACBC99050B55B1B59619B642FCD1C3490F96BE8FE118`），包内含 `lib/arm64-v8a/libsolum_app_lib.so`，APK Signature Scheme v2 验证通过。当前 `adb devices` 无在线设备，因此未做手机安装、后台刷新和系统通知运行验证；生产服务也未部署。
-- **Solum 0.1.7（Android versionCode 1007，2026-08-12）——独立福利监控与手机恢复提醒链路。** `D:\ClaudeSpace\Project\Utilities\benefit-monitor` 是只监听本机回环地址的零额外依赖监控应用，带紧凑浏览器前端、20 秒轮询、状态基线、恢复去重、Windows 通知、Solum 失败重试，以及织境三项预设和可新增的织境/HTTP JSON 渠道。`solum-sync-server` 只保留 Bearer 鉴权的 `/v1/alerts` 固定字段中转、7 天留存和幂等事件 ID，不托管监控页；Android 复用 `dataSync` 和 `solum-sync.json`，首次连接只建立游标，此后每 20 秒增量拉取并逐条通知新的恢复/测试事件，点击打开对应 HTTPS 地址。该状态表与端到端加密同步 blob 分离，服务端不接收账户、余额、上游密钥或任意正文。
+- **Solum 0.1.7（Android versionCode 1007，2026-08-12）——独立福利监控与手机恢复提醒链路。** 同级工具仓 `../Utilities/benefit-monitor` 是只监听本机回环地址的零额外依赖监控应用，带紧凑浏览器前端、20 秒轮询、状态基线、恢复去重、Windows 通知、Solum 失败重试，以及织境三项预设和可新增的织境/HTTP JSON 渠道。`solum-sync-server` 只保留 Bearer 鉴权的 `/v1/alerts` 固定字段中转、7 天留存和幂等事件 ID，不托管监控页；Android 复用 `dataSync` 和 `solum-sync.json`，首次连接只建立游标，此后每 20 秒增量拉取并逐条通知新的恢复/测试事件，点击打开对应 HTTPS 地址。该状态表与端到端加密同步 blob 分离，服务端不接收账户、余额、上游密钥或任意正文。
   - 织境鉴权由手动粘贴访问令牌改为邮箱/密码自动登录；应用保存并自动轮换 access/refresh token，刷新失效时用账号密码重新登录。密码与会话由 Windows 当前用户 DPAPI 加密写入 `secrets.dat`，保存新凭据前先真实验证，失败不会覆盖原有会话；页面、本机 API 与 `config.json` 均不回显秘密。
   - 验证：PowerShell 5.1 语法/BOM 与前端 JS 语法通过；临时 HTTP JSON 源模拟“降级→正常→正常”只产生 1 条恢复事件，首次状态不通知，三类令牌均不从本机 API 回显，重启后配置和状态保持。真实 Chrome 在桌面与 390×844 显示正常，无横向溢出。workspace 329 项测试、Clippy `-D warnings`、fmt 和 diff 检查全绿，Android arm64 debug/release Kotlin 均 `BUILD SUCCESSFUL`。0.1.7 / 1007 arm64 Release APK 为 27,369,613 字节，SHA-256 `135D24F06964EBD73AF0EF37B11B7A775C234F72360C09FAE8583807ECAC3B69`，APK Signature Scheme v2 验证通过。生产 relay 未部署，手机未安装新版，因此真实手机通知链路尚未运行验证。
 - **Android 通知权限顺序收紧（2026-08-11）**——不再在 Tauri `setup` 阶段抢先弹出 `POST_NOTIFICATIONS`；只有用户在应用内完成隐私政策同意后，前端才调用一次原生权限命令。拒绝通知权限不阻断主界面，通知监听权限仍保持独立的系统设置开关。

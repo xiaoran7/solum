@@ -13,7 +13,7 @@
 本项目以本地优先为原则：个人数据留在设备本地；云端能力均为可选项，并受配置与用户操作约束。请勿提交
 任何真实的 API key、OAuth token、同步密钥、邮箱授权码、签名 keystore、SQLite 数据库或导出的个人数据。
 
-当前进度：**Phase 1–11 全部落地，Phase 12 已交付邮箱连接器（F21）**——核心闭环（离线、确定性、headless 可测）+ 图形前端（Tauri 2 桌面/Android 壳，常驻宿主：后台 ticker 自动触发提醒/问询/建议/同步/穿戴轮询，已真机/模拟器验证）+ 行为日志与定时问询（F3/F4）+ Suggestion Engine（F10 + F11 wellness 三信号）+ 云端 Reasoner（OpenAI 兼容网关，离线自动降级，闲聊纯文本 SSE 流式）+ 移动端通知监听与权限引导（F1/F2）+ Android 后台精确闹钟（`solum-alarm`，杀进程照样准点响）+ 聊天记录导入人格（F9 纯本地）+ 多设备端到端加密同步（F17）+ 穿戴数据接入（F5，Health Connect）+ 交互式生成 UI（F18 GenUI 协议）+ 语义记忆与检索（memory_facts + recall v1）+ 习惯闭环（routines，自动物化每日提醒 + 反向刹车 + 台账可编辑）+ 场景感知静默（F13）+ 真实 dangerous 工具过 HITL 护栏（`ledger_purge`）+ Daily Focus Brief（今日聚焦简报）+ **BloomXP 双向互通（Phase 8：只读拉取 + 受控日程推送）** + **通知上云开关（Phase 9，默认关闭、显式开启）** + **通知智能管线（Phase 10：App 白名单、双车道分诊、F12 回看与 Android 前台服务）** + **持久化自定义组件（Phase 11/F19：预览确认后保存、固定「组件」页离线记录 CRUD、可追加可空字段、form/list/table/stat 四视图、与日程双向快照互通、定义与记录随 F17 同步）** + **可还原的备份（导出 v2 + 过 Guard 的导入）** + **主流邮箱连接（F21：QQ / Gmail / Microsoft 365 / Outlook / 自定义 IMAP-SMTP，读取按需、发送逐次确认）**。
+当前代码快照：**Phase 1–11 的历史实现已落地，Phase 12 已交付邮箱连接器（F21）**。其中包括离线摄取与提醒、行为日志、主动建议、云端 Reasoner、Android 通知监听与精确闹钟、人格与语义记忆、Health Connect、GenUI、习惯/场景、HITL Guard、Daily Focus Brief、BloomXP、通知智能、自定义组件和邮箱连接器。仓库也仍保留原 F17 多设备端到端加密同步及桌面壳，但二者都是迁移态；**2026-08-22 重定义后的 F17 是尚待实现的平台无关加密备份与换机恢复**。组件定义与记录当前仍随旧同步链路传播，等备份闭环验收后一起迁移，不能再把它描述为目标 F17 已完成。
 
 壳层采用四个稳定根入口「今天 / 记忆 / 计划 / 搜索」。切页只刷新当前视图依赖，重复幂等 IPC 仅在当前进程内短时合并；业务数据始终以 core / SQLite 为权威。最后视图、滚动位置和按会话聊天草稿会留在当前设备，搜索词、邮件内容、通知正文与凭据不会进入这份 UI 状态。
 
@@ -55,13 +55,13 @@ crates/
       persona.rs       数字人格设定与版本化（F9）
       persona_import.rs 聊天记录导入 → 人格初稿（F9，纯本地提取）
       export.rs        全量数据导出（含审计日志与人格版本，纯本地）
-      sync.rs          多设备同步客户端（F17：端到端加密 + 行级 LWW 合并）
+      sync.rs          原 F17 多设备同步客户端（迁移态：端到端加密 + 行级 LWW 合并）
       wearable.rs      穿戴健康样本领域模型（F5：心率/步数/睡眠 + 去重键）
       notification_intelligence.rs  F20 通知白名单、双车道、确定性去重与安全 LLM 分诊协议
       orchestrator.rs  把上面装配成 ingest() 闭环 + 工具注册表
     tests/closed_loop.rs   文件落库的集成测试（关库再开验证持久化）
   solum-cli/         # headless 演示 CLI（二进制名 `solum`）
-  solum-app/         # Tauri 2 桌面/移动壳（纯静态前端 dist/index.html，无 npm 依赖）
+  solum-app/         # Tauri 2 Android 主壳（仍保留待退役桌面入口；静态前端，无 npm 依赖）
     src/lib.rs         100+ 个 tauri command + 常驻 ticker（系统时钟，OS 通知，自动同步，穿戴轮询、通知批处理）
     dist/index.html    20 视图（今天 / 记忆 / 计划 / 搜索四个一级根入口）：今天承载对话与当日状态；
                        记忆收纳台账·行为日志·穿戴·复盘·通知回看；计划收纳日程·提醒·建议；搜索在已加载
@@ -69,8 +69,8 @@ crates/
                        重要度规则·护栏与审计）与工作台（资料·组件）归入低频工具入口，不占主导航位置
                        首启隐私门覆盖全窗口，未同意前不放行（solum-cli 不受此门影响）
   solum-sync-server/ # 旧版自托管同步中转（单二进制 + SQLite；仅供本地兼容与迁移）
-  server/            # solum-cloud：统一 PostgreSQL 账号 / AI / 加密同步 / 告警中心（Node 24 + pg；
-                     # 同步只收密文；中心托管的上游 key 留在服务端，AI 正文转发但不写用量记录）
+  server/            # solum-cloud：统一 PostgreSQL 账号 / AI / 告警中心，目标增加加密备份（Node 24 + pg；
+                     # 当前旧同步只收密文；中心托管上游 key，AI 正文只转发不写入用量记录）
   solum-alarm/       # 本地 Tauri Android 插件：AlarmManager 精确闹钟镜像（进程被杀也准点提醒）
   solum-notif-access/ # 本地 Tauri Android 插件：通知监听权限、前台处理服务与电池/后台设置引导（桌面 no-op）
   solum-health-connect/ # 本地 Tauri Android 插件：Health Connect 只读适配（心率/步数/睡眠，桌面 no-op）
@@ -134,17 +134,17 @@ solum --now 2026-07-18T10:00:00 soulous pull # 手动拉取；401 时自动刷�
 
 ## 邮箱连接器（F21，可选）
 
-桌面壳侧栏的「邮箱」支持 QQ 邮箱、Gmail、Microsoft 365 / Outlook 及其他标准 IMAP/SMTP 邮箱：文件夹、最近邮件、发件人/主题搜索和纯文本正文均只在用户手动操作时读取。邮件正文与搜索结果只留在当前界面内存，**不写 SQLite、不同步、不导出、不进 LLM 或 recall**；附件上传、后台拉取、自动回复和自动发送尚未实现。
+当前迁移态壳层的「邮箱」已实现 QQ 邮箱、Gmail、Microsoft 365 / Outlook 及其他标准 IMAP/SMTP 邮箱：文件夹、最近邮件、发件人/主题搜索和纯文本正文均只在用户手动操作时读取。邮件正文与搜索结果只留在当前界面内存，**不写 SQLite、不进入旧同步、不导出、不进 LLM 或 recall**；附件上传、后台拉取、自动回复和自动发送尚未实现。该实现源自桌面壳，迁入 Android 前仍需完成移动 OAuth 回调、系统浏览器返回和后台边界验收，不能仅凭“F21 已交付”宣称移动端连接器成熟。
 
-账户凭据只保存到本机 gitignore 的 `solum-email.json`（可用 `SOLUM_EMAIL_CONFIG` 改路径）：QQ 使用网页端开启 IMAP/SMTP 后生成的授权码；Gmail 和 Microsoft 推荐在各自平台登记桌面 OAuth 应用后，用本机 loopback + PKCE 授权。每封外发邮件都必须在完整预览后通过一次 `sensitive` Guard 人工确认；审计不记录收件地址、主题或正文。完整边界见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.14 和 [docs/PRIVACY.md](docs/PRIVACY.md)。
+账户凭据当前只保存到本机 gitignore 的 `solum-email.json`（可用 `SOLUM_EMAIL_CONFIG` 改路径）：QQ 使用网页端开启 IMAP/SMTP 后生成的授权码；现有 Gmail 和 Microsoft 实现使用本机 loopback + PKCE。移动端正式交付时必须改为平台认可的原生应用 OAuth 回调并继续使用系统浏览器，不得把桌面 loopback 文档原样当成 Android/iOS/HarmonyOS 指南。每封外发邮件都必须在完整预览后通过一次 `sensitive` Guard 人工确认；审计不记录收件地址、主题或正文。完整边界见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.14 和 [docs/PRIVACY.md](docs/PRIVACY.md)。
 
 ## 隐私与通知上云
 
 完整政策见 [docs/PRIVACY.md](docs/PRIVACY.md)，架构级不变量见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §4。要点：
 
-- **L1 硬约束（无开关）**：导入的聊天记录原文、人格全部版本、append-only 审计日志、穿戴逐条原始采样，任何情况下不发往云端。
+- **L1 明文硬约束（无开关）**：导入的聊天记录原文、人格全部版本、append-only 审计日志、穿戴逐条原始采样不会作为明文交给第三方 AI；当前只有旧同步密文可离开设备，未来可进入服务端无法解密的 F17 备份密文。备份资格不等于 AI 上下文许可。
 - **「通知上云」开关（默认关闭，需主动开启）**：只控制通知文本能否作为**云端 AI 服务商**的上下文（recall 语料 + F20 分诊载荷）。关闭时新捕获的通知不外发，历史不回填。开关本身是设备本地偏好，不跨设备同步。
-- **设备间同步始终开启，不受上述开关影响**：通知及派生数据无条件参与多设备同步——那条链路是端到端加密后发往统一中心或旧版自建中转（服务端解不开同步正文，§3.8），与"交给第三方厂商"不是同一风险面。捕获时刻的"是否允许上云"判定会随同步传播，因此同一条通知在你所有设备上的处理一致。
+- **当前迁移期的旧设备同步不受上述开关影响**：已发布代码仍会把通知及派生数据端到端加密后发往统一中心或旧版自建中转，服务端解不开正文；这与“交给第三方 AI 服务商”不是同一风险面。目标架构不再维持多设备并发一致，而是把可移植数据纳入版本化加密备份；备份上线前以 [PRIVACY.md](docs/PRIVACY.md) 的当前行为声明为准。
 
 ```bash
 solum notif-cloud            # 查看通知上云开关
@@ -168,7 +168,9 @@ solum notif-intelligence deny com.tencent.mm    # 停止后续捕获，不删除
 solum notif-intelligence process                # 立即处理普通队列
 ```
 
-## 多设备同步（可选，自托管）
+## 历史多设备同步（迁移期兼容，不再扩建）
+
+> 本节描述当前仍可运行的旧 push/pull 实现，用于保护备份闭环上线前的既有数据，不代表新的产品方向。目标 F17 见 [移动端路线总览](docs/MOBILE-ROADMAP.md)。
 
 新部署使用统一的 `solum-cloud + PostgreSQL`：账号、AI 代理和同步共用一个 HTTPS 地址，但客户端的同步业务数据仍只以端到端加密 blob 进入中心库，服务端不能解密（ARCHITECTURE §3.8）。桌面/Android 继续使用本地 SQLite，鸿蒙继续使用 relationalStore；没有网络时录入和提醒不受影响。不配置同步则保持纯单机。同步 blob 是不可重建的增量历史，中心不会按天静默删除；默认以每租户 1 GiB、100,000 条和 32 个设备的硬上限明确拒绝超额写入，达到上限后应扩容或先实现可验证快照，不能用清历史“腾空间”。
 
@@ -202,9 +204,11 @@ Windows 独立监控应用（benefit-monitor，独立仓库，不在本仓内）
 
 应用持久化每路上次状态，首次启动只建立基线，只有从非正常恢复到正常才通知；Solum 暂时不可达时保留待发事件并在下一轮重试。配置和状态保存在 `%LOCALAPPDATA%\BenefitMonitor`。旧的 `check-gptplus.ps1`（开发机本地脚本，不入库）仍保留为单渠道命令行兼容入口。
 
-桌面壳配置好后顶栏出现同步按钮，ticker 每 5 分钟自动同步。审计日志按设计不同步（§4）。换掉主密钥即吊销所有旧设备。
+迁移态桌面壳配置好后顶栏会出现旧同步按钮，ticker 每 5 分钟自动同步。审计日志按当前实现不同步（§4）。换掉主密钥即吊销所有旧设备。
 
-## 跑桌面壳（GUI）
+## 历史桌面壳（迁移期调试）
+
+> 桌面端不再发布或新增功能；以下命令仅供现有代码调试和迁移验证，不能作为当前产品安装说明。
 
 ```bash
 cargo run -p solum-app         # 打开 Solum 桌面窗口（需要 WebView2，Win11 自带）

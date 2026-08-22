@@ -9,16 +9,26 @@
 - **Android 构建/打包/真机**：08-19 restart 只退出进程 · 08-14 JNI 预编译跳过注入 / `Os.flock` 不存在 · 08-13 ndk 相对路径 / Release 输出被占用 · 08-12 Kotlin daemon 跨盘 · 08-11 arm64 flavor 配对 / vivo ADB 断连 / CSP nonce 拒内联 style · 07-21 打包三连坑（native-tls / 改名遗留生成文件 / PERL5LIB）· 07-20 改名两坑 · 07-14 构建五连坑 / AlarmManager 三连坑 · 07-12 Health Connect Kotlin 三连坑 · 07-07 Tauri Android 首建三连坑 / app_data_dir
 - **前端验证量具**：08-20 错误脱敏不只账号页 · 07-27 未显示面板零视口 · 07-20 details 几何失效 / offsetParent 对 fixed 恒真 / 后台标签冻结动画 / px 字号不随根字号 / 滚动量具视图切走失效 / 删节点遗留脚本调用 / 连续改状态再采样 · 07-19 hidden 被 display 压过 / harness 集合形状 / data URL 被拒 / 16×16 窗口 · 07-15 重构验证两坑
 - **同步/迁移/SQLite**：08-21 push 侧毒丸（pull 侧 07-19 条目的孪生）/ 整仓搬迁后 target 缓存引用旧绝对路径 · 08-14 无快照增量不能靠留存回收 · 08-12 服务器隔离了客户端仍可能混库 · 07-20 加列漏触发器 payload / 迁移不在事务撞唯一索引 / 标量列 LWW 吃掉一半 / FK 级联不触发子表触发器 / 不同步表更易漏导出 / 未来表名占位符 · 07-19 合并循环 return Err = 同步永久卡死
-- **服务端/账号/PostgreSQL**：08-22 生产迁移海外 VPS 核实 / 恢复演练要预建 solum_api·solum_runtime 角色 / 业务表不在 public schema / 空 crontab 下管道式安装会静默失败 · 08-14 集成测试要全新空库 / 密码裁剪语义不可猜升级 / 限流键无限+同步 KDF 自成 DoS / 注册成功与本机初始化的部分成功 / 进程内 Mutex 护不了跨进程会话文件 · 08-13 FOR UPDATE 需表级 UPDATE 权限 / git archive CRLF / Node 测试并行 socket 假失败 / 并行测试改环境变量互相覆盖 · 08-12 relay 仪表盘 CORS
+- **服务端/账号/PostgreSQL**：08-22 solumsync 灰云误判与橙云四项验收 / 生产迁移海外 VPS 核实 / 恢复演练要预建 solum_api·solum_runtime 角色 / 业务表不在 public schema / 空 crontab 下管道式安装会静默失败 · 08-14 集成测试要全新空库 / 密码裁剪语义不可猜升级 / 限流键无限+同步 KDF 自成 DoS / 注册成功与本机初始化的部分成功 / 进程内 Mutex 护不了跨进程会话文件 · 08-13 FOR UPDATE 需表级 UPDATE 权限 / git archive CRLF / Node 测试并行 socket 假失败 / 并行测试改环境变量互相覆盖 · 08-12 relay 仪表盘 CORS
 - **安全审核修复期教训（07-21 系列）**：宽松断言给缺陷让路 · 跨进程共享可变文件要换数据结构 · 计数器加锁/rename 都不够 · spool 改造自己丢数据 · 复审打回六条 · 修复期五连坑 · 幂等 receipt 配按龄清理等于重开洞 · 把状态误当事件
 - **Windows/PowerShell/工具链**：08-12 PowerShell 5.1 UTF-8 与 JSON 编码 · 07-21 演示视频三坑 · 07-18 PowerShell round-trip 乱码 · 07-06 link.exe/cl.exe 不在 PATH
 - **时间解析/实体抽取（07-06 系列）**：时钟纳秒穿透 UI / 纯日期漏判 / 中文地点人名贪婪 / 规则抢答压制 LLM 兜底 / datetime-local 连续键入串段
 
-## 2026-08-22 生产已在海外 VPS + Cloudflare：本机直连 RST 的真凶是本地 VPN；备份与恢复演练落地
+## 2026-08-22 `solumsync` 灰云误判：只有权威 DNS、CF 边缘证据和业务 200 同时成立才算恢复
 
-- **现象（接上条）**：08-21 定案「源站迁出阿里云」后生产实际状态一度不明。08-22 会话实测发现 solum-cloud 与 gitea 容器已在海外 VPS（34.104.162.153，1Panel/openresty）运行（Up 2 days），DNS 已全量托管 Cloudflare（橙云）；但**本开发机不走代理直连 `solumsync`/`git.tannerlab.xyz` 仍被 RST**——看起来「迁移没用」。
-- **排查与根因**：从阿里云中转机（干净国内网络）走完整 CF 链路请求 `https://solumsync.tannerlab.xyz/v1/health` 连续 3 次 200（0.15–0.48s），`git.tannerlab.xyz` 200；openssl s_client 对 CF 边缘握手证书验证 OK；VPS 本地链（openresty :8443 → 容器 127.0.0.1:18083）健康。公网路径完全正常 → **本机 RST 是本地 VPN TUN 模式对直连流量的干扰**，属客户端环境问题。08-21 的指纹过滤结论仍成立，但源站离开阿里云后该过滤路径不再被经过，问题随之消解。
-- **现架构（2026-08-22 快照，同日二次核实修正）**：主链路为客户端 → CF 边缘 :443 → VPS openresty :8443（LE 证书）→ 各容器：`solumsync.tannerlab.xyz`→127.0.0.1:18083（solum-cloud 0.6.4/11c1e246 + 独立 postgres）；`git.tannerlab.xyz`→gitea-ee :3000。**国内直连备胎链路（用户拍板保留整机，撤回退租建议）**：阿里云 8.148.11.79 的 `solum-cn-relay` 是配置完整的 L7 中转——host nginx :443 的 solumsync vhost → 容器 :8080 → `proxy_pass https://34.104.162.153:8443`（upstream keepalive），DNS 从橙云切回灰云即启用；但注意 08-21 定案的**阿里云侧 TLS 指纹过滤仍然存在**，切回后浏览器级访问可用、rustls/非浏览器指纹的同步客户端依旧会被 RST——要真正解除需 ICP 备案或先查阿里云控制台合规通知。`bloom-hut-relay`（:2222）是国内→VPS 的 SSH 跳板。本会话初查曾误判 relay 为「默认欢迎页空壳」（Alpine nginx 配置在 `/etc/nginx/http.d/` 而非 `conf.d/`，读错路径所致）——查容器内 nginx 状态一律用 `nginx -T`，别信单文件 cat。
+- **现象与两次纠错**：仓库一度写着 `solumsync.tannerlab.xyz` 已走“CF 橙云 :443 → VPS :8443”，但 Cloudflare 两台权威 NS、Cloudflare DoH 与 Google DoH 当时都返回阿里云 `8.148.11.79`，实际仍是灰云，rustls/Schannel 继续经过阿里云 TLS 指纹过滤。第一次改 DNS 后，权威记录又变成灰云直指海外 VPS `34.104.162.153`：TLS 过滤虽退出，但公网 `:443` 落到同机的 TannerLab Authorization Server，`/v1/health` 与 `/v1/meta` 返回 401；正确 Solum Center 只在 `:8443` 返回 200。**只迁 A 记录、不打开代理或不核对回源端口，并没有恢复客户端链路。**
+- **最终解决与可复查证据**：用户明确打开橙云后，Cloudflare/Google DoH 同时返回 `104.21.64.111` 与 `172.67.182.236`；以边缘 IP + `Host: solumsync.tannerlab.xyz` 请求 `/cdn-cgi/trace` 得到 `Server: cloudflare` / `CF-RAY`，独立公网 HTTPS 抓取 trace 显示 `visit_scheme=https`、TLS 1.3、HTTP/3，`/v1/health` 返回 PostgreSQL `0.6.4 / 11c1e246…` 200。至此主链路才可判定为客户端 → CF 边缘 :443 → VPS openresty :8443 → solum-cloud，阿里云 `8.148.11.79` 只剩手工切灰云才会启用的中转备胎。
+- **为什么此前“连续 3 次 200”仍会误判**：仅看到业务 200 不能证明经过 CF；在中转机自身解析、反向代理回环、本地 VPN/TUN 或 sing-box 的 DNS/SNI 缓存下，请求可能绕过预期链路。此前阿里云中转机的 3 次 200 很可能属于这类路径，但没有当时的逐跳包证据，故只能记为高可信推断，不能写成已证实根因。
+- **以后验收必须四项同时成立**：①直接问 Cloudflare 权威 NS 或两家独立 DoH，A/AAAA 必须是 CF 边缘而非 `8.148.11.79` / `34.104.162.153`；②响应含 `CF-RAY` 或 `/cdn-cgi/trace` 明确命中边缘；③标准公网 `https://solumsync.tannerlab.xyz/v1/health` 返回 Solum Center 200，而不是 Authorization Server 401；④目标 vivo 上用实际 rustls push/pull 复测。前三项证明服务器侧恢复，第四项才关闭真机遗留项。
+- **缓存边界**：切橙云后，本开发机的本地代理仍曾把同一域名送到旧 `34.104.162.153:443` 并得到 401，而独立公网已经 200；这是本地 DNS/SNI 缓存，不代表生产再次切回灰云。先等待至少一个 300 秒 TTL 并重连代理/网络，再做结论；不得靠清除 Solum 应用数据“修 DNS”。
+
+## 2026-08-22 生产迁移与备份演练的初次核验（DNS 结论已由上条更正）
+
+> **更正**：本条当时把“生产容器在海外 VPS”和“`solumsync` 已经橙云”合并成一个结论；前者属实，后者当时并未成立。“完整 CF 链路连续 3 次 200”也缺少权威 DNS 与 `CF-RAY` 证据。当前橙云最终状态只以上方后续四项验收为准。
+
+- **现象（接上条）**：08-21 定案「源站迁出阿里云」后生产实际状态一度不明。08-22 会话确认 solum-cloud 与 gitea 容器已在海外 VPS（34.104.162.153，1Panel/openresty）运行（Up 2 days）；但当时把这一事实进一步推断成 `solumsync` 已经橙云，后来被权威 DNS 反证。
+- **当时排查与局限**：阿里云中转机请求 `https://solumsync.tannerlab.xyz/v1/health` 连续 3 次 200（0.15–0.48s），`git.tannerlab.xyz` 200；VPS 本地链（openresty :8443 → 容器 127.0.0.1:18083）健康。这些证据能证明服务与某条转发路径可用，**不能单独证明 solumsync 公网 DNS 已经橙云**。本机直连 RST 也同时受 VPN/TUN 影响，不能拿来反向确认公网链路。
+- **最终架构（以本日最新验证为准）**：主链路为客户端 → CF 边缘 :443 → VPS openresty :8443（LE 证书）→ 各容器：`solumsync.tannerlab.xyz`→127.0.0.1:18083（solum-cloud 0.6.4/11c1e246 + 独立 postgres）；`git.tannerlab.xyz`→gitea-ee :3000。**国内直连备胎链路（用户拍板保留整机，撤回退租建议）**：阿里云 8.148.11.79 的 `solum-cn-relay` 是配置完整的 L7 中转——host nginx :443 的 solumsync vhost → 容器 :8080 → `proxy_pass https://34.104.162.153:8443`（upstream keepalive），DNS 从橙云切回灰云即启用；但阿里云侧 TLS 指纹过滤仍然存在，切回后 rustls/非浏览器指纹客户端仍可能被 RST。`bloom-hut-relay`（:2222）是国内→VPS 的 SSH 跳板。本会话初查曾误判 relay 为「默认欢迎页空壳」（Alpine nginx 配置在 `/etc/nginx/http.d/` 而非 `conf.d/`，读错路径所致）——查容器内 nginx 状态一律用 `nginx -T`，别信单文件 cat。
 - **同日落地**：① PG 备份编排 `/usr/local/bin/solum-pg-backup.sh` + root crontab（每日 UTC 03:23，保留 14 份，目录 `/opt/1panel/backup/solum-cloud/`）；② 恢复演练通过：全新 postgres:17-alpine 起库、预建角色、恢复、10 表行数逐一比对一致、0 错误；手册同目录 `RESTORE.md`。release keystore 已做仓库外加密备份（Deliverables，密码在独立密码管理器）。
 - **如何避免（本条四个坑）**：
   - pg_dump 含 `solum_api`/`solum_runtime` 的 OWNER/GRANT 语句，恢复进全新实例必须**先建这两个 NOLOGIN 角色**再 restore，否则刷一批 ERROR（数据仍会进库但属主错误）。
@@ -40,7 +50,7 @@
 
 ## 2026-08-21 整仓搬迁后 target 缓存引用旧绝对路径，`cargo test` 在构建脚本阶段就挂
 
-- **现象**：仓库从 `D:\ClaudeSpace\Project\Desktop_export_2026-07-13\PA\` 迁到现址后，`cargo test --workspace` 直接失败于 solum-app 的 build script：`failed to read plugin permissions: ...Desktop_export_2026-07-13\PA\target\debug\build\tauri-...\out\permissions\...（os error 3）`。TODO 里这条「受阻」挂了两天，因为报错看起来像 Tauri 配置问题而不是缓存问题。
+- **现象**：仓库从旧导出目录 `Desktop_export_2026-07-13/PA/` 迁到现址后，`cargo test --workspace` 直接失败于 solum-app 的 build script：`failed to read plugin permissions: <旧工作区>/PA/target/debug/build/tauri-.../out/permissions/...（os error 3）`。TODO 里这条「受阻」挂了两天，因为报错看起来像 Tauri 配置问题而不是缓存问题。
 - **根因**：搬迁时把 23.8 GiB 的 `target/` 原样拷了过来。Tauri 的 build script 把自己的 OUT_DIR 绝对路径记进指纹/dep-info；这些文件里的旧路径已不存在，而 cargo 认为对应单元「fresh」不会重跑 build script，于是读权限文件时直接炸。全 target 有 3000 个文件引用旧路径——不是单点损坏，是整体污染。
 - **解决**：`cargo clean` 全删重建（重建后基线 353 项测试全绿）。没有尝试只清 `build/tauri-*` 的微创方案：污染面是全仓 dep-info，赌不起。
 - **如何避免**：**`target/` 视为一次性缓存，永远不随仓库搬家/备份迁移**；新机器或新路径上第一次构建前先确认没有旧路径残留（`rg -l "旧路径" target | wc -l`）。同类隐患：`gen/android/tauri.settings.gradle` 也是绝对路径生成文件（gitignored），裸 checkout 跑不了 gradle——已用 `scripts/gen-android-ci-settings.mjs` 解决。
@@ -230,7 +240,7 @@
 
 ## 2026-08-12 Kotlin daemon 跨 C/D 盘增量编译失败不等于 Gradle 构建失败
 
-- **现象**：Android Kotlin 编译先打印 `this and base files have different roots`，一边是 `C:\Users\...\.cargo\registry` 的 Tauri Kotlin 源码，一边是 `D:\ClaudeSpace\...\gen\android`，随后出现 `Daemon compilation failed`。
+- **现象**：Android Kotlin 编译先打印 `this and base files have different roots`，一边是系统盘用户目录下 `.cargo/registry` 的 Tauri Kotlin 源码，一边是另一盘符工作区的 `gen/android`，随后出现 `Daemon compilation failed`。
 - **根因**：Kotlin 增量缓存尝试把 C 盘和 D 盘文件都转成相对路径，Windows 不存在跨盘相对路径；这是 daemon/增量编译器的路径假设，不是业务 Kotlin 语法错误。
 - **解决**：继续读取完整 Gradle 结果。当前插件会自动显示 `Using fallback strategy: Compile without Kotlin daemon`，非 daemon 编译随后完成，最终以末尾 `BUILD SUCCESSFUL` 为准。本次明确运行 `.\gradlew.bat :app:compileArmDebugKotlin --console=plain`，新告警服务成功编译。
 - **避免**：不要在看到 daemon 堆栈第一屏时提前终止或误报代码失败；需要减少噪声时可停 daemon 后以非增量模式重跑。验证结论必须同时写明前置回退和最终构建状态。

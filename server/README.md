@@ -1,6 +1,6 @@
 # Solum Cloud
 
-Solum 的统一中心后端。产品只做移动端：Android 是当前主开发和首发平台，成熟后补齐 iOS 与 HarmonyOS；桌面、网页和多设备双向同步不再是产品方向。当前活跃手机的本地数据存储仍是业务权威，中心目标职责为账号、AI、必要元数据与端到端加密版本化备份/换机恢复。备份契约必须平台无关，使 Android/iOS/HarmonyOS 能交叉恢复；当前 `/v1/push|pull`、SQLite 兼容入口和旧 relay 仍为迁移期历史实现。
+Solum 的统一中心后端。产品只做移动端：Android 是当前主开发和首发平台，成熟后补齐 iOS 与 HarmonyOS；桌面、网页和多设备双向同步不再是产品方向。当前活跃手机的本地数据存储仍是业务权威，中心目标职责为账号、AI、必要元数据与端到端加密版本化备份/换机恢复。备份契约必须平台无关，使 Android/iOS/HarmonyOS 能交叉恢复；当前 `/v1/push|pull`、根路径 Dashboard、SQLite 兼容入口和旧 relay 仍为迁移期历史实现，存在不等于目标产品仍有网页端。
 
 生产模式由一个 `solum-cloud` 容器和一个 PostgreSQL 容器组成，提供：
 
@@ -58,7 +58,7 @@ SOLUM_REGISTRATION_MODE=open
 ```
 
 自托管部署如只供单人使用可改为 `closed`；初始管理员账号始终保留。
-本仓桌面与 Android 客户端的“注册”按钮都调用这一中心接口；兼容版本的 HarmonyOS 客户端同样调用该接口。账号只写入本 PostgreSQL，不会在其他容器各建一份。
+当前 Android 客户端以及迁移期桌面壳的“注册”按钮都调用这一中心接口；兼容版本的 HarmonyOS 客户端也调用该接口。目标 iOS/HarmonyOS 移动端必须继续复用同一账号契约。账号只写入本 PostgreSQL，不会在其他容器各建一份。
 
 ## 数据与密钥边界
 

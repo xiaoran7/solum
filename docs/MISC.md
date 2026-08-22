@@ -66,13 +66,13 @@
 
 本轮把底层错误与用户文案分成两层：前端 `safeUserError` 记录诊断信息但只展示网络/同步/确认等恢复动作；Guard 仍使用原始工具名和参数完成授权、令牌绑定与审计，展示层只显示用户动作。台账来源保留“聊天记录/日程/固定提醒”等可追溯类别，内部 `event#` 只留在实现与测试。
 
-Android 生成目录里的 `tauri.settings.gradle` 曾指向已迁移的 `Desktop_export...\\PA`，导致实际 Release 合并的插件 manifest 可能来自旧仓。交付前必须重新运行 Tauri Android 初始化/构建，使 `solum-alarm` 项目目录指向当前 `D:\\ClaudeSpace\\Project\\solum\\crates\\solum-alarm\\android`，再从 APK manifest 验证 `AlarmReceiver`；不能用源文件存在替代包内证据。
+Android 生成目录里的 `tauri.settings.gradle` 曾指向已迁移的 `Desktop_export.../PA`，导致实际 Release 合并的插件 manifest 可能来自旧仓。交付前必须重新运行 Tauri Android 初始化/构建，使 `solum-alarm` 项目目录指向当前仓库的 `crates/solum-alarm/android`，再从 APK manifest 验证 `AlarmReceiver`；不能用源文件存在替代包内证据。
 
 本轮把 Android 模拟器审计发现和真机尚未验证的生产路径集中写入 `docs/TODO.md`，状态按“待验证 / 已通过 / 已复现 / 受阻”维护。真机使用现有 `dev.solum.app` 0.2.6，不卸载、不清数据、不删除用户事件或记忆；生产服务只做只读状态核验和客户端正常业务请求，不因“使用生产版本测试”推导出部署授权。
 
 真机补测新增三条需要优先回收的发布问题：`app_info` 调用出现 `AppState` 未注册错误；`HH:MM` 后接中文时刻会被解析成默认 09:00；0.2.6 安装包的合并 manifest 未列出 `dev.solum.alarm.AlarmReceiver`，所以系统虽持有 exact alarm，21:40 到点却没有 QA 通知。后两项都不能用“Rust/AlarmManager 代码看起来正确”替代生产 APK 证据。
 
-仓库已经从 `D:\ClaudeSpace\Project\Desktop_export_2026-07-13\PA` 移到 `D:\ClaudeSpace\Project\solum`，但默认 Cargo/Tauri 增量缓存仍保存旧绝对路径，导致 `cargo test --workspace` 在测试执行前失败。这不是测试断言失败，也不能通过删除用户现有构建目录来掩盖；基线改用独立 `CARGO_TARGET_DIR` 重建，并把旧路径缓存问题保留为可追溯的迁移限制。
+仓库已经从旧导出目录 `Desktop_export_2026-07-13/PA` 移到当前 `solum` 仓库，但默认 Cargo/Tauri 增量缓存仍保存旧绝对路径，导致 `cargo test --workspace` 在测试执行前失败。这不是测试断言失败，也不能通过删除用户现有构建目录来掩盖；基线改用独立 `CARGO_TARGET_DIR` 重建，并把旧路径缓存问题保留为可追溯的迁移限制。
 
 ## 2026-08-14 refresh 响应恢复选择确定性后继，不保存明文或多代 token
 
@@ -729,8 +729,8 @@ GPT-5.6 is used for: chat replies with **Generative UI envelopes** (the model co
 
 用隔离测试库（`PA_DB` 指向 scratchpad）驱动真实 `pa-app.exe` 走了一遍核心业务：事件摄取→NL 改期→高危拦截→状态/记忆写入→云端闲聊+GenUI 按钮闭环→提醒触发/snooze→建议/复盘/台账/护栏确认/级联删除/导出/模拟时钟。主链路全部跑通；发现问题按严重度排列：
 
-1. **云端调用期间整窗假死（bug，最高优先）**：闲聊/简报改写等走云端时窗口被 Windows 标记「未响应」、标题栏变红，持续到响应返回（MiMo 思考型 10–20s）。根因：`ingest` 等 Tauri command 是同步 `fn`（[lib.rs:341](../crates/pa-app/src/lib.rs)），云端 HTTP 阻塞在主线程消息泵上。用户很可能在等待期把 app 杀掉。改法方向：把含云端路径的 command 改 `async fn`（tauri 2 会挪到线程池）。
-2. **snooze toast 字符串拼入 DOM 节点（bug）**：点「稍后再响」toast 显示「提醒 #2 将于 [object HTMLSpanElement] 再响」——[index.html:1653](../crates/pa-app/dist/index.html) 把返回 DOM 节点的 `fmtDT()` 插进模板字符串，应为 `fmtDTText()`（1075 行注释本身就警告过这一点）。
+1. **云端调用期间整窗假死（bug，最高优先）**：闲聊/简报改写等走云端时窗口被 Windows 标记「未响应」、标题栏变红，持续到响应返回（MiMo 思考型 10–20s）。根因：`ingest` 等 Tauri command 是同步 `fn`（[当时 lib.rs:341](../crates/solum-app/src/lib.rs)），云端 HTTP 阻塞在主线程消息泵上。用户很可能在等待期把 app 杀掉。改法方向：把含云端路径的 command 改 `async fn`（tauri 2 会挪到线程池）。
+2. **snooze toast 字符串拼入 DOM 节点（bug）**：点「稍后再响」toast 显示「提醒 #2 将于 [object HTMLSpanElement] 再响」——[当时 index.html:1653](../crates/solum-app/dist/index.html) 把返回 DOM 节点的 `fmtDT()` 插进模板字符串，应为 `fmtDTText()`（1075 行注释本身就警告过这一点）。
 3. **对话内高危拦截是死胡同（UX 缺口）**：聊天里说「帮我删除所有照片」只回一句「需要你显式确认后才能进行」，不给任何确认/查看入口，护栏页也不会出现待确认项——用户不知道下一步去哪。应至少给「前往护栏」入口或就地 `guard_request` 按钮。
 4. **右侧今日面板首次加载为空**（疑似 refresh 时序）：最大化出现宽屏面板时三个分区连空态文案都没有，直到下一次 ticker/交互才渲染出内容与空态。
 5. **「每小时提醒」语义静默丢失**：GenUI 按钮发出「设置一个每小时喝水提醒的日程」，云端解析落成单次提醒（时间=当下），回复不提示「不支持重复提醒」——用户以为设好了每小时。至少应在确认文案里说明只建了一次性提醒。
@@ -740,7 +740,7 @@ GPT-5.6 is used for: chat replies with **Generative UI envelopes** (the model co
 
 **第二轮（边缘业务）补充发现，同日：**
 
-7. **采纳习惯建议→materialize routine 用的是真实时钟而非注入时钟（bug）**：模拟时钟 07-20 采纳「护肤 08:00」建议，生成的 occurrence 落在真实时间的明天（07-18 08:00）——`suggestion_set` 命令链路没把模拟 now 传进 `materialize_routines`（[orchestrator.rs:738](../crates/pa-core/src/orchestrator.rs) 本身逻辑正确，是调用方没传）。违反 AGENTS.md「注入时钟」红线的路径遗漏；真实使用不受影响，但所有依赖模拟时钟的验证/演示会踩。
+7. **采纳习惯建议→materialize routine 用的是真实时钟而非注入时钟（bug）**：模拟时钟 07-20 采纳「护肤 08:00」建议，生成的 occurrence 落在真实时间的明天（07-18 08:00）——`suggestion_set` 命令链路没把模拟 now 传进 `materialize_routines`（[当时 orchestrator.rs:738](../crates/solum-core/src/orchestrator.rs) 本身逻辑正确，是调用方没传）。违反 AGENTS.md「注入时钟」红线的路径遗漏；真实使用不受影响，但所有依赖模拟时钟的验证/演示会踩。
 8. **D3 示例措辞「清掉」不入高危路由**：「把上周的行为日志清掉」（ARCHITECTURE §6 D3 的原话）落进闲聊，云端还答「我没有删除数据的权限，建议联系管理员」（事实性错误+偏离定位）；「删除上周的行为日志」则正确走 `ledger_purge` 完整护栏流程（条数预览→发起确认→弹窗→审计）。意图规则该补「清掉/清空/清理」等同义词。
 9. **habit 检测被单个离群点杀死**：聚类判据是全量 min/max 跨度 ≤90min，一条 23:09 的旧「护肤」状态让三条 08:00 的记录永远凑不成习惯，且无任何提示。真实使用里偶发一次深夜同名状态就会永久压制该习惯建议——建议改成截尾/众数窗口或至少按最近 N 天开窗。
 10. **D4「routine 触发后一键已完成」未实现**：壳层与 CLI 都没有该入口（壳层唯一 routine 表面是台账层标签；CLI 只有 routine list/set on/off）。7 天未确认的反向暂停建议（`generate_routine_pauses`）依赖的「确认」实际只能靠用户主动说一句状态来达成——刹车链路成立但体验没闭环。
