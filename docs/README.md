@@ -1,7 +1,8 @@
 # Documentation index
 
-更新日期：2026-08-21
+更新日期：2026-08-22
 
+- 当前方向总览：[`MOBILE-ROADMAP.md`](MOBILE-ROADMAP.md)——Mobile-only / Android-first、加密备份、信息源、Agent 质量、移动排版与分阶段路线的快速入口。
 - 入门和当前产品：根 [`README.md`](../README.md)、[`PRODUCT.md`](PRODUCT.md)。
 - 架构和设计：[`ARCHITECTURE.md`](ARCHITECTURE.md)、[`DESIGN.md`](DESIGN.md)。
 - 集成与隐私：[`LLM-PROVIDERS.md`](LLM-PROVIDERS.md)、[`PRIVACY.md`](PRIVACY.md)。

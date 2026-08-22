@@ -1,7 +1,7 @@
 # 息壤 Solum — Personal Agent
 
 一个"真正了解你"的个性化 agent（不是无状态问答机器人）。设计目标、隐私边界与路线图见
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。**改动前请先读 [AGENTS.md](AGENTS.md)（智能体工作规范，
+[移动端路线总览](docs/MOBILE-ROADMAP.md)与[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。**改动前请先读 [AGENTS.md](AGENTS.md)（智能体工作规范，
 含强制文档留痕规则）；动前端前另需读 [docs/PRODUCT.md](docs/PRODUCT.md) 与 [docs/DESIGN.md](docs/DESIGN.md)。**
 
 ## 公开发布范围
