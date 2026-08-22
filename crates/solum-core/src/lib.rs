@@ -5,6 +5,7 @@
 //! HITL safety guard, and the local memory store. See ../../docs/ARCHITECTURE.md.
 
 pub mod account;
+pub mod backup;
 pub mod brief;
 pub mod capture;
 pub mod classify;

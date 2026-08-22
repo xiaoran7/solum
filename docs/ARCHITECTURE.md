@@ -165,6 +165,88 @@
 - **恢复安全**：登录仅决定可访问哪个租户；密码派生包装密钥只在新手机本地解开恢复信封。下载后必须先验认证标签、哈希、容量和迁移兼容性，在临时库完成导入/完整性检查后原子切换；本机已有数据时禁止静默覆盖。
 - **保留策略与接管**：服务端保存多个完整版本而非不可重建的无限增量历史；上传采用幂等、原子提交，失败或半包不能替换最近可恢复版本。账号维护单调递增的 active generation，新手机经用户确认接管后提升代次，旧手机后续上传必须被拒绝。容量、单包大小、版本数量、用户删除和灾备恢复都必须有可测试的明确规则。
 
+#### `solum-backup` protocol v1（F17 加密备份地基，2026-08-23）
+
+本节只定义**平台无关容器和端侧 codec**，不是完整云备份闭环。v1 内层暂时复用
+`solum-export` v2；它已有可恢复的 `_restore`，但仍缺完整对话以及部分平台/账户数据，故不能据此
+声称“全量备份”或“换机恢复”已经完成。密码派生、恢复码、恢复信封、服务端上传 API、Android
+临时库恢复事务和 generation 接管也都在后续阶段。
+
+**算法与密钥边界**：调用方传入恰好 32 字节的随机主密钥。codec 先把内层 JSON 规范化为紧凑
+UTF-8 字节，再用 RFC 1950 zlib 容器内的 DEFLATE、固定 level 6 压缩；AEAD 明文为
+`SHA-256(规范化 JSON) || zlib stream`，最后用 XChaCha20-Poly1305 加密（24 字节 nonce、16 字节
+tag）。摘要位于加密体内，服务端看不到，也不能用它判断两份备份是否包含相同内容。Rust 实现使用 `flate2` 的纯 Rust
+`miniz_oxide` 后端，不需要 C/汇编或系统 zlib，满足 Android 交叉编译约束。生产 nonce 必须由 OS
+CSPRNG 每包随机生成；仅仓库内公开测试夹具可注入固定 nonce。密钥、明文和未脱敏完整数据不得写入
+日志、错误或夹具；服务端只需把整个容器作为不透明字节保存，不持有主密钥，因而不能解开正文。
+
+**二进制编码（所有多字节整数均为 unsigned big-endian）**：
+
+| 偏移 | 长度 | 内容 |
+|---|---:|---|
+| 0 | 8 | ASCII magic `SOLUMBAK`（hex `53 4f 4c 55 4d 42 41 4b`） |
+| 8 | 4 | `header_len`，JSON 头的字节数，范围 `1..=16384` |
+| 12 | `header_len` | UTF-8、无 BOM、紧凑 JSON 头；v1 拒绝未知字段 |
+| 12 + `header_len` | 余下全部 | 原始 AEAD ciphertext，末尾 16 字节是 Poly1305 tag |
+
+Rust v1 写入器按下表顺序、无空白序列化 JSON 头；读取器允许字段顺序不同，因为认证使用的是容器中
+**原始头字节**而不是重新序列化结果。字符串均按 JSON/UTF-8 编码，整数不得为负数或浮点数：
+
+| 字段 | v1 规则 |
+|---|---|
+| `format` | 固定 `solum-backup` |
+| `protocol_version` | 整数 `1` |
+| `user_id` | 小写、带连字符的 UUID；绑定账号，不是用户名 |
+| `device_generation` | `u64` 且大于 0 |
+| `backup_id` | 每包新建的小写、带连字符 UUID |
+| `created_at` | UTC RFC 3339，精确到毫秒，固定形状 `YYYY-MM-DDTHH:MM:SS.sssZ` |
+| `payload_format` | 固定 `solum-export` |
+| `payload_version` | 整数 `2`；必须与解密后文档的 `version` 一致 |
+| `payload_digest` | 固定 `sha256`；32 字节摘要位于 AEAD 明文开头，不出现在头中 |
+| `compression` | 固定 `zlib-deflate`；写入 level 6，读取接受任何合法 RFC 1950/1951 流 |
+| `encryption` | 固定 `xchacha20-poly1305` |
+| `nonce` | 24 字节 nonce 的 48 个小写 hex 字符 |
+| `plaintext_size` | 规范化内层 JSON 的精确字节数 |
+| `compressed_size` | zlib 压缩流的精确字节数，不含 32 字节摘要 |
+| `ciphertext_size` | 密文含 tag 的精确字节数，必须等于 `32 + compressed_size + 16` 和实际余长 |
+
+**内层 JSON 规范化**：对象键在每一层按 Unicode 标量字典序排列，数组顺序保留，不写 BOM 或无意义
+空白，字符串与数字使用 `serde_json` 的紧凑 JSON 表达。`Value` 输入与 JSON 字节输入都先解析并按此
+规则重写，所以同一逻辑文档、同一 metadata/key/nonce 会产生固定夹具字节；其他平台只要能读取合法
+JSON 即可解包，但写 fixture 时必须遵守该规范化规则。
+
+**AAD 精确字节规则**：
+
+```text
+AAD = UTF8("solum-backup:aad:v1") || 0x00 || raw_header_bytes
+```
+
+`raw_header_bytes` 是上表中从偏移 12 开始、长度恰为 `header_len` 的原始字节。因此 AAD 确定性绑定
+用户 UUID、device generation、backup id、创建时间、协议版本、内层格式及版本，同时也绑定算法、
+nonce 和三个尺寸；任何一个头字段的有效值被改动都会在认证标签校验时失败。magic 与 `header_len`
+由 framing 严格校验，不进入 AAD。
+
+**硬尺寸上限**：头 `16 KiB`；ciphertext（含 tag）`64 MiB`；解压后规范化 JSON `256 MiB`；
+容器总长不得超过 `12 + 16 KiB + 64 MiB`。读取器不得依赖头内自报尺寸分配无界内存：先由总长与
+`header_len` 算出实际密文余长并执行 64 MiB 上限，解压则最多读取 `256 MiB + 1` 字节以识别压缩
+炸弹。三个尺寸字段必须与实测完全一致；不能用调低上限或截断输出“修复”坏包。
+
+**版本与错误分类**：v1 只接受上述精确格式、版本和算法；`protocol_version != 1` 分为
+`unsupported_version`，任一算法标识未知分为 `unsupported_algorithm`，不能猜测或降级。其余失败
+分为 `truncated`（前导/头/密文不完整）、`invalid_container`（magic、JSON、字段或尺寸矛盾）、
+`size_limit`、`authentication`（错误 key、tag、密文或有效 AAD 字段被改）、`decompression` 和
+`invalid_payload`（JSON 或 `solum-export`/`plan_import` 校验失败）。诊断只报告类别与非敏感字段名，
+不得回显 key、nonce 以外的密钥材料、明文片段或完整个人数据。
+
+**恢复前校验顺序（全部完成前不得写 Store）**：① 根据容器总长和 `header_len` 先限制实际密文；
+② 校验 framing、头 JSON、版本、算法、字段形状及三个尺寸；③ 以原始头字节构造 AAD 并验证 AEAD
+tag；④ 拆出加密体内的 32 字节摘要并核对压缩流长度；⑤ 受限解压，核对 `plaintext_size` 与
+`SHA-256(规范化 JSON)`；⑥ 解析内层 JSON，交给现有 `plan_import`，并交叉核对内外
+`payload_format/version`。codec 只在全部成功后返回验证过的文档和
+导入计划，本身从不接收或写入 `Store`；后续恢复事务只能消费这个验证结果。仓库固定夹具位于
+`crates/solum-core/tests/fixtures/backup-v1/`，只含明确标注的合成数据、公开测试 key/nonce 和精确容器
+字节，供 Android/iOS/HarmonyOS 实现做逐字节互通测试。
+
 #### 历史多设备同步实现（迁移期，只读理解）
 
 - 定位：同步数据面只做**加密数据中转**，不解密、不推理、不保存同步明文；服务端数据库泄露不能直接解开同步正文。这不等于统一中心看不到账号元数据、结构化告警或正在代理的 AI 请求，三者按各自边界单独约束。

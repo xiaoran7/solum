@@ -42,6 +42,10 @@ hkdf = "0.12"
 hmac = "0.12"
 fs2 = "0.4"
 libc = "0.2"
+# RFC 1950/1951 compression for platform-neutral backup containers. Pin the
+# pure-Rust backend explicitly: Android cross-compiles must not discover a
+# system zlib or require a C/asm toolchain.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 # Faster, smaller test/dev builds where the SQLite C compile dominates.
 [profile.dev]
