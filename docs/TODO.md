@@ -2,17 +2,19 @@
 
 > 状态约定：`待验证` 尚未在目标环境跑通；`已通过` 已有可复查证据；`已复现` 已稳定观察到缺陷；`受阻` 受设备、权限或外部环境限制。Android 真机测试默认使用已安装的生产版客户端与 `https://solumsync.tannerlab.xyz`，不得卸载应用、清空数据或删除用户内容。
 
-## 2026-08-22 单客户端、单服务器架构收口（用户拍板）
+## 2026-08-22 Android-only + 加密云备份架构收口（用户拍板）
 
-> 定案：保留多设备同步能力，但不再把同步中继作为第二套服务器。产品只保留一套 Solum 客户端代码与一个 `solum-cloud + PostgreSQL` 服务端；账号、AI、同步和必要的 Agent 元数据使用同一个 HTTPS origin、同一账号 access token 和同一 `user_id / tenant_id`。不同业务使用不同 API 路径是正常分层，不得再演变成不同服务或不同权威数据源。
+> 最终定案：Solum 以后只做 Android 移动端，不再把桌面端作为产品；现有多设备双向同步退出目标架构，改为“Android 单一权威数据源 → 端到端加密版本化云备份 → 换机恢复”。服务端仍只有一个 `solum-cloud + PostgreSQL`，承载账号、AI、必要元数据与不可读备份密文。当前桌面与 push/pull 代码只是迁移态，在备份/恢复闭环验收前不得先删到无法保护现有数据。
 
-- [ ] **移除网页端与网页登录入口。** 删除 `server/src/dashboard.html` 及 `GET /` 的 HTML 页面；根路径改为 404、204 或不含用户功能的机器可读响应。注册、登录、设备和同步状态只在 Solum 客户端 UI 中提供。同步收紧浏览器 Origin/CORS 策略；文档不得把“没有网页 UI”夸大成“协议上任何非官方程序都绝对无法调用 API”，若未来要求客户端身份强证明，另行设计设备密钥、mTLS 或平台 App Attestation。
-- [ ] **客户端只认一个服务器地址。** 删除“账号服务器 / 同步服务器”双地址心智与配置入口；登录会话的 `server_url` 同时作为 `/v1/auth/*`、`/v1/ai/*`、`/v1/push|pull`、`/v1/keys/*` 的唯一 base URL。保留现有同源校验，服务端只从已验证 token 的不可变 `sub` 选择租户，拒绝客户端在 query/body 自报用户身份。
-- [ ] **退役独立 Rust/SQLite 中继。** 先盘点仍使用旧 `{url,token,key}` / `legacy` 租户的客户端和数据，按“停写 → 备份 → 映射账号 UUID → 导入 PostgreSQL → 数量核对 → 旧库只读观察”完成迁移；确认无旧写入后，从 Cargo workspace、构建/测试/部署链和文档删除 `crates/solum-sync-server`。不得让旧中继与 PostgreSQL 中心同时接受同一租户写入。
-- [ ] **收掉服务端 SQLite 兼容实现。** 数据迁移完成后删除 `server/src/server.js`、`npm run start:sqlite` 及只为双实现维护的契约分支；生产与开发默认都以 PostgreSQL 实现为唯一权威。一次性迁移器与必要的只读归档说明可独立保留，不得继续暴露第二套可写服务。
-- [ ] **统一域名与命名。** `solumsync.tannerlab.xyz` 只可在迁移期作为统一 `solum-cloud` 的兼容别名，不能再代表独立同步系统；选定最终统一 API 域名后，客户端、监控、反向代理、生产验证和文档一次切换，旧域名保留限时重定向/别名并记录下线条件。
-- [ ] **明确服务器数据边界并补契约测试。** 账号、会话、设备、恢复信封、AI 权益/用量、结构化告警和同步密文由服务器保存；日程、记忆、人格、通知、健康和聊天等业务正文仍以客户端本地库为权威，只作为端到端加密同步 blob 中转。测试钉住：同账号不同设备进入同一租户、不同账号严格隔离、pull 增量虽可因游标不同而不同但最终本地状态收敛一致。
-- [ ] **同步更新权威文档和产品文案。** 实施时更新 ARCHITECTURE §2/§3.8、PRIVACY、README、server/README、部署配置和设置页术语；把“Sync Server”统一改成“统一服务中的同步数据面”，避免用户继续理解成第二台服务器。
+- [ ] **先设计并实现加密备份格式。** 复用现有逻辑导出能力生成平台无关、带 schema/protocol 版本的完整快照，覆盖所有可移植用户数据（含日程、提醒、记忆、人格、行为、通知结果、健康、组件、完整对话、Agent 设置，以及提供商允许迁移的邮箱账户配置/凭据）；压缩后以客户端主密钥做 AEAD 加密，AAD 绑定用户 UUID、设备代次、备份版本、创建时间和格式版本。服务器只保存密文、大小、版本和校验元数据，不得持有解密密钥。凭据恢复后仍须检查是否过期/撤销，不能把“字节已恢复”冒充“外部服务已重新授权”。
+- [ ] **实现唯一服务端备份 API。** 在同一 `solum-cloud` origin 增加账号鉴权的上传、列表、下载和删除接口；服务端只从 access token 的不可变 `sub` 选择租户。设置明确的单用户容量、单包大小、版本数量和保留规则，至少保留多个历史版本，上传必须幂等且完整提交，不能用半包覆盖最近可恢复版本。账号维护单调递增的 active generation；新手机经用户确认接管后提升 generation，旧手机的后续上传必须被拒绝，防止旧状态重新成为“最新”。
+- [ ] **实现安全换机恢复闭环。** 新手机登录后通过现有密码派生恢复信封解开备份主密钥，先校验认证标签、哈希、格式版本、容量和 schema 迁移可行性，再导入临时库并做完整性检查，最后原子切换；本机已有数据时必须预览并明确选择，禁止静默覆盖。恢复后逐项提示重新授予通知监听、Health Connect、精确闹钟、电池与后台权限，并重建系统闹钟镜像。
+- [ ] **区分可移植数据与系统绑定能力。** 用户数据原则上全部进入加密备份；Android 权限授予、AlarmManager 当前注册、Keystore 硬件句柄、失效的 OAuth 会话和本机文件路径不能伪装成可直接恢复，只备份可移植配置/意图并在新机重新授权或重新绑定。补端到端测试钉住“备份完整、服务器不可读、坏包不覆盖、跨版本可恢复”。
+- [ ] **停止桌面产品开发。** README、产品文案、发布流程和测试矩阵把 Android 标为唯一正式客户端；不再发布 Windows/macOS/Linux 安装包，不再为桌面端新增功能或修复非共享核心问题。Tauri 继续作为 Android 壳层技术，不因放弃桌面产品就误删 Android 所需的 `solum-app`；CLI 仅保留为核心回归/迁移工具，不构成第二客户端。
+- [ ] **备份验收后退役多主同步。** 先盘点生产账号与 `legacy` 租户，生成最后一个可验证备份并保留旧库只读；随后删除客户端 `/v1/push|pull|stats` 调度、`sync_oplog`/LWW/游标/隔离区/毒丸等只为多主同步存在的复杂度，以及服务端 `sync.blobs`/设备同步路由。不得在用户仍只有旧增量历史、尚无可恢复快照时关闭或删除远端数据。
+- [ ] **退役独立 Rust/SQLite 中继与服务端 SQLite 入口。** 从 Cargo workspace、构建/测试/部署链和文档删除 `crates/solum-sync-server`；迁移完成后删除 `server/src/server.js`、`npm run start:sqlite` 及双实现契约分支。一次性只读迁移器和归档说明可以保留，不得继续暴露第二套可写服务器。
+- [ ] **移除网页端与网页登录入口。** 删除 `server/src/dashboard.html` 及 `GET /` HTML；根路径改为 404、204 或无用户功能的机器响应。注册、登录、备份和恢复只在 Android 客户端 UI 提供，并收紧 Origin/CORS。若未来要求证明官方安装包身份，另立设备密钥、mTLS 或平台 App Attestation 设计，不能靠 User-Agent。
+- [ ] **统一域名、接口与产品术语。** Android 只保存一个 `server_url`，供 `/v1/auth/*`、`/v1/ai/*`、`/v1/backups/*`、`/v1/keys/*` 共用。`solumsync.tannerlab.xyz` 只作迁移期兼容别名，最终不再代表独立同步系统；把产品和文档中的“多设备同步 / Sync Server”改为“端到端加密云备份 / 换机恢复”。
 
 ## 2026-08-21 全仓优化审计行动清单
 
@@ -31,7 +33,7 @@
 - [ ] **store.rs（5996 行）/ orchestrator.rs（5736 行）拆分**：占 solum-core 近半，分节注释完整即天然拆分线；Rust 多 impl 块机制下零 API 破坏，测试耦合已验证极低。每步独立提交三绿再进下一步；拆到哪节补哪节测试（email/soulous/notification_intelligence/store-sync 段测试密度与风险不成比例）。
 - [x] **已被 2026-08-22“单服务器架构收口”取代：不再收敛双实现。** PostgreSQL `postgres-server.js` 保留为唯一服务实现；SQLite `server.js` 在迁移完成后直接退役，不再为两入口抽公共层或继续投入功能建设。
 - [ ] **发布核对脚本化**：`scripts/verify-android-release.mjs`（aapt badging / ZIP 条目 / apksigner / manifest 三组件断言，末尾输出 CHANGELOG 可粘贴证据块）+ 版本三元组一致性检查（tauri.conf.json version / versionCode / Cargo.toml workspace version）+ Android 启动时 AlarmReceiver 自检绊线（PackageManager.getReceiverInfo，缺失时设置页显式告警）。0.2.6 生产 P1 正是从手工核对网缝隙漏出的。
-- [ ] **sync_oplog 保守压实设计**：本地 oplog 永不修剪（health_samples 按分钟写入，一年数十万行），但 oplog 同时是 LWW 比较基线不能裸删。方案：每 (tbl,guid) 仅留 hlc 最新一条、只处理早于留存期且已被推送游标越过的行、delete op 墓碑加倍保留、压实后把最大 (hlc,origin) 写入 meta 作比较基线；先 CLI `--dry-run` 报告可回收行数。动手前先在 MISC 记录取舍。
+- [x] **已被 2026-08-22“加密云备份取代多主同步”取消：不再设计 sync_oplog 压实。** oplog 在新备份/恢复闭环验收前仅维持现状以保护迁移；随后整体退役，不再为其增加长期维护机制。
 - [x] **已被 2026-08-22“退役独立中继”取代：不再扩建 Rust 中继清扫。** PostgreSQL 同步历史在快照/压缩协议出现前继续永久保留并以租户硬配额拒绝新写入；旧 Rust 中继只完成迁移和下线，不再增加定时清扫、统计或水位线能力。
 - [ ] **memory_ledger 分页**：全表加载无 LIMIT，作为 F12 日常界面在长寿命设备上内存与 JSON 载荷线性无界；加 (layer, limit, cursor) 按层懒加载，导出继续走 export.rs 独立路径。
 - [ ] **CSP 去 unsafe-inline 收尾**（MISC 2026-07-21 明记「别忘了」）：tauri.conf.json script-src 仍带 unsafe-inline，245KB 内联 script 未拆（此后 17 个提交文件又涨 45%）。拆 dist/app.js 时 check-frontend.mjs 必须同步改为校验 app.js——否则 `<script src>` 被捕获为空内容、vm.Script("") 静默通过，静态检查空转。
@@ -40,7 +42,7 @@
 
 ### 小项打包
 
-- [ ] **push 毒丸后续：pull 侧 403 处理。** 设备撤销同样阻断 pull（ARCHITECTURE §3.8）；现在 pull 收到 403 仍以显式错误结束整轮（用户可见）。是否也要「跳过半轮 + 持久标记」待议——注意撤销场景下 pull 失败是**必须显眼**的，不能照抄 push 侧的自愈语义。
+- [x] **已被 2026-08-22“加密云备份取代多主同步”取消：不再扩展 pull 侧 403 语义。** 当前错误保持显式可见直到迁移；资源投入转向备份坏包防护、设备代次接管和换机恢复。
 - [ ] 三处多步写漏包 `with_transaction`（persist_event_with_scope / fire_due / set_importance_rule；方法已支持嵌套 savepoint，机械缩进调整 + 「insert_notification 故障时事件回滚」回归测试）。
 - [ ] CoreError::Storage 保留 rusqlite 错误码（BUSY/LOCKED/CONSTRAINT 现被 to_string 抹掉）；row mapper 对损坏 JSON 不再 `unwrap_or_default()` 静默吞（至少 eprintln 带 id 或可见计数）。
 - [ ] push 装箱循环 O(n²) 重复加密改估算式装箱（每加一条 op 就整批重新序列化+ChaCha 加密；积压越大浪费越多，恰是离线回连场景，手机 CPU 上可感知）。
