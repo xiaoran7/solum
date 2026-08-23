@@ -17,6 +17,10 @@
 - 对外材料：2026-07-22 演示视频 v3 · 2026-07-21 开源发布与 CSP 边界 · 2026-07-15 Build Week 类别与演示视频
 - 早期实现取舍：2026-07-06/07/12 系列（ticker 时钟、persona、导入提取、通知监听、Health Connect、pa-app 壳等）
 
+## 2026-08-24 本地目录按移动平台分层，仓库历史暂不合并
+
+本地工作区调整为 `Project/solum/android`、`Project/solum/harmony` 与预留的 `Project/solum/ios`。`android` 仍是当前 Gitea `solum` 主仓，并继续承载共享 Rust core、服务端协议和权威产品文档；`harmony` 仍是独立的 `solum-harmony` 仓库。此次只改变磁盘组织，不用一次大提交吞并两仓历史，也不把尚未实现的 iOS 目录包装成已有客户端。HarmonyOS 仓内的当前主仓引用统一指向兄弟目录 `../android`；历史记录中的旧目录名称保留当时语境。
+
 ## 2026-08-24 HarmonyOS F17 状态核对：密码原语相通不等于备份协议对齐
 
 核对 `solum-harmony` 当前源码后确认，鸿蒙端已有 XChaCha20-Poly1305 和旧多设备密文同步，但没有 `solum-backup` v1 / `solum-attachment` v1 codec、`solum-export` v3 平台映射、备份 API、generation takeover、恢复发布事务或备份/恢复 UI，也没有消费主仓固定夹具。为避免后续把“能运行同一种 AEAD”误报成“F17 已跨平台互通”，主仓 TODO 增加独立 HarmonyOS 适配项，并把双向真机恢复、固定夹具逐字节一致、篡改/超限在写库前失败列为完成门槛。鸿蒙仓当前已有其他会话的未提交文档改动，本次不混入或覆盖。
