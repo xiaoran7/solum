@@ -230,6 +230,7 @@ test('legacy SQLite importer preserves active sessions, sanitizes alerts and adv
 
       const relay = new DatabaseSync(relayPath);
       try {
+        const receivedAt = new Date().toISOString();
         relay.exec(`
           create table blobs(
             seq integer primary key, tenant_id text, device text, blob blob, received_at text
@@ -242,11 +243,11 @@ test('legacy SQLite importer preserves active sessions, sanitizes alerts and adv
           );
         `);
         relay.prepare('insert into blobs values(?,?,?,?,?)').run(
-          41, userId, 'legacy-device', Buffer.from([1, 2, 3]), '2026-08-13T00:00:00Z');
+          41, userId, 'legacy-device', Buffer.from([1, 2, 3]), receivedAt);
         relay.prepare('insert into alerts values(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(
           73, userId, 'legacy-invalid-alert', 'legacy-monitor', null, 'Legacy alert',
           'down', -1, 86_400_001, 100.1, '2026-08-13T00:00:00Z',
-          'javascript:alert(1)', '2026-08-13T00:00:01Z');
+          'javascript:alert(1)', receivedAt);
       } finally {
         relay.close();
       }
