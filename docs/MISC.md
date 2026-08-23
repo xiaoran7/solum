@@ -19,7 +19,7 @@
 
 ## 2026-08-24 本地目录按移动平台分层，仓库历史暂不合并
 
-本地工作区调整为 `Project/solum/android`、`Project/solum/harmony` 与预留的 `Project/solum/ios`。`android` 仍是当前 Gitea `solum` 主仓，并继续承载共享 Rust core、服务端协议和权威产品文档；`harmony` 仍是独立的 `solum-harmony` 仓库。此次只改变磁盘组织，不用一次大提交吞并两仓历史，也不把尚未实现的 iOS 目录包装成已有客户端。HarmonyOS 仓内的当前主仓引用统一指向兄弟目录 `../android`；历史记录中的旧目录名称保留当时语境。
+本地工作区调整为 `Project/solum/android`、`Project/solum/harmony` 与预留的 `Project/solum/ios`。`android` 仍是当前 Gitea `solum` 主仓，并继续承载共享 Rust core、服务端协议和权威产品文档；`harmony` 仍是独立的 `solum-harmony` 仓库。此次只改变磁盘组织，不用一次大提交吞并两仓历史，也不把尚未实现的 iOS 目录包装成已有客户端。HarmonyOS 仓内的当前主仓引用统一指向兄弟目录 `../android`；历史记录中的旧目录名称保留当时语境。父级只作本地平台容器、不新建第三套 Git 历史；根 README、主仓 README/文档索引/架构/协作规则和鸿蒙活跃文档共同记录这一边界。
 
 ## 2026-08-24 HarmonyOS F17 状态核对：密码原语相通不等于备份协议对齐
 

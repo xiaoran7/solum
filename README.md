@@ -4,6 +4,10 @@
 [移动端路线总览](docs/MOBILE-ROADMAP.md)与[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。**改动前请先读 [AGENTS.md](AGENTS.md)（智能体工作规范，
 含强制文档留痕规则）；动前端前另需读 [docs/PRODUCT.md](docs/PRODUCT.md) 与 [docs/DESIGN.md](docs/DESIGN.md)。**
 
+## 多平台工作区位置
+
+本仓在本地平台工作区中位于 `Project/solum/android`；兄弟目录 `../harmony` 是独立的 HarmonyOS 仓库，`../ios` 仅为未来 iOS 预留。父目录 `Project/solum` 不是 Git 仓库，两个现有平台仓必须分别执行 Git、测试和提交。本仓虽名为 `android`，仍是共享 Rust core、服务端协议、F17 跨平台备份规范和产品架构的权威主仓；平台适配不得复制出不兼容契约。完整目录说明见父级 [`README.md`](../README.md)。
+
 ## 公开发布范围
 
 **2026-08-22 产品方向已收口为 Mobile-only、Android-first：移动端包括 Android、iOS 与 HarmonyOS，当前主开发和首发 Android，项目成熟后补齐 iOS 与鸿蒙；桌面和网页不再是产品。** 当前仓库主要承载 Android 实现，仍含桌面构建、CLI 与多设备 push/pull 历史代码作为迁移态。未来平台适配可以分仓或使用不同壳层，但必须共享同一产品语义、服务端契约和平台无关的加密备份格式；CLI 只作核心回归与数据迁移工具。

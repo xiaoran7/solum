@@ -1,6 +1,10 @@
 # Documentation index
 
-更新日期：2026-08-22
+更新日期：2026-08-24
+
+## 工作区与仓库边界
+
+本主仓当前位于 `Project/solum/android`，并继续承载共享 core、服务端与权威协议文档；HarmonyOS 独立仓位于兄弟目录 `../harmony`，iOS 目录仅预留。父级 [`Project/solum/`](../../README.md) 是本地平台容器而非 Git 仓库。跨平台修改必须进入各自仓库分别测试和提交，不能把目录相邻误当作同一工作树。
 
 - 当前方向总览：[`MOBILE-ROADMAP.md`](MOBILE-ROADMAP.md)——Mobile-only / Android-first、生产与迁移快照、加密备份、信息源、Agent 质量、移动排版与分阶段路线的快速入口。
 - 入门和当前产品：根 [`README.md`](../README.md)、[`PRODUCT.md`](PRODUCT.md)。
