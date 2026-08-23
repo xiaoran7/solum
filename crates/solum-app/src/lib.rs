@@ -21,6 +21,8 @@
 //! Tauri's Android runner can link it (`mobile_entry_point`), and the desktop
 //! binary (`main.rs`) is a thin wrapper around [`run`].
 
+mod portable_snapshot;
+
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1741,7 +1743,57 @@ fn fact_update(state: State<AppState>, id: i64, content: String) -> CmdResult<()
 fn export_data(state: State<AppState>, now: Option<String>) -> CmdResult<String> {
     let now = parse_now(now)?;
     let json = lock!(state).export_json(now).map_err(core_err)?;
+    write_export_json(&state.db_path, &json, "solum-export")
+}
+
+/// Build a v3 main logical payload from a WebView/IndexedDB snapshot plus the
+/// Rust-owned spool and non-secret configuration. This command is deliberately
+/// not wired to the current v2 export/import UI: v3 restore stays fail-closed
+/// until the platform-wide temporary-store transaction exists.
+#[tauri::command]
+fn export_portable_data(
+    state: State<AppState>,
+    app: tauri::AppHandle,
+    snapshot: portable_snapshot::WebViewPortableSnapshot,
+    now: Option<String>,
+) -> CmdResult<String> {
+    let now = parse_now(now)?;
+    let expected_profile = snapshot.profile_id.clone();
+    portable_snapshot::validate_profile(&expected_profile, &active_local_profile_id())?;
+
+    let health = app.health_connect();
+    let health_sources = if health.is_available().map_err(|e| e.to_string())?
+        && health.has_permissions().map_err(|e| e.to_string())?
+    {
+        vec!["android-health-connect".to_string()]
+    } else {
+        Vec::new()
+    };
+    let background_reminders = app.alarm().is_available().map_err(|e| e.to_string())?;
     let dir = std::path::Path::new(&state.db_path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    // Holding the Orchestrator mutex prevents the resident ticker from moving
+    // a notification between spool and SQLite while both halves are captured.
+    let json = {
+        let orch = state
+            .orch
+            .lock()
+            .map_err(|_| "内部状态异常（锁中毒）".to_string())?;
+        portable_snapshot::validate_profile(&expected_profile, &active_local_profile_id())?;
+        let platform =
+            portable_snapshot::collect(snapshot, &dir, health_sources, background_reminders)?;
+        orch.export_portable_json(now, platform).map_err(core_err)?
+    };
+    portable_snapshot::validate_profile(&expected_profile, &active_local_profile_id())?;
+    write_export_json(&state.db_path, &json, "solum-export-v3")
+}
+
+fn write_export_json(db_path: &str, json: &str, prefix: &str) -> CmdResult<String> {
+    let dir = std::path::Path::new(db_path)
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .map(|p| p.to_path_buf())
@@ -1752,17 +1804,23 @@ fn export_data(state: State<AppState>, now: Option<String>) -> CmdResult<String>
     // double-click, or a manual one landing on a scheduled one) used to have
     // the later silently overwrite the earlier. A backup that can be
     // clobbered by another backup is not a backup — take the first free name.
-    let stamp = Local::now().format("%Y%m%d-%H%M%S");
-    let mut file = dir.join(format!("solum-export-{stamp}.json"));
-    for n in 2..100 {
-        if !file.exists() {
+    let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let mut file = None;
+    for n in 1..=99 {
+        let candidate = if n == 1 {
+            dir.join(format!("{prefix}-{stamp}.json"))
+        } else {
+            dir.join(format!("{prefix}-{stamp}-{n}.json"))
+        };
+        if !candidate.exists() {
+            file = Some(candidate);
             break;
         }
-        file = dir.join(format!("solum-export-{stamp}-{n}.json"));
     }
+    let file = file.ok_or_else(|| "同一秒已有过多导出文件，请稍后重试".to_string())?;
     // Atomic write so an interrupted export leaves no truncated file that
     // looks like a usable backup.
-    solum_core::fsatomic::write_atomic(&file, &json).map_err(|e| e.to_string())?;
+    solum_core::fsatomic::write_atomic(&file, json).map_err(|e| e.to_string())?;
     Ok(file.display().to_string())
 }
 
@@ -4021,6 +4079,7 @@ pub fn run() {
             snooze,
             fact_update,
             export_data,
+            export_portable_data,
             event_reschedule,
         ])
         .run(tauri::generate_context!())
@@ -4421,6 +4480,21 @@ mod tests {
         let odd = Path::new("weird.tryX.json");
         assert_eq!(spool_attempt(odd), 1);
         assert_eq!(spool_base(odd), "weird.tryX");
+    }
+
+    /// The native listener and Rust must select the same account directory.
+    /// A root-level spool while SQLite lives under `profiles/<uuid>` silently
+    /// strands notifications and makes a same-profile backup impossible.
+    #[test]
+    fn android_listener_publishes_spool_and_overflow_under_one_frozen_profile() {
+        let kotlin = include_str!(
+            "../gen/android/app/src/main/java/dev/solum/app/SolumNotificationListener.kt"
+        );
+        assert!(kotlin.contains("val profileDir = activeProfileDir()"));
+        assert!(kotlin.contains("File(profileDir, SPOOL_DIR)"));
+        assert!(kotlin.contains("File(profileDir, OVERFLOW_DIR)"));
+        assert!(!kotlin.contains("File(dataDir, SPOOL_DIR)"));
+        assert!(!kotlin.contains("File(dataDir, OVERFLOW_DIR)"));
     }
 
     #[test]

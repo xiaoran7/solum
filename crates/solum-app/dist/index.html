@@ -3789,6 +3789,29 @@ function saveCurrentChatDraft(immediate) {
   else delete uiState.chatDrafts[session.id];
   saveUiState(immediate);
 }
+function snapshotPortableChat() {
+  // Include what is currently in the input, then freeze the same bounded shape
+  // that localStorage can actually retain. contextTurns are rebuildable and
+  // intentionally excluded by the v3 contract.
+  saveCurrentChatDraft(true);
+  saveChatSessions(true);
+  const stored = JSON.parse(serializeChatSessions(CHAT_STORAGE_BUDGET_CHARS));
+  const sessions = (stored.sessions || []).map((session) => ({
+    id: String(session.id || ""),
+    title: String(session.title || ""),
+    updated_at: String(session.updatedAt || ""),
+    messages: (session.messages || []).map((message) => ({
+      role: message.role,
+      content: String(message.content || ""),
+      intent: String(message.intent || ""),
+    })),
+  }));
+  const sessionIds = new Set(sessions.map((session) => session.id));
+  const drafts = Object.entries(uiState.chatDrafts || {})
+    .filter(([sessionId, content]) => sessionIds.has(sessionId) && typeof content === "string" && content.length)
+    .map(([sessionId, content]) => ({ session_id: sessionId, content }));
+  return { sessions, drafts };
+}
 function restoreCurrentChatDraft() {
   const input = $("chatInput");
   if (input) input.value = String(uiState.chatDrafts[activeChatSession().id] || "").slice(0, CHAT_MAX_MESSAGE_CHARS);
@@ -4905,6 +4928,44 @@ async function listDocuments() {
     const request = store.getAll();
     request.onsuccess = () => set(request.result || []);
   });
+}
+// F17 Android v3 adapter. One readonly transaction freezes the IndexedDB row
+// set; hashes are over Blob bytes, never base64 and never metadata alone.
+async function snapshotPortableDocumentManifests() {
+  if (!globalThis.crypto?.subtle) throw new Error("当前 WebView 不支持资料完整性摘要");
+  const docs = await listDocuments();
+  if (docs.length > DOCUMENT_MAX_COUNT) throw new Error("本地资料数量超过快照上限");
+  const manifests = [];
+  for (const doc of docs) {
+    if (!(doc?.blob instanceof Blob)) throw new Error("本地资料记录缺少文件内容");
+    if (!Number.isSafeInteger(doc.size) || doc.size !== doc.blob.size) {
+      throw new Error("本地资料记录尺寸不一致");
+    }
+    if (doc.blob.size > DOCUMENT_MAX_BYTES) throw new Error("本地资料超过 20 MiB 快照上限");
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await doc.blob.arrayBuffer()));
+    manifests.push({
+      id: String(doc.id || ""),
+      name: String(doc.name || ""),
+      media_type: String(doc.type || doc.blob.type || "application/octet-stream"),
+      plaintext_size: doc.blob.size,
+      sha256: Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+    });
+  }
+  return manifests;
+}
+async function buildPortableWebViewSnapshot() {
+  const profileId = localProfileId;
+  const chat = snapshotPortableChat();
+  const documents = await snapshotPortableDocumentManifests();
+  if (profileId !== localProfileId) throw new Error("账号在快照期间发生变化");
+  return { profile_id: profileId, chat, documents };
+}
+// Reserved for the F17 backup coordinator. Do not bind this to the current
+// manual export button until v3 has a platform-wide atomic restore path; the
+// existing v2 export/import pair must remain recoverable in the meantime.
+async function exportPortableDataV3(now) {
+  const snapshot = await buildPortableWebViewSnapshot();
+  return invoke("export_portable_data", { snapshot, now: now ?? null });
 }
 async function getDocument(id) {
   return withDocuments("readonly", (store, set) => {

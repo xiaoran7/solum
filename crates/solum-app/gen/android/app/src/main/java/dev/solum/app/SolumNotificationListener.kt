@@ -87,10 +87,10 @@ class SolumNotificationListener : NotificationListenerService() {
      * mid-drain is simply counted on the next pass. Same shape as the spool
      * itself, which is what this should have been from the start.
      */
-    private fun noteOverflow() {
+    private fun noteOverflow(profileDir: File) {
         synchronized(spoolLock) {
             try {
-                val dir = File(dataDir, OVERFLOW_DIR)
+                val dir = File(profileDir, OVERFLOW_DIR)
                 if (!dir.isDirectory) dir.mkdirs()
 
                 val sweepAt = System.currentTimeMillis()
@@ -142,7 +142,11 @@ class SolumNotificationListener : NotificationListenerService() {
         if (sbn.isOngoing) return
         // Default empty/invalid policy means no capture. This is intentionally
         // checked before reading notification extras or building an inbox row.
-        if (!isAllowed(sbn.packageName)) return
+        // Freeze one profile for the entire intake. Reading the policy from
+        // account A and publishing the payload under account B during a switch
+        // would be a cross-account privacy violation.
+        val profileDir = activeProfileDir()
+        if (!isAllowed(profileDir, sbn.packageName)) return
 
         val extras = sbn.notification.extras
         val title = clamp(extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty())
@@ -185,7 +189,7 @@ class SolumNotificationListener : NotificationListenerService() {
             // would be exceeded by however many happened to race.
             var overflowed = false
             synchronized(spoolLock) {
-                val spool = File(dataDir, SPOOL_DIR)
+                val spool = File(profileDir, SPOOL_DIR)
                 if (!spool.isDirectory) spool.mkdirs()
 
                 // Sweep abandoned `.tmp` files before measuring. A crash
@@ -219,15 +223,15 @@ class SolumNotificationListener : NotificationListenerService() {
             }
             // Outside the lock only because `noteOverflow` takes it itself;
             // dropping is survivable, dropping *silently* is not.
-            if (overflowed) noteOverflow()
+            if (overflowed) noteOverflow(profileDir)
         } catch (_: Exception) {
             // Capture is best-effort; never crash the listener.
         }
     }
 
-    private fun isAllowed(packageName: String): Boolean {
+    private fun isAllowed(profileDir: File, packageName: String): Boolean {
         return try {
-            val policy = activeProfileFile("notif-policy.json")
+            val policy = File(profileDir, "notif-policy.json")
             if (!policy.isFile) false
             else {
                 val packages = JSONObject(policy.readText()).optJSONArray("allowed_packages")
@@ -238,15 +242,15 @@ class SolumNotificationListener : NotificationListenerService() {
         }
     }
 
-    private fun activeProfileFile(name: String): File {
+    private fun activeProfileDir(): File {
         val account = File(dataDir, "solum-account.json")
         val userId = runCatching {
             JSONObject(account.readText()).optString("user_id").trim().lowercase()
         }.getOrDefault("")
         return if (Regex("^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$").matches(userId)) {
-            File(File(File(dataDir, "profiles"), userId), name)
+            File(File(dataDir, "profiles"), userId)
         } else {
-            File(dataDir, name)
+            dataDir
         }
     }
 }

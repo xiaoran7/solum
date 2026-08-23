@@ -6,13 +6,21 @@
 
 ## 主题索引（检索用，正文按日期新→旧）
 
-- **Android 构建/打包/真机**：08-19 restart 只退出进程 · 08-14 JNI 预编译跳过注入 / `Os.flock` 不存在 · 08-13 ndk 相对路径 / Release 输出被占用 · 08-12 Kotlin daemon 跨盘 · 08-11 arm64 flavor 配对 / vivo ADB 断连 / CSP nonce 拒内联 style · 07-21 打包三连坑（native-tls / 改名遗留生成文件 / PERL5LIB）· 07-20 改名两坑 · 07-14 构建五连坑 / AlarmManager 三连坑 · 07-12 Health Connect Kotlin 三连坑 · 07-07 Tauri Android 首建三连坑 / app_data_dir
+- **Android 构建/打包/真机**：08-23 listener 白名单分 profile 但 spool 仍写根目录 · 08-19 restart 只退出进程 · 08-14 JNI 预编译跳过注入 / `Os.flock` 不存在 · 08-13 ndk 相对路径 / Release 输出被占用 · 08-12 Kotlin daemon 跨盘 · 08-11 arm64 flavor 配对 / vivo ADB 断连 / CSP nonce 拒内联 style · 07-21 打包三连坑（native-tls / 改名遗留生成文件 / PERL5LIB）· 07-20 改名两坑 · 07-14 构建五连坑 / AlarmManager 三连坑 · 07-12 Health Connect Kotlin 三连坑 · 07-07 Tauri Android 首建三连坑 / app_data_dir
 - **前端验证量具**：08-20 错误脱敏不只账号页 · 07-27 未显示面板零视口 · 07-20 details 几何失效 / offsetParent 对 fixed 恒真 / 后台标签冻结动画 / px 字号不随根字号 / 滚动量具视图切走失效 / 删节点遗留脚本调用 / 连续改状态再采样 · 07-19 hidden 被 display 压过 / harness 集合形状 / data URL 被拒 / 16×16 窗口 · 07-15 重构验证两坑
 - **同步/迁移/SQLite**：08-21 push 侧毒丸（pull 侧 07-19 条目的孪生）/ 整仓搬迁后 target 缓存引用旧绝对路径 · 08-14 无快照增量不能靠留存回收 · 08-12 服务器隔离了客户端仍可能混库 · 07-20 加列漏触发器 payload / 迁移不在事务撞唯一索引 / 标量列 LWW 吃掉一半 / FK 级联不触发子表触发器 / 不同步表更易漏导出 / 未来表名占位符 · 07-19 合并循环 return Err = 同步永久卡死
 - **服务端/账号/PostgreSQL**：08-22 solumsync 灰云误判与橙云四项验收 / 生产迁移海外 VPS 核实 / 恢复演练要预建 solum_api·solum_runtime 角色 / 业务表不在 public schema / 空 crontab 下管道式安装会静默失败 · 08-14 集成测试要全新空库 / 密码裁剪语义不可猜升级 / 限流键无限+同步 KDF 自成 DoS / 注册成功与本机初始化的部分成功 / 进程内 Mutex 护不了跨进程会话文件 · 08-13 FOR UPDATE 需表级 UPDATE 权限 / git archive CRLF / Node 测试并行 socket 假失败 / 并行测试改环境变量互相覆盖 · 08-12 relay 仪表盘 CORS
 - **安全审核修复期教训（07-21 系列）**：宽松断言给缺陷让路 · 跨进程共享可变文件要换数据结构 · 计数器加锁/rename 都不够 · spool 改造自己丢数据 · 复审打回六条 · 修复期五连坑 · 幂等 receipt 配按龄清理等于重开洞 · 把状态误当事件
 - **Windows/PowerShell/工具链**：08-12 PowerShell 5.1 UTF-8 与 JSON 编码 · 07-21 演示视频三坑 · 07-18 PowerShell round-trip 乱码 · 07-06 link.exe/cl.exe 不在 PATH
 - **时间解析/实体抽取（07-06 系列）**：时钟纳秒穿透 UI / 纯日期漏判 / 中文地点人名贪婪 / 规则抢答压制 LLM 兜底 / datetime-local 连续键入串段
+
+## 2026-08-23 Android listener 按 profile 读白名单，却把 spool 写在 app-data 根目录
+
+- **现象**：F17 主载荷适配按“数据库父目录就是当前 profile”读取 `notif-spool/` 时，代码审计发现登录账号的 SQLite 位于 `profiles/<user_uuid>/solum.sqlite`，Rust ticker 也从该目录排空；但 Kotlin listener 仍固定写 `dataDir/notif-spool` 与 `dataDir/notif-overflow`。更隐蔽的是白名单已经通过 `activeProfileFile("notif-policy.json")` 正确读取 profile 目录，所以静态看起来像“账号隔离已完成”，实际正文进入了无人读取的根目录。
+- **根因**：08-12 账号分区只改了 policy/config/SQLite 路径，没有把原生 listener 的两个写入目录一起收口；跨语言路径契约靠双方各自拼字符串，没有测试钉住。若简单在写入前后分别读取账号，又会留下切号竞态：按账号 A 的白名单读取正文，最终可能写进账号 B。
+- **解决**：listener 每次 `onNotificationPosted` 先只解析一次 `activeProfileDir()`，同一个 `File` 同时用于 policy、spool 和 overflow marker；Rust 增加源码契约测试，明确禁止 `File(dataDir, SPOOL_DIR/OVERFLOW_DIR)` 回归。F17 适配器继续只读取 SQLite 同目录，因此 ticker 与快照看到完全相同的 profile 切片。
+- **历史根目录边界**：旧版本已写入根目录、且发生过切号的 pending 文件没有账号 provenance，不能为了“捞数据”静默塞给当前账号，否则会制造跨账号泄露；本批次不删除、不迁移这些历史文件。guest 的数据库父目录本来就是 app-data 根，仍会读取自己的根目录 spool。后续若要处理登录态遗留，只能提供本机明确预览/归属选择，不能自动猜。
+- **避免**：任何账号分区审计必须从“读取策略 → 写入队列 → 消费队列 → 备份队列”整条链逐路径对齐，并让原生端在一次事件内冻结 profile；只验证 policy 文件路径或 SQLite 路径都不够。
 
 ## 2026-08-22 `solumsync` 灰云误判：只有权威 DNS、CF 边缘证据和业务 200 同时成立才算恢复
 

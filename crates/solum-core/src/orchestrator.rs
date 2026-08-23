@@ -885,6 +885,18 @@ impl Orchestrator {
         Ok(serde_json::to_string_pretty(&doc)?)
     }
 
+    /// Build the fully validated v3 main payload from this Store and an
+    /// immutable, same-profile platform snapshot. Read-only and fully offline;
+    /// attachment bytes remain outside this JSON by protocol.
+    pub fn export_portable_json(
+        &self,
+        now: NaiveDateTime,
+        platform: crate::export_v3::PlatformPortableData,
+    ) -> Result<String> {
+        let doc = crate::export_v3::build_portable_export(&self.store, now, platform)?;
+        Ok(serde_json::to_string_pretty(&doc)?)
+    }
+
     // ---- behavior journal & check-ins (F3/F4) ------------------------------
 
     /// The journal, newest first.

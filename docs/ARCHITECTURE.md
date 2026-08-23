@@ -180,13 +180,13 @@
 | SQLite `notification_captures`、`notification_filter_proposals` | 可移植 | v3 已生成/验证稳定内容身份，并把 capture 的 raw input / event 引用转为 guid；平台恢复事务尚未落库。 |
 | SQLite `notification_action_proposals` | 可移植历史 | v3 保存源状态并把 `pending` 的恢复状态强制为 `stale`；平台恢复事务尚未落库。 |
 | SQLite `audit_log` | 可移植 | v3 已生成/验证稳定内容身份；后续事务只能按 id append 缺失项，仍不得 UPDATE/DELETE。 |
-| WebView `pa.chat-sessions.v1[.<profile>]` | 可移植，待适配 | v3 schema/上限已落地，`contextTurns` 明确不作权威；Android 适配器仍需提交同一 profile 的一致切片。 |
-| `solum.ui-state.v1[.<profile>].chatDrafts` | 可移植，待适配 | v3 schema/会话引用校验已落地；last view、滚动位置等 UI 状态不迁移。 |
-| IndexedDB `pa-local-documents-v1[.<profile>]/documents` | 可移植附件，待分块 | v3 manifest/摘要/数量/尺寸校验已落地；blob 仍需独立分块密文，不能塞入当前 64 MiB 容器或以内存 base64 冒充完成。 |
-| `notif-spool/*.json`、`notif-spool/failed/*.json` 与升级遗留 notification inbox | 可移植，待适配 | v3 待入库 schema/稳定身份已落地，恢复只进待处理区；Android 仍需冻结/排空并提交 spool 一致切片。 |
-| LLM 的非秘密 provider/base URL/model 选择 | 可移植 Agent 设置，待适配 | v3 类型只允许非秘密字段并拒绝未知 `api_key`；Android 配置适配器尚未接入。 |
+| WebView `pa.chat-sessions.v1[.<profile>]` | 可移植 | Android v3 适配器强制落盘当前输入并提交同 profile 的有界一致切片；`contextTurns` 明确不作权威。现有 v2 手动导入恢复能力未被替换。 |
+| `solum.ui-state.v1[.<profile>].chatDrafts` | 可移植 | Android v3 适配器只投影引用现存 session 的草稿；last view、滚动位置等 UI 状态不迁移。 |
+| IndexedDB `pa-local-documents-v1[.<profile>]/documents` | 可移植附件，待分块 | Android 适配器已用单个 readonly transaction 读取 manifest 并按 Blob 原始字节计算 SHA-256；blob 仍需独立分块密文，不能塞入当前 64 MiB 容器或以内存 base64 冒充完成。 |
+| `notif-spool/*.json`、`notif-spool/failed/*.json` 与升级遗留 notification inbox | 可移植 | Android 适配器在 Orchestrator 锁内冻结完整文件名集合、限制预读尺寸并只读提交；恢复仍只进待处理区，快照不消费源文件。 |
+| LLM 的非秘密 provider/base URL/model 选择 | 可移植 Agent 设置 | Android 配置适配器已严格读取并只投影非秘密字段；存在但损坏的配置使整次快照失败，`api_key` 不在目标类型中。 |
 | `notification_intelligence.filter_rules` 与批处理间隔 | 可移植设置 | v3 builder 已从 Store 拆出规则/间隔，并把 allowed/auto-event package 只放恢复意图，避免顺带授予权限。 |
-| `notif_cloud`、通知 app 白名单、auto-event app 白名单、邮箱/Soulous 连接、健康数据源与后台提醒 | 仅恢复意图 | 新设备可提示“曾启用/曾连接”并展示非秘密标识，但默认仍关闭，核对已安装 app 与提供商后由用户重新授权；OS 权限和系统闹钟依据已恢复日程重新注册。 |
+| `notif_cloud`、通知 app 白名单、auto-event app 白名单、邮箱/Soulous 连接、健康数据源与后台提醒 | 仅恢复意图 | Android v3 适配器已投影非秘密事实；新设备默认仍关闭，核对已安装 app 与提供商后由用户重新授权，OS 权限和系统闹钟依据已恢复日程重新注册。 |
 | 邮箱/Soulous 的非秘密账户标识与 provider 配置 | 条件可移植，待提供商审计 | 只有提供商条款允许且新隐私政策明确覆盖时才进入版本化 credential 区；否则只恢复重新连接意图。恢复后必须验证凭据是否过期或撤销。 |
 | `meta.device_id` / HLC / overflow 与 drop 计数、`sync_oplog`、`sync_quarantine`、`sync_bad_blobs`、`sync_push_holds`、`capture_loss_receipts`、overflow marker、Android alert cursor | 永不备份 | 设备身份、迁移态传输队列、游标和故障收据不是用户业务状态；新设备重新建立，不能重放旧同步内部状态。 |
 | `notif-policy.json` | 永不备份 | 由已确认的通知配置投影给原生 listener，恢复设置并重新授权后再生成，不能作为第二份权威。 |
@@ -240,12 +240,43 @@ Store 合并，对 v3 必须在任何写入前返回“需要平台恢复事务�
 Android 临时库事务消费同一个已验证计划，并在 SQLite、会话存储、附件与设置全部成功后原子切换；
 在那之前完整逻辑载荷 TODO 仍保持未完成。
 
+#### Android v3 主载荷快照适配 v1（2026-08-23）
+
+本阶段只把 Android 当前 profile 的平台存储接入 `solum-export` v3 主 JSON；不生成附件分块密文，
+不上传服务端，也不实现恢复写入。WebView 调用 Rust 时提交严格的
+`{profile_id, chat, documents}`：`chat` 直接使用上节的 sessions/drafts 形状；`documents` 只含从一个
+IndexedDB readonly transaction 读出的 manifest。每个 blob 必须按原始字节计算 SHA-256，且记录的
+`size` 必须等于 `Blob.size`；blob 本身不得 base64 或经 IPC 塞进主 JSON。
+
+快照顺序与失败语义固定如下：
+
+1. WebView 在同一事件循环内先强制保存当前输入草稿和会话，再深拷贝聊天切片；随后用单个 readonly
+   transaction 读取当前 profile 的 `pa-local-documents-v1[.<uuid>]/documents`，逐件校验并摘要。
+2. IPC 必须携带 `app_info.local_profile_id`。Rust 在采集前后都重新读取 active profile；任一端不是同一
+   个 `guest`/小写 UUID，或期间发生登录、退出、切号，就拒绝整次导出，不能把两个账号拼进一个包。
+3. Rust 持有 Orchestrator 锁时读取 SQLite 与通知 spool，因此 resident ticker 不能同时把同一条通知从
+   spool 搬进 SQLite。原生 listener 只以 `.tmp` + fsync + atomic rename 发布 `.json`；适配器先冻结并
+   排序一次文件名集合，只读其中完整文件。集合冻结后才发布的新文件属于下一份快照，不删除、不改名、
+   不消费；`failed/` 与升级遗留 inbox 同样纳入，恢复标为待处理而不是直接分诊。
+4. LLM、邮箱与 Soulous 从同 profile 的原子 JSON 配置读取；文件存在但损坏必须失败，不能伪装成“未配置”。
+   只投影 LLM 非秘密参数、邮箱 id/label/provider/address、Soulous endpoint/出站选择；API key、邮箱密码、
+   OAuth/token、旧同步凭据、本机路径和 key tail 都不得进入 IPC 或载荷。Health Connect 与后台提醒只记录
+   “此前可用且已授权/启用”的恢复意图，新设备仍需重新授权。
+5. 适配器在读文件前限制数量与累计字节，再交给 core v3 上限/引用/时间/摘要校验；任一 IndexedDB 错误、
+   spool 截断/字段错误、配置损坏、profile 漂移或 core 校验失败，都不写导出文件。错误只指出来源类别与
+   文件名，不回显通知正文、凭据或完整个人数据。
+
+这个切片只解决 v3 **主逻辑载荷的 Android 采集**。manifest 能证明资料在采集时的身份和尺寸，但没有
+blob 分块密文就不能恢复资料；没有临时库事务也不能导入 v3。因此顶层 F17 仍未完成，现有 v2 Store-only
+builder/固定夹具与旧同步迁移态都继续保留。当前产品里的手动“导出/导入”也继续使用可恢复的 v2 配对；
+v3 IPC 命令先作为备份协调器的内部 seam，不能在恢复事务完成前替换按钮并制造不可恢复的用户文件。
+
 #### `solum-backup` protocol v1（F17 加密备份地基，2026-08-23）
 
 本节只定义**平台无关容器和端侧 codec**，不是完整云备份闭环。protocol v1 可认证承载
 `solum-export` v2 或 v3：v2 是现有 Store-only 导出，v3 增加 `_portable` 逻辑载荷与纯恢复计划；固定
-v2 夹具继续逐字节兼容。Android 尚未提交同 profile 的 WebView/IndexedDB 一致快照，也没有附件分块
-密文与临时库原子恢复，因此不能据此声称“全量备份”或“换机恢复”已经完成。密码派生、恢复码、
+v2 夹具继续逐字节兼容。Android 已有同 profile 的 WebView/IndexedDB/spool/非秘密配置主载荷适配，
+但没有附件分块密文与临时库原子恢复，因此不能据此声称“全量备份”或“换机恢复”已经完成。密码派生、恢复码、
 恢复信封、服务端上传 API、Android 临时库恢复事务和 generation 接管也都在后续阶段。
 
 **算法与密钥边界**：调用方传入恰好 32 字节的随机主密钥。codec 先把内层 JSON 规范化为紧凑
