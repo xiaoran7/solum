@@ -2473,6 +2473,92 @@ fn backup_upload_cancel(state: State<AppState>, session_id: String) -> CmdResult
     Ok(())
 }
 
+/// Internal F17 recovery seam. It returns complete-version metadata only and
+/// does not download, decrypt, stage, publish, or advance device generation.
+#[tauri::command]
+async fn backup_restore_catalog(
+    state: State<'_, AppState>,
+) -> CmdResult<solum_core::backup_download::BackupCatalog> {
+    if state.account_transition.load(Ordering::Acquire) {
+        return Err("账号正在切换，已取消读取备份列表".into());
+    }
+    let account = solum_core::account::AccountSession::load_full()
+        .ok_or_else(|| "登录后才能读取加密云备份".to_string())?;
+    let profile_id = account
+        .stable_user_id()
+        .ok_or_else(|| "当前账号缺少不可变用户标识".to_string())?
+        .to_string();
+    if active_local_profile_id() != profile_id {
+        return Err("备份读取已取消：账号或本地 profile 不一致".into());
+    }
+    let mut cloud_account = account.clone();
+    let (cloud_account, catalog) = tauri::async_runtime::spawn_blocking(move || {
+        let transport = solum_core::backup_download::HttpBackupCloudReader::new();
+        let catalog =
+            solum_core::backup_download::fetch_backup_catalog(&transport, &mut cloud_account, 20)
+                .map_err(|error| error.to_string())?;
+        Ok::<_, String>((cloud_account, catalog))
+    })
+    .await
+    .map_err(|_| "备份列表任务异常终止".to_string())??;
+    current_backup_account(&profile_id, &cloud_account)?;
+    Ok(catalog)
+}
+
+/// Download and authenticate one complete version, then assemble a sealed but
+/// inactive generation. Publication remains a separate preview/confirm flow.
+#[tauri::command]
+async fn backup_restore_stage(
+    state: State<'_, AppState>,
+    backup_id: String,
+) -> CmdResult<solum_core::backup_download::StagedBackupOutcome> {
+    if state.account_transition.load(Ordering::Acquire) {
+        return Err("账号正在切换，已取消备份恢复准备".into());
+    }
+    let account = solum_core::account::AccountSession::load_full()
+        .ok_or_else(|| "登录后才能准备加密备份恢复".to_string())?;
+    let profile_id = account
+        .stable_user_id()
+        .ok_or_else(|| "当前账号缺少不可变用户标识".to_string())?
+        .to_string();
+    if active_local_profile_id() != profile_id {
+        return Err("备份恢复已取消：账号或本地 profile 不一致".into());
+    }
+    let mut master_key = backup_master_key(&account)?;
+    let profile_root = state.profile_root.clone();
+    let worker_profile_id = profile_id.clone();
+    let mut cloud_account = account.clone();
+    let (cloud_account, outcome) = tauri::async_runtime::spawn_blocking(move || {
+        let transport = solum_core::backup_download::HttpBackupCloudReader::new();
+        let result = (|| {
+            let catalog = solum_core::backup_download::fetch_backup_catalog(
+                &transport,
+                &mut cloud_account,
+                100,
+            )?;
+            solum_core::backup_download::download_and_stage_backup(
+                solum_core::backup_download::BackupStageRequest {
+                    profile_root: &profile_root,
+                    catalog: &catalog,
+                    backup_id: &backup_id,
+                    user_id: &worker_profile_id,
+                    master_key: &master_key,
+                    now: Local::now().naive_local(),
+                },
+                &transport,
+                &mut cloud_account,
+            )
+        })()
+        .map_err(|error| error.to_string());
+        master_key.fill(0);
+        result.map(|outcome| (cloud_account, outcome))
+    })
+    .await
+    .map_err(|_| "备份下载与校验任务异常终止".to_string())??;
+    current_backup_account(&profile_id, &cloud_account)?;
+    Ok(outcome)
+}
+
 fn write_export_json(db_path: &str, json: &str, prefix: &str) -> CmdResult<String> {
     let dir = std::path::Path::new(db_path)
         .parent()
@@ -4846,6 +4932,8 @@ pub fn run() {
             backup_upload_attachment_finish,
             backup_upload_commit,
             backup_upload_cancel,
+            backup_restore_catalog,
+            backup_restore_stage,
             restore_webview_begin,
             restore_webview_document_chunk,
             restore_webview_finish,
@@ -5466,5 +5554,7 @@ mod tests {
         assert_eq!(html.matches("createAndUploadPortableBackup()").count(), 1);
         assert!(!html.contains("onclick=\"createAndUploadPortableBackup"));
         assert!(!html.contains("setInterval(createAndUploadPortableBackup"));
+        assert!(!html.contains("backup_restore_catalog"));
+        assert!(!html.contains("backup_restore_stage"));
     }
 }

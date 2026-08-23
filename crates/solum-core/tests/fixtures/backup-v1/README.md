@@ -14,6 +14,10 @@ real user, account, device, or personal content.
 - User UUID: `11111111-1111-4111-8111-111111111111`
 - Device generation: `7`
 - Backup UUID: `22222222-2222-4222-8222-222222222222`
+- Attachment id mapping vector: with the same key and backup UUID plus
+  attachment id `document-public-fixture`, the architecture-defined
+  HKDF-SHA256/UUID-v8 object id is
+  `c7dce9ce-d820-8325-b878-4a49a3c8bc2a`.
 - Created at: `2026-01-02T03:04:05.000Z`
 - Encrypted-body digest: `sha256` over normalized `payload.json`; the digest is
   not exposed in the clear header.

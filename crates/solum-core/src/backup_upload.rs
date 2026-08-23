@@ -10,6 +10,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use hkdf::Hkdf;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -27,6 +28,8 @@ pub const MAX_IPC_CHUNK_BYTES: usize = 512 * 1024;
 const DEVICE_STATE_FORMAT: &str = "solum-backup-device";
 const DEVICE_STATE_VERSION: u32 = 1;
 const HTTP_TIMEOUT_SECS: u64 = 30;
+const OBJECT_ID_KDF_SALT: &[u8] = b"solum-backup-object-id:hkdf-salt:v1";
+const OBJECT_ID_KDF_INFO: &[u8] = b"solum-backup-object-id:info:v1";
 
 type UploadResult<T> = std::result::Result<T, BackupUploadError>;
 
@@ -359,9 +362,18 @@ impl BackupUploadSession {
         self.attachment_plaintext.fill(0);
         self.attachment_plaintext.clear();
         let ciphertext = ciphertext?;
+        let object_id =
+            attachment_object_id(&self.master_key, &self.metadata.backup_id, &manifest.id)?;
+        if self
+            .staged
+            .iter()
+            .any(|item| item.plan.object_id == object_id)
+        {
+            return Err(BackupUploadError::Encryption);
+        }
         let staged = stage_ciphertext(
             &self.staging_dir,
-            random_uuid_v4()?,
+            object_id,
             BackupObjectKind::Attachment,
             &ciphertext,
         )?;
@@ -553,6 +565,56 @@ fn random_uuid_v4() -> UploadResult<String> {
         &value[16..20],
         &value[20..32]
     ))
+}
+
+/// Derive the server-visible UUID for one manifest attachment without exposing
+/// its local id. The random backup id makes the result unlinkable across
+/// backup versions; the master key keeps the mapping opaque to the server.
+pub fn attachment_object_id(
+    master_key: &[u8; 32],
+    backup_id: &str,
+    attachment_id: &str,
+) -> UploadResult<String> {
+    if !valid_uuid(backup_id)
+        || backup_id != backup_id.to_ascii_lowercase()
+        || !valid_attachment_id(attachment_id)
+    {
+        return Err(BackupUploadError::InvalidSnapshot);
+    }
+    let backup_len = u32::try_from(backup_id.len()).map_err(|_| BackupUploadError::Encryption)?;
+    let attachment_len =
+        u32::try_from(attachment_id.len()).map_err(|_| BackupUploadError::Encryption)?;
+    let mut info =
+        Vec::with_capacity(OBJECT_ID_KDF_INFO.len() + 8 + backup_id.len() + attachment_id.len());
+    info.extend_from_slice(OBJECT_ID_KDF_INFO);
+    info.extend_from_slice(&backup_len.to_be_bytes());
+    info.extend_from_slice(backup_id.as_bytes());
+    info.extend_from_slice(&attachment_len.to_be_bytes());
+    info.extend_from_slice(attachment_id.as_bytes());
+
+    let hkdf = Hkdf::<Sha256>::new(Some(OBJECT_ID_KDF_SALT), master_key);
+    let mut bytes = [0u8; 16];
+    hkdf.expand(&info, &mut bytes)
+        .map_err(|_| BackupUploadError::Encryption)?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let value = hex(&bytes);
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &value[0..8],
+        &value[8..12],
+        &value[12..16],
+        &value[16..20],
+        &value[20..32]
+    ))
+}
+
+fn valid_attachment_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-._:".contains(&byte))
 }
 
 fn valid_uuid(value: &str) -> bool {
@@ -1139,6 +1201,49 @@ mod tests {
         drop(second);
         assert!(unrelated.exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn attachment_object_uuid_is_keyed_version_scoped_and_stable() {
+        let first = attachment_object_id(&KEY, USER_ID, "doc-alpha").unwrap();
+        assert_eq!(first, "52e86d9a-4a62-863c-8e5d-beb01ae600dc");
+        assert_eq!(
+            first,
+            attachment_object_id(&KEY, USER_ID, "doc-alpha").unwrap()
+        );
+        assert_eq!(first.as_bytes()[14], b'8');
+        assert!(matches!(first.as_bytes()[19], b'8' | b'9' | b'a' | b'b'));
+        assert_ne!(
+            first,
+            attachment_object_id(&[8; 32], USER_ID, "doc-alpha").unwrap()
+        );
+        assert_ne!(
+            first,
+            attachment_object_id(&KEY, "22222222-2222-4222-8222-222222222222", "doc-alpha")
+                .unwrap()
+        );
+        assert_ne!(
+            first,
+            attachment_object_id(&KEY, USER_ID, "doc-beta").unwrap()
+        );
+        assert!(!first.contains("doc-alpha"));
+        let mut fixture_key = [0u8; 32];
+        for (index, byte) in fixture_key.iter_mut().enumerate() {
+            *byte = index as u8;
+        }
+        assert_eq!(
+            attachment_object_id(
+                &fixture_key,
+                "22222222-2222-4222-8222-222222222222",
+                "document-public-fixture"
+            )
+            .unwrap(),
+            "c7dce9ce-d820-8325-b878-4a49a3c8bc2a"
+        );
+        assert_eq!(
+            attachment_object_id(&KEY, USER_ID, "private id").unwrap_err(),
+            BackupUploadError::InvalidSnapshot
+        );
     }
 
     #[test]

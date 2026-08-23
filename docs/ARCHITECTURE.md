@@ -607,8 +607,8 @@ token、重读校验与进程重启边界。
 但 TLS、账号 token 与 RLS 只能限制谁能取得密文，不能替代端到端加密。
 
 **对象与上传状态**：一个完整版本由恰好一个 `main` 对象和 0 至 63 个 `attachment` 对象组成。`main` 是
-完整 `solum-backup` v1 字节，attachment 是 manifest 所列的独立加密容器；随机 UUID `object_id` 不得复用
-attachment id、文件名或内容摘要以外的业务标识。服务端只公开版本时间、generation、对象数量、种类、
+完整 `solum-backup` v1 字节，attachment 是 manifest 所列的独立加密容器；main 使用随机 UUID v4，attachment
+使用下述 keyed UUID v8，`object_id` 不得直接复用 attachment id、文件名、明文或明文摘要。服务端只公开版本时间、generation、对象数量、种类、
 密文字节数和密文 SHA-256；这些是有意泄漏的流量 metadata，密文摘要不是明文摘要。
 
 创建上传使用 `POST /v1/backups`，`Content-Type: application/json`，body 必须只有以下字段：
@@ -671,7 +671,7 @@ compare-and-increment：expected 不等于当前值返回 409；首次成功只�
 `backup_object_too_large` / `backup_package_too_large` / `backup_quota_exceeded`（413）、
 `backup_pending_limit`（429）、`precondition_required`（428）、`precondition_failed`（412）；对象上传缺少精确
 `Content-Length` 返回 `content_length_required`（411）。恢复端必须先完整下载
-main、由端侧 backup codec 验证认证标签/AAD/export plan，再按已认证 manifest 下载并验证 attachment，最后
+main、由端侧 backup codec 验证认证标签/AAD/export plan，再按已认证 manifest 派生对象 id、下载并验证 attachment，最后
 才进入前述 sealed generation 与 publication；列表 metadata 和服务端 SHA-256 只用于传输完整性与重试，
 不能代替 AEAD、manifest 或写库前校验。
 
@@ -692,8 +692,19 @@ increment，并把新值 durable 写入新设备；本节不提供该 UI。
 一次上传 session 固定绑定当前账号 UUID、profile、device generation、随机 backup UUID、UTC 毫秒创建时间、
 当前 access/refresh 会话和主密钥；任一期间切号、退出或 profile 改变都取消 session。WebView 先强制保存
 会话/草稿，并在一个 IndexedDB readonly transaction 取得资料 manifest；Rust 随后在 Orchestrator 锁内合并
-SQLite、通知 spool 与非秘密配置，生成 v3 payload，再立即创建 `solum-backup` main 密文。main 与每件附件
-各使用随机、与业务 attachment id 无关的 server object UUID。
+SQLite、通知 spool 与非秘密配置，生成 v3 payload，再立即创建 `solum-backup` main 密文。main 使用随机
+UUID v4；每件附件使用下述 keyed UUID v8，使恢复端可在 main 认证后精确定位对象而不向服务端暴露 manifest id。
+
+**attachment object UUID 的精确派生**：只使用成熟 HKDF-SHA256。IKM 是调用方传入的 32 字节主密钥，salt
+是 ASCII `solum-backup-object-id:hkdf-salt:v1`。HKDF info 是 ASCII
+`solum-backup-object-id:info:v1`，随后依次追加 `u32_be(len(backup_id UTF-8)) || backup_id UTF-8 ||
+u32_be(len(attachment_id UTF-8)) || attachment_id UTF-8`；这里 backup id 已是 36 字节小写 UUID，attachment
+id 已通过 v3 的 1..128 字节 ASCII id 校验。HKDF expand 输出恰好 16 字节，然后令 byte[6] 的高四位为
+`1000`（UUID v8）、byte[8] 的高两位为 `10`（RFC 4122 variant），按小写 8-4-4-4-12 UUID 输出。未来三端
+必须逐字节复现；不得使用语言原生字符串长度、UTF-16、JSON、平台字节序或未声明的零分隔。backup id 每次
+随机，因此相同资料跨备份不可由服务端链接；没有主密钥也不能由 object id 反推 attachment id。客户端还
+必须拒绝与 main id 或其他附件派生 id 碰撞的计划。此规则修正了最初全随机附件 object id 无法从服务端排序
+列表映射回加密 manifest 的缺口，不改变任何服务端字段或明文可见性。
 
 资料 blob 不进入主 JSON，也不写明文临时文件。WebView 只按 manifest 顺序把同一 Blob 以最多 512 KiB
 base64 IPC 块传给 Rust；Rust 要求 attachment id、offset、累计尺寸和最终 SHA-256 与已冻结 manifest 精确
@@ -712,6 +723,32 @@ commit 响应必须回显同 backup id、generation 与 `status=complete` 才可
 本节只提供未来 Android 设置页/后台调度可调用的 begin → attachment chunks → commit 内部 seam；不自动
 定时上传，不新增可见按钮，也不把网络失败接进提醒/ingest。下载、历史选择、恢复发布 UI、恢复码、后台
 充电/Wi-Fi 策略、对象存储与真机大包验收仍属后续，旧同步继续保持迁移态。
+
+#### Android encrypted backup downloader v1（2026-08-23，内部 seam）
+
+下载协调器是平台中立的严格读取路径，只消费 `GET /v1/backups` 的 complete 版本，不读取 pending，不自动
+接管 generation，也不写 active pointer。列表必须是严格 JSON：拒绝未知字段、非法 UUID/UTC 毫秒时间、
+非法小写 SHA-256/plan etag、零尺寸、对象重复、计数或总尺寸不一致、非唯一 main、超过 64 对象/68 MiB
+单对象/700 MiB 整版、generation 高于 active、created_at 晚于 committed_at 及非递减
+`(committed_at, backup_id)` 排序；客户端还按服务端 canonical plan 规则重算 plan etag。列表中的服务端摘要
+只作传输校验，不能替代容器认证。
+
+选择一个版本后顺序固定为：① 在发请求前按声明尺寸与上述上限拒绝超限；② 只下载唯一 main，流读取最多
+`declared bytes + 1`，要求 HTTP `Content-Type=application/octet-stream`、`Cache-Control=no-store`、精确
+`Content-Length`，并复核实际字节数和密文 SHA-256；③ 以当前账号恢复出的 32 字节主密钥调用 backup-v1
+codec，先完成格式/版本/算法/AAD/AEAD/受限解压与 `plan_import`；④ 要求认证头中的 user UUID、generation、
+backup id、created_at、protocol version 与所选列表及当前账号逐项相等，并要求内层为可组装的 export v3；
+⑤ 从已认证 manifest 按上节规则派生全部 attachment object UUID，要求与列表的 attachment 对象构成严格
+一一对应集合，无缺失、额外或碰撞；⑥ 按 manifest 顺序逐件有界下载、复核传输字节/摘要，再以完整 binding
+完成 `solum-attachment` AEAD、块序、明文尺寸和 SHA-256 校验；⑦ 全部对象验证成功后才调用现有 v3 prepare，
+并只向新建 inactive staging 组装、重读校验和 seal generation。任何一步失败都不得打开 live Store、写 active
+pointer、推进 generation 或修改现有 generation；成功返回的也只是 sealed generation id 与无敏感计数，
+仍需未来预览/确认协调器才能发布。
+
+GET 使用相同账号 origin 与 bearer token；401 最多刷新并 durable 保存一次，瞬时传输失败最多重试一次。
+重试必须保持相同路径与所选版本，响应 body、token、主密钥、明文、attachment id/名称、完整摘要和本机路径
+不得进入错误或日志。该内部 seam 不增加可见恢复入口；已有本机数据的选择、generation takeover、WebView
+hydrate/确认、恢复码、崩溃后下载暂存清理与 600 MiB Android 真机内存/磁盘压力验收仍是后续产品门槛。
 
 #### 历史多设备同步实现（迁移期，只读理解）
 
