@@ -51,7 +51,7 @@
 - [x] **已做：push 侧毒丸防护（2026-08-21）。** 永久拒绝（507/403/429/400/413）只作废 push 半轮、继续 pull，原因持久化 `meta.sync_push_blocked`（下次成功推送自动清除）；单条超 7 MiB 的 op 暂存 `sync_push_holds`（只存 oplog 指针），游标照常前进；瞬时失败同样只跳过 push 半轮。设计取舍见 MISC 2026-08-21，ARCHITECTURE §3.8 已补条目。**遗留**：pull 侧 403（设备撤销同样阻断 pull）是否也要跳过半轮+持久标记，见下方新增条目。
 - [x] **已做：SQLite 双连接补 `busy_timeout=5000ms`（2026-08-21）。** `Store::open` 一处覆盖 orch 与 sync_store；PRAGMA 断言测试钉住。CoreError::Storage 抹掉 rusqlite 错误码仍是小项（见小项打包）。
 - [x] **已处理：公开仓泄露本机路径（仓库内容侧）。** 根 README 与后续文档复核发现的本机盘符路径已改为相对描述或脱敏占位，tauri command 计数改为「100+」。**收尾（2026-08-22 用户拍板）：GitHub 公开仓暂停维护、专心做 gitea**；AGENTS.md 远端政策已更新，本地 remote `origin` 更名 `github-paused`，公开边界清单条款保留备将来恢复。注意 remote 改名本身不会改分支级上游，裸 `git push` 的剩余缺口见下一项。
-- [ ] **防误推：把本机 `main` 上游改为 `gitea/main`。** 当前 `branch.main.remote=github-paused`，所以在 `main` 裸跑 `git push` 仍会指向已暂停的 GitHub；执行并核对 `git branch --set-upstream-to=gitea/main main`，随后用 `git status -sb` / `git branch -vv` 确认。该项只改变本机 Git 配置，不代表授权执行 push。
+- [x] **已解决（2026-08-24）：本机 `main` 上游与默认 push remote 均锁定 Gitea。** `branch.main.remote=gitea`、`branch.main.merge=refs/heads/main`、`branch.main.pushRemote=gitea` 且 `remote.pushDefault=gitea`；`git status -sb` / `git branch -vv` 均显示跟踪 `gitea/main`，裸 `git push --dry-run` 只检查 Gitea 并返回 up-to-date。该项只记录当前工作站的本地 Git 配置，不代表未来任意 push 获得授权。
 - [x] **已做（仓库侧）：CI 补到真实开发路径（2026-08-21）。** 新增 `.gitea/workflows/ci.yml`（rust 三门含 Tauri Linux 依赖 + web-and-cloud 挂 postgres service，集成测试防静默 skip 有显式断言）；`.github/workflows/ci.yml` 加 android-manifest 门禁（gradle 仅跑到 manifest 合并 + aapt 断言三组件）并升级 web-and-cloud；配套 `scripts/gen-android-ci-settings.mjs` 解决 `tauri.settings.gradle` 为 gitignore 绝对路径生成文件、裸 checkout 无法跑 gradle 的问题（已验证与 tauri CLI 产物一致）。**边界**：Gitea 侧需服务器安装并注册 act_runner（ubuntu-latest 标签、docker 模式）才实际生效；Android job 依赖 GitHub 托管 runner 预装 SDK，自建 runner 需先补 sdkmanager 步骤。
 
 ### 结构性（排期）
@@ -119,7 +119,7 @@
 - [x] **已通过：模拟器本地核心闭环。** `0.2.7 (1017)` x86_64 Release 已验证隐私门、同意后通知权限请求、guest、英文事件摄取、30 分钟提醒、精确 AlarmManager 注册、进程重启后的事件/alarm 保留、计划/记忆/搜索/设置入口和 Guard 返回键取消。
 - [x] **已通过：生产服务主机侧最小链路。** `https://solumsync.tannerlab.xyz` 的注册、登录、模型目录、用量、AI completion、pull、alerts 与测试会话 logout 均返回成功；该结果只证明服务端链路，不替代 Android 真机验证。
 - [x] **已通过：真机安装状态。** vivo V2405A（Android 16 / API 36）当前安装 `dev.solum.app` `0.2.6 (1016)`，通知、网络、精确 alarm、开机恢复、前台 data sync 与 wake lock 权限已授予；应用数据保持原样。
-- [x] **已通过：干净 target 的 workspace 测试基线（2026-08-21 解决）。** 根因是整仓搬迁时把 23.8 GiB 旧 `target/` 原样拷来，3000 个文件引用旧绝对路径，tauri build script 读不存在的权限文件即挂；`cargo clean` 全删重建后基线 **353 项全绿**（现 361 项，见 CHANGELOG 当日条目）。教训记入 PITFALLS 当日条目：target 永不随仓库迁移。
+- [x] **已通过：干净 target 的 workspace 测试基线（2026-08-21 解决）。** 根因是整仓搬迁时把 23.8 GiB 旧 `target/` 原样拷来，3000 个文件引用旧绝对路径，tauri build script 读不存在的权限文件即挂；`cargo clean` 全删重建后基线 **353 项全绿**（截至 2026-08-23 现为 441 项，见 CHANGELOG 对应 F17 条目）。教训记入 PITFALLS 当日条目：target 永不随仓库迁移。
 - [x] **已通过：真机 QA 事件入库与 alarm 注册证据。** “今天晚上十点十分开会，QA真机提醒测试2” 写入事件 `2026-08-19 22:10`，生成 `21:40` 提前 30 分钟提醒；系统显示 exact `RTC_WAKEUP`、`exactAllowReason=policy_permission`。到点未产生通知，原因见上方生产 APK receiver 缺失。
 - [ ] **受阻：完整后台回收提醒。** `am kill dev.solum.app` 未终止进程，因为通知监听 `dataSync` 前台服务仍在运行；不能用 force-stop 代替（会由系统取消 alarm）。需后续提供不改用户配置的进程级故障注入/构建版测试入口。
 
