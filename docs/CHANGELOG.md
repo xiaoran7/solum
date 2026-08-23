@@ -10,6 +10,11 @@
 > Solum Android：0.2.8（1018 文案/时间解析/发布输入修复）· 0.2.7（1017 图标校正）· 0.2.6（1016 启动图标）· 0.2.5（1015 登录闪退修复）· 0.2.4（1014 后端复审收口）· 0.2.3（1013 默认模型/配额）· 0.2.2（1012 账户外壳/UI 重构）· 0.2.1（1011 中心化账号入口）· 0.2.0（1010 登录即恢复密钥）· 0.1.9（1009 UUID 隔离）· 0.1.8（1008 同步按账号隔离）· 0.1.7（1007 福利监控）· 0.1.5（1005 安全默认值收口）· 0.1.4（1004 排版/缓存）· 0.1.3（1003 导航重构）· 0.1.2（1002 UI 重构）· 0.1.1（1001 隐私门文案）· 0.1.0（1000 首个 release）
 > solum-cloud：0.7.0（opaque backup API v1）· 0.6.4（密码语义/限流收口）· 0.6.3（刷新令牌权限）· 0.6.2（迁移与清理修复）· 0.6.1（AI 代理加固）· 0.6.0（模型目录/额度）· 0.5.1（中心化入口）· 0.5.0（恢复信封）· 0.4.0（PostgreSQL 中心库）
 
+- **F22 统一信息源、Android 系统分享与日历最小闭环（2026-08-24，未发布）**：既有“数据入口”升级为固定八来源注册表，展示 Android/iOS/HarmonyOS 能力矩阵、运行时授权/配置、最近成功、待确认/已采用数、敏感度与 AI/记忆/备份默认用途。候选新增 external/evidence id、发生/采集时间、置信度、有效期、用途与状态；48 小时同文跨源合并，过期自动清理，采用前仍可编辑。
+  - SQLite schema v16 为 `raw_inputs` 增加稳定 `source_id/external_id`，同步/可恢复导出与记忆台账保留来源；同 source/external id 重复采用复用原记录，不重复建日程。日历、健康、邮箱、通知、Soulous 和位置默认不得触发云端 AI 兜底，通知仍沿用既有 capture-time 本地/云资格边界。
+  - Android 注册 text/plain/text/html `ACTION_SEND`，原生只保留 20 条、单条最多 4000 字符的 RAM 队列，聚焦/回前台时转入待确认区，接收不等于保存。系统日历仅声明/请求 READ_CALENDAR，未来 1–90 天最多读 100 条进入相同候选管线；写回不申请 WRITE_CALENDAR，只打开系统日历新增界面，由用户再次核对保存。
+  - 验证：全仓 444 项测试（30 app + 403 core + 4 closed-loop + 7 stats）0 failed/0 ignored；workspace all-targets 与 Android arm64 目标 Clippy `-D warnings`、fmt、前端静态语法/id 门禁和 `git diff --check` 全绿。Gradle Kotlin 单任务因生成工程中三个本地 Tauri plugin project 没有可消费 Android variant 而在解析 classpath 前受阻；内置浏览器又按安全策略拒绝本地 `data:` mock 预览，故尚未形成 Kotlin、390×844 实渲染或真机通过证据。
+
 - **F17 文档与 Git 防误推收尾（2026-08-24）**：README 将重定义后的 F17 从“尚待实现”校正为“备份协议、端侧 codec、云端不透明 API 与 Android 手动中心已部分实现，完整换机闭环仍未完成”，并同步当前备份密文隐私边界；TODO 测试基数由过期的 361 项更新为 441 项。本机 `main` 上游、分支 push remote 与默认 push remote 均锁定 `gitea`，裸 `git push --dry-run` 不再选择暂停维护的 GitHub；该本地配置不构成实际 push 授权。
 
 - **F17 备份验收整改（2026-08-23，未发布）**：generation 只表示代次、不再被当作写权限。新 profile 先持久化随机 writer UUID，再由 PostgreSQL tenant advisory lock 在 generation 1 且无 writer/任何备份时原子认领；plan、对象上传和 commit 均逐次校验 writer，接管事务则幂等轮换 writer，杜绝两台新设备同时以 generation 1 上传及空数据抢成最新版本。旧的 v1 本机 writer 状态不自动猜测升级，缺少可验证 writer 时必须恢复并显式接管。

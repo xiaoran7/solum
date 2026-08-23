@@ -35,43 +35,73 @@ macro_rules! lazy_re {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureSource {
-    Conversation,
+    Manual,
     Notification,
-    Email,
-    SystemShare,
-    Screenshot,
+    Share,
     Calendar,
-    BrowserExtension,
-    OfficialApi,
+    Health,
+    Email,
+    Soulous,
+    Location,
 }
 
 impl CaptureSource {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Conversation => "conversation",
+            Self::Manual => "manual",
             Self::Notification => "notification",
-            Self::Email => "email",
-            Self::SystemShare => "system_share",
-            Self::Screenshot => "screenshot",
+            Self::Share => "share",
             Self::Calendar => "calendar",
-            Self::BrowserExtension => "browser_extension",
-            Self::OfficialApi => "official_api",
+            Self::Health => "health",
+            Self::Email => "email",
+            Self::Soulous => "soulous",
+            Self::Location => "location",
         }
     }
 
     pub fn parse(raw: &str) -> Option<Self> {
         Some(match raw {
-            "conversation" => Self::Conversation,
+            "manual" | "conversation" => Self::Manual,
             "notification" => Self::Notification,
-            "email" => Self::Email,
-            "system_share" => Self::SystemShare,
-            "screenshot" => Self::Screenshot,
+            "share" | "system_share" => Self::Share,
             "calendar" => Self::Calendar,
-            "browser_extension" => Self::BrowserExtension,
-            "official_api" => Self::OfficialApi,
+            "health" => Self::Health,
+            "email" => Self::Email,
+            "soulous" | "official_api" => Self::Soulous,
+            "location" => Self::Location,
             _ => return None,
         })
     }
+
+    pub fn allows_ai_by_default(self) -> bool {
+        matches!(self, Self::Manual | Self::Share)
+    }
+
+    pub fn sensitivity(self) -> CaptureSensitivity {
+        match self {
+            Self::Manual | Self::Share => CaptureSensitivity::ContentDependent,
+            Self::Notification | Self::Calendar | Self::Soulous => CaptureSensitivity::High,
+            Self::Health | Self::Email | Self::Location => CaptureSensitivity::VeryHigh,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureSensitivity {
+    ContentDependent,
+    High,
+    VeryHigh,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateState {
+    Pending,
+    Accepted,
+    Dismissed,
+    Merged,
+    Expired,
 }
 
 /// 入口当前**在这台设备上**能不能用。
@@ -99,6 +129,64 @@ impl CaptureAvailability {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlatformSupport {
+    Available,
+    PermissionRequired,
+    ConfigurationRequired,
+    Planned,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CapturePlatformMatrix {
+    pub android: PlatformSupport,
+    pub ios: PlatformSupport,
+    pub harmonyos: PlatformSupport,
+}
+
+fn platform_matrix(source: CaptureSource) -> CapturePlatformMatrix {
+    use PlatformSupport::{Available, ConfigurationRequired, PermissionRequired, Planned};
+    match source {
+        CaptureSource::Manual => CapturePlatformMatrix {
+            android: Available,
+            ios: Available,
+            harmonyos: Available,
+        },
+        CaptureSource::Notification => CapturePlatformMatrix {
+            android: PermissionRequired,
+            ios: Planned,
+            harmonyos: Planned,
+        },
+        CaptureSource::Share => CapturePlatformMatrix {
+            android: Available,
+            ios: Planned,
+            harmonyos: Planned,
+        },
+        CaptureSource::Calendar | CaptureSource::Health => CapturePlatformMatrix {
+            android: PermissionRequired,
+            ios: Planned,
+            harmonyos: Planned,
+        },
+        CaptureSource::Email => CapturePlatformMatrix {
+            android: ConfigurationRequired,
+            ios: Planned,
+            harmonyos: Planned,
+        },
+        CaptureSource::Soulous => CapturePlatformMatrix {
+            android: ConfigurationRequired,
+            ios: Planned,
+            harmonyos: Planned,
+        },
+        CaptureSource::Location => CapturePlatformMatrix {
+            android: Planned,
+            ios: Planned,
+            harmonyos: Planned,
+        },
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CaptureConnector {
     pub source: CaptureSource,
@@ -107,6 +195,12 @@ pub struct CaptureConnector {
     /// 一句话状态，直接上屏。
     pub status: &'static str,
     pub description: &'static str,
+    /// 来源内容的默认敏感度，只用于解释和默认开关，不代替逐条判断。
+    pub sensitivity: &'static str,
+    pub allow_memory: bool,
+    pub allow_ai: bool,
+    pub allow_backup: bool,
+    pub platforms: CapturePlatformMatrix,
 }
 
 /// 这台设备上的采集入口清单。
@@ -117,11 +211,16 @@ pub struct CaptureConnector {
 pub fn capture_connectors(android: bool) -> Vec<CaptureConnector> {
     vec![
         CaptureConnector {
-            source: CaptureSource::Conversation,
-            label: "Solum 对话",
+            source: CaptureSource::Manual,
+            label: "手动输入",
             availability: CaptureAvailability::Ready,
             status: "可用",
             description: "直接说「下周三提醒我交材料」。这是不依赖任何系统能力的主入口。",
+            sensitivity: "由内容决定",
+            allow_memory: true,
+            allow_ai: true,
+            allow_backup: true,
+            platforms: platform_matrix(CaptureSource::Manual),
         },
         CaptureConnector {
             source: CaptureSource::Notification,
@@ -138,48 +237,107 @@ pub fn capture_connectors(android: bool) -> Vec<CaptureConnector> {
             },
             description:
                 "需在系统里授予通知使用权，并逐个应用授权；「读取」与「允许建日程」是两条独立授权。",
+            sensitivity: "高",
+            allow_memory: true,
+            allow_ai: false,
+            allow_backup: true,
+            platforms: platform_matrix(CaptureSource::Notification),
         },
         CaptureConnector {
-            source: CaptureSource::Email,
-            label: "邮箱接入",
-            availability: CaptureAvailability::Ready,
-            status: "可用",
-            description: "只在你主动操作时连接；凭据与邮件内容不入库、不进同步、不做 AI 语料。",
-        },
-        CaptureConnector {
-            source: CaptureSource::SystemShare,
+            source: CaptureSource::Share,
             label: "系统分享",
-            availability: CaptureAvailability::Connector,
-            status: "待接入",
-            description: "把其他应用的文字分享给息壤。Android 侧尚未注册分享目标。",
-        },
-        CaptureConnector {
-            source: CaptureSource::Screenshot,
-            label: "截图识别",
-            availability: CaptureAvailability::Connector,
-            status: "待接入",
-            description: "对截图做端侧文字识别。本仓尚未接入任何 OCR 实现。",
+            availability: if android {
+                CaptureAvailability::Ready
+            } else {
+                CaptureAvailability::Unsupported
+            },
+            status: if android {
+                "可用"
+            } else {
+                "桌面无系统分享目标"
+            },
+            description: "把其他应用的文字分享给息壤；先进入内存待确认区，不会自动保存。",
+            sensitivity: "由内容决定",
+            allow_memory: true,
+            allow_ai: true,
+            allow_backup: true,
+            platforms: platform_matrix(CaptureSource::Share),
         },
         CaptureConnector {
             source: CaptureSource::Calendar,
-            label: "日历接入",
-            availability: CaptureAvailability::Connector,
-            status: "待接入",
-            description: "通过系统日历或你主动配置的 CalDAV 同步既有日程。",
+            label: "系统日历",
+            availability: if android {
+                CaptureAvailability::Ready
+            } else {
+                CaptureAvailability::Unsupported
+            },
+            status: if android {
+                "需只读授权"
+            } else {
+                "桌面无系统日历桥接"
+            },
+            description: "读取既有日程生成候选；写回必须在系统日历界面再次确认。",
+            sensitivity: "高",
+            allow_memory: true,
+            allow_ai: false,
+            allow_backup: true,
+            platforms: platform_matrix(CaptureSource::Calendar),
         },
         CaptureConnector {
-            source: CaptureSource::BrowserExtension,
-            label: "浏览器扩展",
-            availability: CaptureAvailability::Companion,
-            status: "需配套端",
-            description: "网页订单与活动页由扩展一键保存；配套端尚未开发。",
+            source: CaptureSource::Health,
+            label: "健康摘要",
+            availability: if android {
+                CaptureAvailability::Ready
+            } else {
+                CaptureAvailability::Unsupported
+            },
+            status: if android {
+                "需授权"
+            } else {
+                "桌面无此机制"
+            },
+            description: "只读取你授权的 Health Connect 指标，并以摘要参与建议。",
+            sensitivity: "极高",
+            allow_memory: true,
+            allow_ai: false,
+            allow_backup: true,
+            platforms: platform_matrix(CaptureSource::Health),
         },
         CaptureConnector {
-            source: CaptureSource::OfficialApi,
-            label: "官方开放接口",
+            source: CaptureSource::Email,
+            label: "邮箱事件",
+            availability: CaptureAvailability::Ready,
+            status: "可配置",
+            description: "只在你主动操作时连接；凭据与邮件正文不入库、不进同步。",
+            sensitivity: "极高",
+            allow_memory: true,
+            allow_ai: false,
+            allow_backup: true,
+            platforms: platform_matrix(CaptureSource::Email),
+        },
+        CaptureConnector {
+            source: CaptureSource::Soulous,
+            label: "Soulous",
+            availability: CaptureAvailability::Ready,
+            status: "可配置",
+            description: "只读同步明确允许的事实；是否推送日程另行授权。",
+            sensitivity: "高",
+            allow_memory: true,
+            allow_ai: false,
+            allow_backup: true,
+            platforms: platform_matrix(CaptureSource::Soulous),
+        },
+        CaptureConnector {
+            source: CaptureSource::Location,
+            label: "位置",
             availability: CaptureAvailability::Connector,
-            status: "白名单接入",
-            description: "只连接数据源明确允许访问、且你主动授权的接口。",
+            status: "暂缓",
+            description: "仅规划按需取点，不做常驻轨迹采集。当前版本不申请位置权限。",
+            sensitivity: "极高",
+            allow_memory: false,
+            allow_ai: false,
+            allow_backup: false,
+            platforms: platform_matrix(CaptureSource::Location),
         },
     ]
 }
@@ -201,6 +359,21 @@ pub struct CaptureDraft {
     pub text: String,
     /// Unix 毫秒。
     pub created_at: i64,
+    pub occurred_at: i64,
+    /// 来源侧稳定 id；没有就不编造。
+    pub external_id: Option<String>,
+    pub evidence_ref: Option<String>,
+    /// 同一正文被多个入口看见时保留全部来源，避免重复候选。
+    pub also_seen_from: Vec<CaptureSource>,
+    /// 0..=1000。候选阶段只表达解析确信度，不代表真实性。
+    pub confidence: u16,
+    pub sensitivity: CaptureSensitivity,
+    pub expires_at: Option<i64>,
+    pub allow_memory: bool,
+    pub allow_ai: bool,
+    pub allow_backup: bool,
+    pub proposed_action: &'static str,
+    pub state: CandidateState,
     pub note: Option<String>,
 }
 
@@ -363,14 +536,55 @@ impl CaptureInbox {
         text: &str,
         now_ms: i64,
     ) -> CaptureDraft {
+        self.push_with_external_id(source, title, text, None, now_ms)
+    }
+
+    pub fn push_with_external_id(
+        &mut self,
+        source: CaptureSource,
+        title: &str,
+        text: &str,
+        external_id: Option<&str>,
+        now_ms: i64,
+    ) -> CaptureDraft {
+        self.push_candidate(source, title, text, external_id, now_ms, now_ms)
+    }
+
+    pub fn push_candidate(
+        &mut self,
+        source: CaptureSource,
+        title: &str,
+        text: &str,
+        external_id: Option<&str>,
+        occurred_at: i64,
+        now_ms: i64,
+    ) -> CaptureDraft {
         let text = truncate_chars(text.trim(), MAX_DRAFT_CHARS);
+        let normalized = normalize_for_dedup(&text);
+        if let Some(existing) = self.drafts.iter_mut().find(|draft| {
+            let same_external = external_id.is_some()
+                && draft.source == source
+                && draft.external_id.as_deref() == external_id;
+            let recent_same_text = now_ms.saturating_sub(draft.created_at) <= 48 * 60 * 60 * 1000
+                && normalize_for_dedup(&draft.text) == normalized;
+            same_external || recent_same_text
+        }) {
+            if existing.source != source && !existing.also_seen_from.contains(&source) {
+                existing.also_seen_from.push(source);
+            }
+            existing.created_at = now_ms;
+            existing.note = Some("已与重复候选合并".into());
+            return existing.clone();
+        }
+        let clues = extract_capture_clues(&text);
         let title = {
             let t = title.trim();
             if !t.is_empty() {
                 truncate_chars(t, 48)
             } else {
-                extract_capture_clues(&text)
+                clues
                     .matter
+                    .clone()
                     .unwrap_or_else(|| capture_source_label(source).to_string())
             }
         };
@@ -380,6 +594,39 @@ impl CaptureInbox {
             title,
             text,
             created_at: now_ms,
+            occurred_at,
+            external_id: external_id.map(|value| truncate_chars(value.trim(), 160)),
+            evidence_ref: external_id
+                .map(|value| format!("{}:{}", source.as_str(), truncate_chars(value.trim(), 160))),
+            also_seen_from: Vec::new(),
+            confidence: match source {
+                CaptureSource::Manual => 1000,
+                CaptureSource::Calendar | CaptureSource::Health | CaptureSource::Soulous => 900,
+                CaptureSource::Email => 800,
+                CaptureSource::Share => 750,
+                CaptureSource::Notification => 650,
+                CaptureSource::Location => 600,
+            },
+            sensitivity: source.sensitivity(),
+            expires_at: (source != CaptureSource::Manual)
+                .then_some(now_ms + 7 * 24 * 60 * 60 * 1000),
+            allow_memory: true,
+            allow_ai: !matches!(
+                source,
+                CaptureSource::Notification
+                    | CaptureSource::Calendar
+                    | CaptureSource::Health
+                    | CaptureSource::Email
+                    | CaptureSource::Soulous
+                    | CaptureSource::Location
+            ),
+            allow_backup: source != CaptureSource::Location,
+            proposed_action: if clues.time.is_some() {
+                "create_event"
+            } else {
+                "review"
+            },
+            state: CandidateState::Pending,
             note: None,
         };
         self.drafts.push(draft.clone());
@@ -394,6 +641,13 @@ impl CaptureInbox {
         let mut out = self.drafts.clone();
         out.reverse();
         out
+    }
+
+    pub fn prune_expired(&mut self, now_ms: i64) -> usize {
+        let before = self.drafts.len();
+        self.drafts
+            .retain(|draft| draft.expires_at.is_none_or(|expiry| expiry > now_ms));
+        before - self.drafts.len()
     }
 
     pub fn get(&self, id: &str) -> Option<&CaptureDraft> {
@@ -430,6 +684,13 @@ fn truncate_chars(s: &str, max: usize) -> String {
     }
 }
 
+fn normalize_for_dedup(text: &str) -> String {
+    text.chars()
+        .filter(|ch| !ch.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,15 +713,11 @@ mod tests {
         );
     }
 
-    /// 防止有人把鸿蒙的清单整段贴回来：那份把系统分享/截图标成"可用"，
-    /// 本仓两条都没实现。
+    /// 高敏感位置在没有实现按需取点以前不能标成可用。
     #[test]
     fn unimplemented_entries_are_not_advertised_as_ready() {
         for c in capture_connectors(true) {
-            if matches!(
-                c.source,
-                CaptureSource::SystemShare | CaptureSource::Screenshot | CaptureSource::Calendar
-            ) {
+            if c.source == CaptureSource::Location {
                 assert_ne!(
                     c.availability,
                     CaptureAvailability::Ready,
@@ -477,6 +734,27 @@ mod tests {
             assert_eq!(CaptureSource::parse(c.source.as_str()), Some(c.source));
         }
         assert_eq!(CaptureSource::parse("no_such_source"), None);
+    }
+
+    #[test]
+    fn duplicate_text_across_sources_merges_without_losing_provenance() {
+        let mut inbox = CaptureInbox::new();
+        let first = inbox.push(CaptureSource::Share, "", "明天 10 点开会", 1_000);
+        let merged = inbox.push(CaptureSource::Calendar, "", "明天10点开会", 2_000);
+        assert_eq!(first.id, merged.id);
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(merged.also_seen_from, vec![CaptureSource::Calendar]);
+        assert!(merged.note.as_deref().unwrap().contains("合并"));
+    }
+
+    #[test]
+    fn external_candidates_expire_but_manual_drafts_do_not() {
+        let mut inbox = CaptureInbox::new();
+        inbox.push(CaptureSource::Share, "", "外部候选", 1_000);
+        inbox.push(CaptureSource::Manual, "", "手动候选", 1_001);
+        assert_eq!(inbox.prune_expired(1_000 + 8 * 24 * 60 * 60 * 1000), 1);
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox.snapshot()[0].source, CaptureSource::Manual);
     }
 
     #[test]
@@ -536,13 +814,13 @@ mod tests {
         assert!(inbox.is_empty());
 
         let a = inbox.push(
-            CaptureSource::SystemShare,
+            CaptureSource::Share,
             "",
             "明天 10 点开会",
             1_700_000_000_000,
         );
         let b = inbox.push(
-            CaptureSource::Conversation,
+            CaptureSource::Manual,
             "手写标题",
             "随便写点",
             1_700_000_001_000,
@@ -566,7 +844,7 @@ mod tests {
     #[test]
     fn an_untitled_draft_without_clues_falls_back_to_the_entry_name() {
         let mut inbox = CaptureInbox::new();
-        let d = inbox.push(CaptureSource::SystemShare, "", "   ", 1_700_000_000_000);
+        let d = inbox.push(CaptureSource::Share, "", "   ", 1_700_000_000_000);
         assert_eq!(d.title, "系统分享");
     }
 
@@ -574,7 +852,7 @@ mod tests {
     fn oversized_input_is_truncated_rather_than_rejected() {
         let mut inbox = CaptureInbox::new();
         let huge = "字".repeat(MAX_DRAFT_CHARS + 500);
-        let d = inbox.push(CaptureSource::SystemShare, "x", &huge, 1_700_000_000_000);
+        let d = inbox.push(CaptureSource::Share, "x", &huge, 1_700_000_000_000);
         assert_eq!(d.text.chars().count(), MAX_DRAFT_CHARS + 1);
         assert!(d.text.ends_with('…'));
     }
@@ -585,9 +863,9 @@ mod tests {
         let mut first = String::new();
         for i in 0..(MAX_DRAFTS + 5) {
             let d = inbox.push(
-                CaptureSource::SystemShare,
+                CaptureSource::Share,
                 &format!("第 {i} 条"),
-                "正文",
+                &format!("正文 {i}"),
                 1_700_000_000_000 + i as i64,
             );
             if i == 0 {

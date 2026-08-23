@@ -119,7 +119,8 @@ const SYNC_PAYLOADS: &[(&str, &str, &str)] = &[
             (
                 "raw_inputs",
                 "json_object('text', NEW.text, 'intent', NEW.intent, \
-                 'created_at', NEW.created_at, 'local_only', NEW.local_only)",
+                 'created_at', NEW.created_at, 'local_only', NEW.local_only, \
+                 'source_id', NEW.source_id, 'external_id', NEW.external_id)",
                 "1",
             ),
             (
@@ -213,7 +214,7 @@ const SYNC_PAYLOADS: &[(&str, &str, &str)] = &[
             ),
 ];
 
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 16;
 const NOTIF_CLOUD_SCOPE_SCHEMA_VERSION: i64 = 7;
 /// v15 re-emitted `widget_fields` rows whose view slots and canonical order
 /// never made it into the sync payload (and therefore never reached a peer).
@@ -306,6 +307,8 @@ pub struct RawInputRow {
     pub text: String,
     pub intent: String,
     pub created_at: String,
+    pub source_id: String,
+    pub external_id: Option<String>,
 }
 
 pub struct Store {
@@ -428,6 +431,8 @@ impl Store {
                 intent     TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 local_only INTEGER NOT NULL DEFAULT 0,
+                source_id  TEXT NOT NULL DEFAULT 'manual',
+                external_id TEXT,
                 guid       TEXT
             );
 
@@ -720,6 +725,8 @@ impl Store {
         // still-pending materializations.
         for (tbl, col, decl) in [
             ("raw_inputs", "local_only", "INTEGER NOT NULL DEFAULT 0"),
+            ("raw_inputs", "source_id", "TEXT NOT NULL DEFAULT 'manual'"),
+            ("raw_inputs", "external_id", "TEXT"),
             ("events", "local_only", "INTEGER NOT NULL DEFAULT 0"),
             ("events", "routine_id", "INTEGER"),
             ("notifications", "local_only", "INTEGER NOT NULL DEFAULT 0"),
@@ -759,6 +766,20 @@ impl Store {
                 [],
             )?;
         }
+
+        // v15 → v16: historical notification rows predate explicit source
+        // provenance. The capture journal is the authoritative mapping; the
+        // text prefix is only a fallback for the older pre-journal shape.
+        self.conn.execute_batch(
+            "UPDATE raw_inputs
+                SET source_id = 'notification',
+                    external_id = COALESCE(external_id,
+                      (SELECT content_hash FROM notification_captures c
+                       WHERE c.raw_input_id = raw_inputs.id LIMIT 1))
+              WHERE source_id = 'manual'
+                AND (id IN (SELECT raw_input_id FROM notification_captures)
+                     OR text LIKE '[通知·%');",
+        )?;
 
         // v12 → v13: explode the single schema_json column into one row per
         // field. Must run before the guid backfill below, so the new rows get
@@ -1198,7 +1219,7 @@ impl Store {
         intent: &str,
         created_at: NaiveDateTime,
     ) -> Result<i64> {
-        self.insert_raw_input_with_scope(text, intent, created_at, false)
+        self.insert_raw_input_with_scope(text, intent, created_at, false, "manual", None)
     }
 
     /// Store a raw input that must never enter the encrypted sync pipeline.
@@ -1209,7 +1230,28 @@ impl Store {
         intent: &str,
         created_at: NaiveDateTime,
     ) -> Result<i64> {
-        self.insert_raw_input_with_scope(text, intent, created_at, true)
+        self.insert_raw_input_with_scope(text, intent, created_at, true, "notification", None)
+    }
+
+    /// Persist an input after the user has confirmed an external candidate.
+    /// `source_id` is a stable registry id, not a display label.
+    pub fn insert_raw_input_from_source(
+        &self,
+        text: &str,
+        intent: &str,
+        created_at: NaiveDateTime,
+        source_id: &str,
+        external_id: Option<&str>,
+        local_only: bool,
+    ) -> Result<i64> {
+        self.insert_raw_input_with_scope(
+            text,
+            intent,
+            created_at,
+            local_only,
+            source_id,
+            external_id,
+        )
     }
 
     fn insert_raw_input_with_scope(
@@ -1218,15 +1260,19 @@ impl Store {
         intent: &str,
         created_at: NaiveDateTime,
         local_only: bool,
+        source_id: &str,
+        external_id: Option<&str>,
     ) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO raw_inputs(text, intent, created_at, local_only, guid)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO raw_inputs(text, intent, created_at, local_only, source_id, external_id, guid)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 text,
                 intent,
                 fmt_ts(&created_at),
                 local_only as i64,
+                source_id,
+                external_id,
                 new_guid()
             ],
         )?;
@@ -1237,16 +1283,57 @@ impl Store {
     pub fn list_raw_inputs(&self) -> Result<Vec<RawInputRow>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, text, intent, created_at FROM raw_inputs ORDER BY id ASC")?;
+            .prepare("SELECT id, text, intent, created_at, source_id, external_id FROM raw_inputs ORDER BY id ASC")?;
         let rows = stmt.query_map([], |row| {
             Ok(RawInputRow {
                 id: row.get(0)?,
                 text: row.get(1)?,
                 intent: row.get(2)?,
                 created_at: row.get(3)?,
+                source_id: row.get(4)?,
+                external_id: row.get(5)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Content-free activity projection for the information-source center.
+    /// The UI needs a count and last success time, never the source text.
+    pub fn raw_input_source_activity(&self, source_id: &str) -> Result<(i64, Option<String>)> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*), MAX(created_at) FROM raw_inputs WHERE source_id = ?1",
+                params![source_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn accepted_source_item(
+        &self,
+        source_id: &str,
+        external_id: &str,
+    ) -> Result<Option<(i64, Option<Event>)>> {
+        let raw_id = self
+            .conn
+            .query_row(
+                "SELECT id FROM raw_inputs WHERE source_id = ?1 AND external_id = ?2 ORDER BY id LIMIT 1",
+                params![source_id, external_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(raw_id) = raw_id else {
+            return Ok(None);
+        };
+        let event = self
+            .conn
+            .query_row(
+                "SELECT * FROM events WHERE raw_input_id = ?1 ORDER BY id LIMIT 1",
+                params![raw_id],
+                Self::row_to_event,
+            )
+            .optional()?;
+        Ok(Some((raw_id, event)))
     }
 
     /// Stable raw-input identity for the v3 logical backup journal. This is a
@@ -3356,14 +3443,16 @@ impl Store {
         state: CaptureState,
         reason: Option<&str>,
     ) -> Result<NotificationCaptureRecord> {
+        let content_hash =
+            crate::notification_intelligence::content_hash(&capture.package_name, &capture.text());
         let raw_input_id = self.insert_raw_input_with_scope(
             &capture.raw_input(),
             "notification_capture",
             capture.received_at,
             local_only,
+            "notification",
+            Some(&content_hash),
         )?;
-        let content_hash =
-            crate::notification_intelligence::content_hash(&capture.package_name, &capture.text());
         self.conn.execute(
             "INSERT INTO notification_captures(raw_input_id, package_name, title, body, received_at, content_hash, local_only, lane, state, reason, event_id, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11)",
@@ -3771,21 +3860,22 @@ impl Store {
 
         let mut stmt = self
             .conn
-            .prepare("SELECT id, text, intent, created_at FROM raw_inputs")?;
+            .prepare("SELECT id, text, intent, created_at, source_id FROM raw_inputs")?;
         let rows = stmt.query_map([], |r| {
             let id: i64 = r.get(0)?;
             let text: String = r.get(1)?;
             let intent: String = r.get(2)?;
             let created: String = r.get(3)?;
-            Ok((id, text, intent, created))
+            let source_id: String = r.get(4)?;
+            Ok((id, text, intent, created, source_id))
         })?;
         for row in rows {
-            let (id, text, intent, created) = row?;
+            let (id, text, intent, created, source_id) = row?;
             entries.push(MemoryEntry {
                 layer: MemoryLayer::RawInput,
                 id,
                 summary: text,
-                source: Some(format!("intent={intent}")),
+                source: Some(format!("source={source_id} · intent={intent}")),
                 created_at: parse_ts(&created)?,
             });
         }
@@ -4523,15 +4613,26 @@ impl Store {
                     .get("local_only")
                     .and_then(serde_json::Value::as_i64)
                     .map_or_else(|| text.starts_with("[通知·"), |v| v != 0);
+                let source_id = s("source_id").unwrap_or_else(|| {
+                    if text.starts_with("[通知·") {
+                        "notification".into()
+                    } else {
+                        "manual".into()
+                    }
+                });
+                let external_id = s("external_id");
                 self.conn.execute(
-                    "INSERT INTO raw_inputs(text, intent, created_at, local_only, guid) VALUES (?1, ?2, ?3, ?4, ?5)
+                    "INSERT INTO raw_inputs(text, intent, created_at, local_only, source_id, external_id, guid) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                      ON CONFLICT(guid) DO UPDATE SET text=excluded.text, intent=excluded.intent,
-                       created_at=excluded.created_at, local_only=excluded.local_only",
+                       created_at=excluded.created_at, local_only=excluded.local_only,
+                       source_id=excluded.source_id, external_id=excluded.external_id",
                     params![
                         text,
                         need("intent")?,
                         need("created_at")?,
                         local_only as i64,
+                        source_id,
+                        external_id,
                         op.guid
                     ],
                 )?;
@@ -6108,6 +6209,15 @@ mod tests {
             .unwrap();
         s.migrate().unwrap();
         assert!(s.raw_input_is_local_only(old_raw).unwrap());
+        assert_eq!(
+            s.list_raw_inputs()
+                .unwrap()
+                .into_iter()
+                .find(|row| row.id == old_raw)
+                .unwrap()
+                .source_id,
+            "notification"
+        );
         assert!(s.event_is_local_only(old_event).unwrap());
         assert_eq!(
             s.conn
@@ -6145,6 +6255,15 @@ mod tests {
             .unwrap();
         s.migrate().unwrap();
         assert!(!s.raw_input_is_local_only(new_raw).unwrap());
+        assert_eq!(
+            s.list_raw_inputs()
+                .unwrap()
+                .into_iter()
+                .find(|row| row.id == new_raw)
+                .unwrap()
+                .source_id,
+            "notification"
+        );
         assert!(!s.event_is_local_only(new_event).unwrap());
         assert_eq!(
             s.conn

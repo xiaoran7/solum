@@ -2708,6 +2708,14 @@
         <h3>入口清单</h3>
         <div id="captureConnectors"></div>
       </div>
+      <div class="block" id="calendarSourceBlock">
+        <h3>系统日历 <span class="bnote">只读导入；写回由系统确认</span></h3>
+        <p class="hint" id="calendarSourceStatus">正在检查只读权限…</p>
+        <div class="btnrow">
+          <button class="btn" type="button" id="calendarGrantBtn">授予只读权限</button>
+          <button class="btn primary" type="button" id="calendarImportBtn">读取未来 30 天</button>
+        </div>
+      </div>
     </div></section>
 
     <!-- 多设备同步（F17 §3.8） -->
@@ -3096,7 +3104,8 @@
 
 // Android WebView 下 env(safe-area-inset-*) 可能恒为 0，CSS 里 html.android
 // 分支提供状态栏/手势条兜底内边距（见移动端媒体查询注释）。
-if (/Android/i.test(navigator.userAgent)) document.documentElement.classList.add("android");
+const IS_ANDROID = /Android/i.test(navigator.userAgent);
+if (IS_ANDROID) document.documentElement.classList.add("android");
 const rawInvoke = window.__TAURI__ && window.__TAURI__.core
   ? window.__TAURI__.core.invoke.bind(window.__TAURI__.core)
   : () => Promise.reject(new Error("Tauri API 不可用（请从桌面应用打开）"));
@@ -4175,7 +4184,7 @@ function onChatDelta(streamId, delta) {
   requestAnimationFrame(() => { $("chatScroll").scrollTop = $("chatScroll").scrollHeight; });
 }
 
-async function sendChat(text) {
+async function sendChat(text, captureId = null) {
   text = String(text || "").trim();
   if (!text) return;
   // 「今日简报」是只读投影，不该落进闲聊意图（欢迎屏 chip 之外的唯一入口）。
@@ -4198,7 +4207,7 @@ async function sendChat(text) {
   const stream = { typing, bubble: null, textSpan: null, text: "" };
   activeChatStreams[streamId] = stream;
   try {
-    const r = await invoke("ingest", { text, now: nowParam(), streamId });
+    const r = await invoke("ingest", { text, now: nowParam(), streamId, captureId });
     delete activeChatStreams[streamId];
     if (stream.bubble) {
       // 已流式的闲聊：用权威终值定稿已在增长的气泡（信封路径不会走到这里，
@@ -4212,7 +4221,7 @@ async function sendChat(text) {
       recordChatMessage("assistant", r.message, r.intent);
       recordChatTurn(text, r.message, r.intent);
       refreshAll();
-      return;
+      return true;
     }
     // 无可见流式（非闲聊意图，或被抑制的信封）：整包构建，与流式前完全一致。
     typing.remove();
@@ -4224,6 +4233,15 @@ async function sendChat(text) {
       parts.push(el("div", { class: "evmeta" }, [
         `事件 #${r.event.id} · ${KIND[r.event.kind] || r.event.kind} · `, fmtDT(r.event.start),
       ]));
+      if (IS_ANDROID) parts.push(el("button", {
+        class: "btn sm", type: "button", text: "在系统日历中核对并保存",
+        onclick: async () => {
+          try {
+            const opened = await invoke("calendar_open_insert", { eventId: r.event.id });
+            toast(opened ? "已打开系统日历；保存前请再次核对" : "没有可处理日历写入的系统应用", opened ? "ok" : "danger");
+          } catch (error) { toast(safeUserError(error, "暂时无法打开系统日历"), "danger"); }
+        },
+      }));
     }
     const bubble = addMsg("agent", parts);
     // F18：信封只当数据渲染（目录内组件 → DOM），绝不当 HTML。
@@ -4243,6 +4261,7 @@ async function sendChat(text) {
     recordChatMessage("assistant", r.message, r.intent);
     recordChatTurn(text, r.message, r.intent);
     refreshAll();
+    return true;
   } catch (err) {
     delete activeChatStreams[streamId];
     if (stream.bubble) {
@@ -4254,6 +4273,7 @@ async function sendChat(text) {
       addMsg("agent", [el("div", { class: "intent" }, tag("错误", "danger")), safeUserError(err, "这次请求没有完成，请稍后重试。")] );
     }
     recordChatMessage("assistant", safeUserError(err, "这次请求没有完成，请稍后重试。"), "error");
+    return false;
   }
 }
 $("chatForm").addEventListener("submit", async (e) => {
@@ -4262,7 +4282,9 @@ $("chatForm").addEventListener("submit", async (e) => {
   if (!text) return;
   $("chatInput").value = "";
   saveCurrentChatDraft(true);
-  await sendChat(text);
+  const captureId = pendingCaptureDraft?.id || null;
+  const sent = await sendChat(text, captureId);
+  if (sent && captureId) pendingCaptureDraft = null;
 });
 $("chatInput").addEventListener("input", () => saveCurrentChatDraft(false));
 $("sendBtn").appendChild(icon("send", 17));
@@ -6909,6 +6931,35 @@ $("privacyGateDeclineBtn").addEventListener("click", async (event) => {
 const CAPTURE_AVAIL_KIND = {
   ready: "ok", connector: "plain", companion: "plain", unsupported: "plain",
 };
+const PLATFORM_SUPPORT = {
+  available: "可用", permission_required: "需授权", configuration_required: "需配置",
+  planned: "规划中", unsupported: "不支持",
+};
+let pendingCaptureDraft = null;
+let shareDrainRunning = false;
+
+async function drainAndroidShares() {
+  if (shareDrainRunning) return;
+  shareDrainRunning = true;
+  try {
+    const received = await invoke("capture_android_share_drain");
+    if (received.length) {
+      toast(`收到 ${received.length} 条分享，已放入待确认区`, "ok");
+      refreshCaptureInbox();
+    }
+  } catch (error) {
+    // Android lifecycle transitions can briefly detach the WebView. Keep the
+    // native RAM queue intact and try again on the next focus.
+    console.warn("share drain deferred", error);
+  } finally {
+    shareDrainRunning = false;
+  }
+}
+window.addEventListener("focus", drainAndroidShares);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") drainAndroidShares();
+});
+setTimeout(drainAndroidShares, 0);
 
 async function refreshCapture() {
   const box = $("captureConnectors");
@@ -6917,11 +6968,20 @@ async function refreshCapture() {
     const list = await invoke("capture_entry_points");
     box.textContent = "";
     for (const c of list) {
+      const runtime = c.authorized == null ? "按需检查"
+        : c.authorized ? "已授权/可用" : "未授权/未配置";
+      const activity = c.last_success
+        ? `最近接收 ${fmtDTText(c.last_success)} · 已采用 ${c.accepted_count}`
+        : `尚无已采用记录${c.pending_count ? ` · 待确认 ${c.pending_count}` : ""}`;
       box.appendChild(el("div", { class: "row" }, [
         tag(c.status, CAPTURE_AVAIL_KIND[c.availability] || "plain"),
         el("div", { class: "grow" }, [
           el("div", { text: c.label }),
           el("div", { class: "meta", text: c.description }),
+          el("div", { class: "meta", text: `${runtime} · ${activity} · 敏感度：${c.sensitivity}` }),
+          el("div", { class: "meta", text: `平台：Android ${PLATFORM_SUPPORT[c.platforms.android]} / iOS ${PLATFORM_SUPPORT[c.platforms.ios]} / HarmonyOS ${PLATFORM_SUPPORT[c.platforms.harmonyos]}` }),
+          el("div", { class: "meta", text: `用途：${c.allow_memory ? "可形成记忆" : "不形成记忆"} / ${c.allow_ai ? "可用于 AI" : "不用于 AI"} / ${c.allow_backup ? "可进入加密备份" : "不备份"}` }),
+          c.last_error ? el("div", { class: "meta", text: "最近检查失败；请进入对应设置页重试" }) : null,
         ]),
       ]));
     }
@@ -6929,7 +6989,47 @@ async function refreshCapture() {
     box.textContent = safeUserError(e, "采集内容暂时无法读取，请稍后重试。");
   }
   refreshCaptureInbox();
+  refreshCalendarSource();
 }
+
+async function refreshCalendarSource() {
+  const block = $("calendarSourceBlock");
+  if (!block) return;
+  if (!IS_ANDROID) {
+    block.hidden = true;
+    return;
+  }
+  block.hidden = false;
+  try {
+    const granted = await invoke("calendar_access_status");
+    $("calendarSourceStatus").textContent = granted
+      ? "已允许读取。读取操作只生成内存候选，不会直接创建 Solum 日程。"
+      : "尚未授权。Solum 只申请读取，不申请直接写入系统日历。";
+    $("calendarGrantBtn").hidden = granted;
+    $("calendarImportBtn").disabled = !granted;
+  } catch (error) {
+    $("calendarSourceStatus").textContent = safeUserError(error, "暂时无法检查系统日历权限");
+  }
+}
+
+$("calendarGrantBtn").addEventListener("click", async () => {
+  try {
+    await invoke("calendar_access_request");
+    toast("请在系统授权框完成选择", "ok");
+    setTimeout(refreshCalendarSource, 1200);
+    setTimeout(refreshCalendarSource, 3200);
+  } catch (error) { toast(safeUserError(error, "无法请求日历权限"), "danger"); }
+});
+$("calendarImportBtn").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const items = await invoke("calendar_candidates_import", { daysAhead: 30 });
+    toast(items.length ? `已读取并合并为 ${items.length} 条待确认候选` : "未来 30 天没有可导入日程", "ok");
+    refreshCaptureInbox();
+  } catch (error) { toast(safeUserError(error, "读取系统日历失败"), "danger"); }
+  finally { button.disabled = false; refreshCalendarSource(); }
+});
 
 async function refreshCaptureInbox() {
   const box = $("captureInbox");
@@ -6947,6 +7047,8 @@ async function refreshCaptureInbox() {
       el("div", { class: "grow" }, [
         el("div", { text: d.title }),
         el("div", { class: "meta", text: d.clue_summary }),
+        el("div", { class: "meta", text: `置信度 ${Math.round((d.confidence || 0) / 10)}% · ${d.allow_ai ? "可用于 AI" : "不用于 AI"} · ${d.allow_backup ? "可备份" : "仅本机"}${d.expires_at ? ` · ${new Date(d.expires_at).toLocaleDateString("zh-CN")} 前确认` : ""}` }),
+        d.note ? el("div", { class: "meta", text: d.note }) : null,
       ]),
       el("span", { style: "display:flex;gap:8px;" }, [
         el("button", { class: "btn sm", type: "button", text: "放入输入框",
@@ -6970,14 +7072,15 @@ function adoptCaptureDraft(draft) {
     input.focus();
     saveCurrentChatDraft(true);
   }
-  discardCaptureDraft(draft.id, true);
+  pendingCaptureDraft = { id: draft.id, source: draft.source };
   showView("chat");
-  toast("已放入输入框，确认无误后再发送", "ok");
+  toast("已放入输入框；发送成功后才会保存，并保留来源", "ok");
 }
 
 async function discardCaptureDraft(id, quiet) {
   try {
     await invoke("capture_inbox_discard", { id });
+    if (pendingCaptureDraft?.id === id) pendingCaptureDraft = null;
     if (!quiet) toast("已丢弃（未写入数据库）", "ok");
   } catch (e) {
     toast(String(e), "danger");
@@ -6992,7 +7095,7 @@ $("captureAddBtn").addEventListener("click", async (event) => {
   const btn = event.currentTarget;
   btn.disabled = true;
   try {
-    await invoke("capture_inbox_add", { source: "system_share", title: "", text });
+    await invoke("capture_inbox_add", { source: "share", title: "", text, externalId: null });
     area.value = "";
     toast("已放入待确认区（尚未写入数据库）", "ok");
     refreshCaptureInbox();

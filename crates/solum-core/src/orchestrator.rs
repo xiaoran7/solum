@@ -284,7 +284,39 @@ impl Orchestrator {
     /// Ingest one utterance: route it, record it, and (if it's an event)
     /// extract → classify → schedule → persist.
     pub fn ingest(&mut self, text: &str, now: NaiveDateTime) -> Result<IngestOutcome> {
-        self.ingest_with_stream(text, now, None)
+        self.ingest_with_stream(text, now, None, "manual", None)
+    }
+
+    /// Confirmed input from the capture candidate layer. The source identity
+    /// is persisted with the raw row so later memory inspection, dedup and
+    /// export do not flatten every external fact into "manual chat".
+    pub fn ingest_from_source(
+        &mut self,
+        text: &str,
+        now: NaiveDateTime,
+        source_id: &str,
+        external_id: Option<&str>,
+    ) -> Result<IngestOutcome> {
+        if let Some(external_id) = external_id {
+            if let Some((raw_input_id, event)) =
+                self.store.accepted_source_item(source_id, external_id)?
+            {
+                return Ok(IngestOutcome {
+                    intent: if event.is_some() {
+                        Intent::IngestEvent
+                    } else {
+                        Intent::Chat
+                    },
+                    raw_input_id,
+                    event,
+                    notifications: Vec::new(),
+                    message: "这条来源记录已经采用过，本次已合并，没有重复创建。".into(),
+                    ui: None,
+                    widget_preview: None,
+                });
+            }
+        }
+        self.ingest_with_stream(text, now, None, source_id, external_id)
     }
 
     /// Streaming ingest (§3.6 第 7 条): identical to [`Self::ingest`] except a
@@ -296,7 +328,7 @@ impl Orchestrator {
         now: NaiveDateTime,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<IngestOutcome> {
-        self.ingest_with_stream(text, now, Some(on_delta))
+        self.ingest_with_stream(text, now, Some(on_delta), "manual", None)
     }
 
     fn ingest_with_stream(
@@ -304,13 +336,17 @@ impl Orchestrator {
         text: &str,
         now: NaiveDateTime,
         chat_sink: Option<&mut dyn FnMut(&str)>,
+        source_id: &str,
+        external_id: Option<&str>,
     ) -> Result<IngestOutcome> {
+        let allow_ai = crate::capture::CaptureSource::parse(source_id)
+            .is_none_or(crate::capture::CaptureSource::allows_ai_by_default);
         let mut intent = route_intent(text, now);
         // Explicit “组件” phrases are resolved fully offline by route_intent.
         // For a deliberately narrow ambiguous set, the user has allowed an
         // LLM-assisted classification. It only gets a yes/no vote here, never
         // a write capability; preview confirmation still bounds any mistake.
-        if intent == Intent::Chat && might_request_widget(text, now) {
+        if allow_ai && intent == Intent::Chat && might_request_widget(text, now) {
             intent = if let Some(reasoner) = &self.reasoner {
                 // On a classifier failure, keep the request on the explicit
                 // creation path. The schema call will then give the user a
@@ -327,7 +363,14 @@ impl Orchestrator {
                 Intent::CreateWidget
             };
         }
-        let raw_input_id = self.store.insert_raw_input(text, intent_str(intent), now)?;
+        let raw_input_id = self.store.insert_raw_input_from_source(
+            text,
+            intent_str(intent),
+            now,
+            source_id,
+            external_id,
+            source_id == "notification",
+        )?;
 
         let mut outcome = IngestOutcome {
             intent,
@@ -341,6 +384,11 @@ impl Orchestrator {
 
         match intent {
             Intent::CreateWidget => {
+                if !allow_ai {
+                    outcome.message =
+                        "此信息源未授权用于 AI，未创建组件。你可以手动改写后再从对话发起。".into();
+                    return Ok(outcome);
+                }
                 let Some(reasoner) = &self.reasoner else {
                     // Do not quietly turn this into a calendar event (or a
                     // half-made local widget). Existing widgets stay fully
@@ -390,7 +438,7 @@ impl Orchestrator {
                 // reasoner as a fallback for phrasing the rules can't parse.
                 let mut via_llm = false;
                 let mut extracted = self.extractor.extract(text, now)?;
-                if extracted.is_none() {
+                if allow_ai && extracted.is_none() {
                     if let Some(r) = &self.reasoner {
                         // Cloud failure must not fail ingest — degrade to None.
                         extracted = crate::llm::llm_extract(r.as_ref(), text, now).unwrap_or(None);
@@ -559,6 +607,12 @@ impl Orchestrator {
                 outcome.message = format!("已记录你的当前状态：{activity}。");
             }
             Intent::Chat => {
+                if !allow_ai {
+                    outcome.message =
+                        "这条来源内容未发送给 AI，也没有形成日程。你可以补充明确时间后重试。"
+                            .into();
+                    return Ok(outcome);
+                }
                 match &self.reasoner {
                     Some(r) => {
                         // §3.10: retrieve locally *before* the call — snippets
@@ -634,11 +688,23 @@ impl Orchestrator {
         let raw = format!("[{origin}] {text}");
         let local_only = !self.store.notif_cloud_enabled()?;
         let raw_input_id = if local_only {
-            self.store
-                .insert_local_only_raw_input(&raw, intent_str(Intent::IngestEvent), now)?
+            self.store.insert_raw_input_from_source(
+                &raw,
+                intent_str(Intent::IngestEvent),
+                now,
+                "notification",
+                None,
+                true,
+            )?
         } else {
-            self.store
-                .insert_raw_input(&raw, intent_str(Intent::IngestEvent), now)?
+            self.store.insert_raw_input_from_source(
+                &raw,
+                intent_str(Intent::IngestEvent),
+                now,
+                "notification",
+                None,
+                false,
+            )?
         };
         let (ev, stored) = self.persist_event_with_scope(ev, raw_input_id, local_only)?;
         Ok(Some(IngestOutcome {
@@ -3369,6 +3435,35 @@ mod tests {
         // Agenda shows the event; ledger shows raw+event+notification.
         assert_eq!(o.agenda(now()).unwrap().len(), 1);
         assert_eq!(o.ledger().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn confirmed_source_keeps_provenance_and_external_id_deduplicates() {
+        let mut o = Orchestrator::in_memory().unwrap();
+        let first = o
+            .ingest_from_source(
+                "明天下午3点在会议室开会",
+                now(),
+                "calendar",
+                Some("android-calendar:42:1"),
+            )
+            .unwrap();
+        assert!(first.event.is_some());
+        let second = o
+            .ingest_from_source(
+                "明天下午3点在会议室开会",
+                now(),
+                "calendar",
+                Some("android-calendar:42:1"),
+            )
+            .unwrap();
+        assert_eq!(first.raw_input_id, second.raw_input_id);
+        assert!(second.message.contains("已经采用过"));
+        assert_eq!(o.all_events().unwrap().len(), 1);
+        assert!(o.ledger().unwrap().iter().any(|entry| entry
+            .source
+            .as_deref()
+            .is_some_and(|source| source.contains("source=calendar"))));
     }
 
     #[test]
