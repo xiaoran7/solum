@@ -1,7 +1,7 @@
 //! Platform-neutral `solum-backup` v1 container codec.
 //!
 //! This module deliberately stops before persistence: it authenticates,
-//! decompresses, parses, and import-plans an inner `solum-export` v2 document,
+//! decompresses, parses, and import-plans an inner `solum-export` v2/v3 document,
 //! then returns that verified document to a later recovery transaction. The
 //! server only needs to store the returned container as opaque bytes.
 
@@ -99,7 +99,7 @@ pub enum BackupError {
     Authentication,
     #[error("backup compression stream is invalid")]
     Decompression,
-    #[error("backup payload is not a valid restorable solum-export v2 document")]
+    #[error("backup payload is not a valid recovery-plannable solum-export document")]
     InvalidPayload,
     #[error("operating-system random source is unavailable")]
     RandomSource,
@@ -132,7 +132,7 @@ const PROTOCOL_LIMITS: DecodeLimits = DecodeLimits {
     plaintext: MAX_PLAINTEXT_BYTES,
 };
 
-/// Normalize and seal a `serde_json::Value` containing `solum-export` v2.
+/// Normalize and seal a recovery-plannable `solum-export` document.
 /// A fresh OS-random nonce is generated for every call.
 pub fn create_backup(
     document: &Value,
@@ -202,6 +202,11 @@ fn create_backup_with_nonce(
         return Err(BackupError::SizeLimit);
     }
 
+    let payload_version = document
+        .get("version")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or(BackupError::InvalidPayload)?;
     let header = BackupHeader {
         format: FORMAT.to_string(),
         protocol_version: PROTOCOL_VERSION,
@@ -210,7 +215,7 @@ fn create_backup_with_nonce(
         backup_id: metadata.backup_id.clone(),
         created_at: metadata.created_at.clone(),
         payload_format: export::FORMAT.to_string(),
-        payload_version: export::EXPORT_VERSION,
+        payload_version,
         payload_digest: PAYLOAD_DIGEST.to_string(),
         compression: COMPRESSION.to_string(),
         encryption: ENCRYPTION.to_string(),
@@ -391,7 +396,10 @@ fn validate_header(
         backup_id: header.backup_id.clone(),
         created_at: header.created_at.clone(),
     })?;
-    if header.payload_format != export::FORMAT || header.payload_version != export::EXPORT_VERSION {
+    if header.payload_format != export::FORMAT
+        || !(export::MIN_RESTORABLE_VERSION..=export::MAX_PLANNABLE_VERSION)
+            .contains(&header.payload_version)
+    {
         return Err(BackupError::InvalidContainer);
     }
     if header.plaintext_size > limits.plaintext as u64
@@ -433,9 +441,7 @@ fn validate_metadata(metadata: &BackupMetadata) -> BackupResult<()> {
 }
 
 fn validate_inner_document(document: &Value) -> BackupResult<ImportPlan> {
-    if document.get("format").and_then(Value::as_str) != Some(export::FORMAT)
-        || document.get("version").and_then(Value::as_u64) != Some(export::EXPORT_VERSION as u64)
-    {
+    if document.get("format").and_then(Value::as_str) != Some(export::FORMAT) {
         return Err(BackupError::InvalidPayload);
     }
     export::plan_import(document).map_err(|_| BackupError::InvalidPayload)
@@ -530,6 +536,10 @@ fn hex_nibble(byte: u8) -> BackupResult<u8> {
 mod tests {
     use super::*;
     use crate::export::{build_export, import_document};
+    use crate::export_v3::{
+        build_portable_export, ExternalRestoreIntents, PlatformPortableData, PortableChat,
+        PORTABLE_EXPORT_VERSION,
+    };
     use crate::model::{Event, EventKind};
     use crate::store::Store;
     use chrono::{NaiveDate, NaiveDateTime};
@@ -562,6 +572,10 @@ mod tests {
 
     fn fixture_document() -> Value {
         serde_json::from_str(include_str!("../tests/fixtures/backup-v1/payload.json")).unwrap()
+    }
+
+    fn fixture_v3_document() -> Value {
+        serde_json::from_str(include_str!("../tests/fixtures/backup-v1/payload-v3.json")).unwrap()
     }
 
     fn split(container: &[u8]) -> (BackupHeader, &[u8]) {
@@ -629,6 +643,40 @@ mod tests {
         assert_eq!(
             restored.list_events().unwrap()[0].title,
             "Synthetic meeting"
+        );
+    }
+
+    #[test]
+    fn protocol_v1_authenticates_and_plans_a_v3_payload_while_v2_stays_compatible() {
+        let store = Store::open_in_memory().unwrap();
+        let document = build_portable_export(
+            &store,
+            dt(2, 3),
+            PlatformPortableData {
+                chat: PortableChat::default(),
+                documents: Vec::new(),
+                pending_notifications: Vec::new(),
+                llm: None,
+                external_restore_intents: ExternalRestoreIntents::default(),
+            },
+        )
+        .unwrap();
+
+        let container = create_backup(&document, &metadata(), &FIXTURE_KEY).unwrap();
+        let verified = open_backup(&container, &FIXTURE_KEY).unwrap();
+        assert_eq!(verified.header.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(verified.header.payload_version, PORTABLE_EXPORT_VERSION);
+        assert_eq!(verified.import_plan.version, PORTABLE_EXPORT_VERSION);
+        assert_eq!(verified.document, document);
+
+        // The checked-in fixture remains the exact v2 byte contract.
+        let fixture = decode_fixture_hex(include_str!("../tests/fixtures/backup-v1/container.hex"));
+        assert_eq!(
+            open_backup(&fixture, &FIXTURE_KEY)
+                .unwrap()
+                .header
+                .payload_version,
+            2
         );
     }
 
@@ -822,6 +870,30 @@ mod tests {
         assert_eq!(verified.document, fixture_document());
         assert_eq!(verified.header, split(&expected).0);
         assert_eq!(verified.import_plan.total(), 0);
+    }
+
+    #[test]
+    fn fixed_v3_cross_platform_fixture_is_byte_stable_and_readable() {
+        let document = fixture_v3_document();
+        let normalized = normalized_json(&document).unwrap();
+        let actual =
+            create_backup_with_nonce(&normalized, &metadata(), &FIXTURE_KEY, FIXTURE_NONCE)
+                .unwrap();
+        let expected =
+            decode_fixture_hex(include_str!("../tests/fixtures/backup-v1/container-v3.hex"));
+        assert_eq!(
+            actual,
+            expected,
+            "actual v3 fixture hex: {}",
+            encode_hex(&actual)
+        );
+        assert_eq!(
+            encode_hex(&Sha256::digest(&expected)),
+            "dc010cfb93432f01e2903b584161330f603e42a83f817010567a6d4b59935d4e"
+        );
+        let verified = open_backup(&expected, &FIXTURE_KEY).unwrap();
+        assert_eq!(verified.document, document);
+        assert_eq!(verified.header.payload_version, PORTABLE_EXPORT_VERSION);
     }
 
     #[test]

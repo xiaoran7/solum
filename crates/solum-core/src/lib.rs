@@ -12,6 +12,7 @@ pub mod classify;
 pub mod email;
 pub mod error;
 pub mod export;
+pub mod export_v3;
 pub mod extract;
 pub mod fsatomic;
 pub mod genui;

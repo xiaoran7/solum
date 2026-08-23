@@ -173,19 +173,19 @@
 恢复语义；core 测试会把未分类的新 SQLite 表视为失败。只有所有“待补”项都有稳定跨平台 schema、
 尺寸规则和恢复测试后，才可把 TODO 的“完整逻辑载荷”划完。
 
-| 持久化源 | 分类 | v2 状态与恢复语义 |
+| 持久化源 | 分类 | 当前状态与恢复语义 |
 |---|---|---|
 | SQLite `raw_inputs`、`events`、`notifications`、`behavior_log`、`suggestions`、`persona_versions`、`health_samples`、`memory_facts`、`routines`、`soulous_facts`、`widget_defs` / `widget_fields` / `widget_records` | 可移植 | 已在 `_restore` 中以稳定 guid/FK 形状可幂等恢复；可读层只是副本，不作为恢复输入。 |
 | SQLite `meta.rule_table`、`meta.proactivity`、`meta.persona_active` | 可移植 | 已在 `_restore.meta` 中恢复；`persona_active` 以人格版本 guid 翻译，不能复制设备本地行号。 |
-| SQLite `notification_captures`、`notification_filter_proposals` | 可移植，待补 | 通知处理结果属于用户台账；载荷 v3 需增加稳定身份，并把 capture 的 raw input / event 引用改成 guid，不能复制 SQLite id。 |
-| SQLite `notification_action_proposals` | 可移植历史，待补 | 可保存用户看过的处理历史；恢复时所有 `pending` 必须失效为仅供回看，绝不能在新设备复活一个可能已过期的危险操作。 |
-| SQLite `audit_log` | 可移植，待补 | 进入加密备份，但需先定义稳定身份与 append-only 合并；恢复不得 UPDATE/DELETE 既有审计，也不得重复追加同一条。 |
-| WebView `pa.chat-sessions.v1[.<profile>]` | 可移植，待补 | 完整会话与消息进入逻辑载荷；`contextTurns` 是可重建缓存，不作为第二份权威。平台适配器必须在生成快照时提交同一 profile 的一致切片。 |
-| `solum.ui-state.v1[.<profile>].chatDrafts` | 可移植，待补 | 未发送文本是用户内容，按会话稳定 id 迁移；last view、滚动位置等 UI 状态不迁移。 |
-| IndexedDB `pa-local-documents-v1[.<profile>]/documents` | 可移植附件，待补 | manifest 进入逻辑载荷，blob 走独立分块/附件密文；最多 30×20 MiB，不能塞入当前 64 MiB 容器或以内存 base64 冒充完成。每块须绑定账号、backup id、附件 id、序号与摘要。 |
-| `notif-spool/*.json`、`notif-spool/failed/*.json` 与升级遗留 notification inbox | 可移植，待补 | 是尚未被 SQLite 接受的原始通知，不是可丢缓存；生成快照前须冻结/排空，仍失败的条目以稳定内容身份进入待导入区，恢复后继续经过白名单与解析边界。 |
-| LLM 的非秘密 provider/base URL/model 选择 | 可移植 Agent 设置，待补 | 进入逻辑载荷；API key 不得跟随该对象序列化。环境变量覆盖和本机路径不迁移。 |
-| `notification_intelligence.filter_rules` 与批处理间隔 | 可移植设置，待补 | 当前与设备授权混在一个 meta JSON；载荷前必须拆分字段语义，不能因为恢复规则而顺带授予通知读取/写日程权限。 |
+| SQLite `notification_captures`、`notification_filter_proposals` | 可移植 | v3 已生成/验证稳定内容身份，并把 capture 的 raw input / event 引用转为 guid；平台恢复事务尚未落库。 |
+| SQLite `notification_action_proposals` | 可移植历史 | v3 保存源状态并把 `pending` 的恢复状态强制为 `stale`；平台恢复事务尚未落库。 |
+| SQLite `audit_log` | 可移植 | v3 已生成/验证稳定内容身份；后续事务只能按 id append 缺失项，仍不得 UPDATE/DELETE。 |
+| WebView `pa.chat-sessions.v1[.<profile>]` | 可移植，待适配 | v3 schema/上限已落地，`contextTurns` 明确不作权威；Android 适配器仍需提交同一 profile 的一致切片。 |
+| `solum.ui-state.v1[.<profile>].chatDrafts` | 可移植，待适配 | v3 schema/会话引用校验已落地；last view、滚动位置等 UI 状态不迁移。 |
+| IndexedDB `pa-local-documents-v1[.<profile>]/documents` | 可移植附件，待分块 | v3 manifest/摘要/数量/尺寸校验已落地；blob 仍需独立分块密文，不能塞入当前 64 MiB 容器或以内存 base64 冒充完成。 |
+| `notif-spool/*.json`、`notif-spool/failed/*.json` 与升级遗留 notification inbox | 可移植，待适配 | v3 待入库 schema/稳定身份已落地，恢复只进待处理区；Android 仍需冻结/排空并提交 spool 一致切片。 |
+| LLM 的非秘密 provider/base URL/model 选择 | 可移植 Agent 设置，待适配 | v3 类型只允许非秘密字段并拒绝未知 `api_key`；Android 配置适配器尚未接入。 |
+| `notification_intelligence.filter_rules` 与批处理间隔 | 可移植设置 | v3 builder 已从 Store 拆出规则/间隔，并把 allowed/auto-event package 只放恢复意图，避免顺带授予权限。 |
 | `notif_cloud`、通知 app 白名单、auto-event app 白名单、邮箱/Soulous 连接、健康数据源与后台提醒 | 仅恢复意图 | 新设备可提示“曾启用/曾连接”并展示非秘密标识，但默认仍关闭，核对已安装 app 与提供商后由用户重新授权；OS 权限和系统闹钟依据已恢复日程重新注册。 |
 | 邮箱/Soulous 的非秘密账户标识与 provider 配置 | 条件可移植，待提供商审计 | 只有提供商条款允许且新隐私政策明确覆盖时才进入版本化 credential 区；否则只恢复重新连接意图。恢复后必须验证凭据是否过期或撤销。 |
 | `meta.device_id` / HLC / overflow 与 drop 计数、`sync_oplog`、`sync_quarantine`、`sync_bad_blobs`、`sync_push_holds`、`capture_loss_receipts`、overflow marker、Android alert cursor | 永不备份 | 设备身份、迁移态传输队列、游标和故障收据不是用户业务状态；新设备重新建立，不能重放旧同步内部状态。 |
@@ -194,16 +194,59 @@
 | 账号 access/refresh token 与密码、备份主密钥/恢复码/包装密钥、旧同步 key/token、LLM API key、邮箱密码/OAuth token、Soulous token | 永不进入普通逻辑载荷 | 密钥不得被自己加密，账号会话不得克隆。将来若某提供商明确允许凭据迁移，也只能进入独立、版本化、可撤销的 credential 区，不能混入通用 Agent 设置。 |
 | 隐私同意记录、OS 权限、硬件密钥句柄、系统闹钟镜像、本机路径、UI 导航/滚动、guest 选择 | 永不备份 | 都绑定设备、安装或当次法律文本；新设备重新同意、授权、注册或选择。 |
 
-本轮审计因此**不提升 `solum-export` 版本**：在会话适配器、附件协议和上述无 guid 行的恢复身份尚未
-落地前，仅增加字段会制造“看起来导出了、实际上还原不了”的 v3。实现顺序固定为：稳定领域身份与
-schema → 平台适配器一致快照 → 纯验证的恢复计划 → 临时库事务恢复；每一步都不得把待补项写成已完成。
+#### `solum-export` v3 逻辑载荷契约（core 阶段）
+
+v3 保留 v2 的全部可读层与 `_restore`，新增必填 `_portable`；`_restore` 仍只负责已经有 guid 的 SQLite
+领域行，`_portable` 负责平台存储、无 guid 的本地台账、非秘密 Agent 设置和恢复意图。v3 builder 必须
+由平台适配器显式提交当前 profile 的 WebView/IndexedDB/配置快照，core 不得把“适配器没传”猜成
+“用户没有数据”。现有只持有 `Store` 的 `build_export` 继续写 v2；新 builder 才写 v3。
+
+`_portable` 固定为 `{format:"solum-portable", version:1, ...}`，拒绝未知字段；下列数组即使为空也必须
+出现。SQLite 台账时间沿用领域层无时区墙钟 `YYYY-MM-DDTHH:MM:SS`（不能把历史本地时间伪标成 UTC），
+WebView 会话/待入库通知时间使用带 offset 的 RFC 3339；SHA-256 与 v3 内容身份均为 64 个小写 hex
+字符，capture 原有的非安全去重 `content_hash` 仍是 16 个小写 hex（不得把它误当完整性摘要）：
+
+| 字段 | v1 形状与语义 |
+|---|---|
+| `notification_journal.captures` | 通知处理结果；以 `raw_input_guid` / 可选 `event_guid` 关联 `_restore`，不复制 SQLite id。同时保存 `source_state` 与 `restore_state`，源 `queued` 恢复为 `needs_review`，绝不静默重新分诊。 |
+| `notification_journal.filter_proposals` | 过滤提议及状态；稳定 id 不含可变 `state`。 |
+| `notification_journal.action_proposals` | 动作提议历史；以 capture 稳定 id 与可选 `event_guid` 关联（目标已删除或旧行没有 guid 时允许为空）。源 `pending` 的 `restore_state` 固定为 `stale`，换机后不能继续执行旧确认卡。 |
+| `audit_log` | append-only 审计；稳定 id 覆盖整条不可变内容。恢复只能按 id 追加缺失项，禁止 UPDATE/DELETE。 |
+| `chat.sessions` / `chat.drafts` | 最多 40 个 session、每个最多 240 条消息、标题 80 字、消息/草稿 12,000 字、聊天总字符预算 2,400,000；消息 role 仅 `user/assistant`，不保存可重建的 `contextTurns`。 |
+| `documents` | 最多 30 条 manifest；每项含平台中立 id、名称、media type、明文字节数与 SHA-256，单件最多 20 MiB、合计最多 600 MiB。blob 不 base64 塞入主 JSON；分块密文协议落地前，manifest 只能用于计划与完整性核对，不能宣称附件已恢复。 |
+| `pending_notifications` | 尚未入 SQLite 的 spool/failed 原始通知；恢复只回到待人工/本地规则处理区，不直接送 LLM 或执行动作。 |
+| `agent_settings` | LLM 仅保存 base URL、model、temperature、max tokens、timeout；通知仅保存 filter rules 与 batch interval。API key 与通知 app 授权不在此对象。 |
+| `restore_intents` | 保存“此前开启/连接”的非秘密事实：通知上云、capture/auto-event package、邮箱账户摘要、Soulous endpoint、健康来源和后台提醒；目标设备默认仍关闭，重新授权后才应用。 |
+
+无 guid 行的稳定 id 按以下跨语言规则生成：
+
+```text
+id = lowercase_hex(SHA-256(
+  UTF8("solum-export:v3:" || domain) || 0x00 || canonical_identity_json ||
+  0x00 || ASCII(decimal_duplicate_ordinal)
+))
+```
+
+`canonical_identity_json` 采用 backup-v1 相同的递归对象键排序/紧凑 UTF-8 规则；ordinal 从 0 开始，
+只在相同 domain + identity 的行之间按源端稳定顺序递增。capture 的 identity 是
+`raw_input_guid`；filter/action 排除可变状态；audit 覆盖全部不可变字段；pending notification 排除
+队列重试次数。读取端必须重算并拒绝不匹配 id、重复 id、悬空 capture/event/raw-input 引用、超限数组、
+重复 session/document id、非法 role/digest/time/URL。AEAD 认证并不替代这些领域校验：认证只能证明包未被
+服务端篡改，不能证明一个有 bug 的客户端写出了可恢复形状。`raw_input_guid` 必须指向 `_restore`；
+可选 event guid 允许指向已删除的历史目标，不作为恢复动作授权。
+
+`plan_import` 可同时验证 v2/v3，并把 `_portable` 各域计数加入预览；旧 `import_document` 只实现 v2
+Store 合并，对 v3 必须在任何写入前返回“需要平台恢复事务”，禁止只恢复 `_restore` 后报成功。后续
+Android 临时库事务消费同一个已验证计划，并在 SQLite、会话存储、附件与设置全部成功后原子切换；
+在那之前完整逻辑载荷 TODO 仍保持未完成。
 
 #### `solum-backup` protocol v1（F17 加密备份地基，2026-08-23）
 
-本节只定义**平台无关容器和端侧 codec**，不是完整云备份闭环。v1 内层暂时复用
-`solum-export` v2；它已有可恢复的 `_restore`，但仍缺完整对话以及部分平台/账户数据，故不能据此
-声称“全量备份”或“换机恢复”已经完成。密码派生、恢复码、恢复信封、服务端上传 API、Android
-临时库恢复事务和 generation 接管也都在后续阶段。
+本节只定义**平台无关容器和端侧 codec**，不是完整云备份闭环。protocol v1 可认证承载
+`solum-export` v2 或 v3：v2 是现有 Store-only 导出，v3 增加 `_portable` 逻辑载荷与纯恢复计划；固定
+v2 夹具继续逐字节兼容。Android 尚未提交同 profile 的 WebView/IndexedDB 一致快照，也没有附件分块
+密文与临时库原子恢复，因此不能据此声称“全量备份”或“换机恢复”已经完成。密码派生、恢复码、
+恢复信封、服务端上传 API、Android 临时库恢复事务和 generation 接管也都在后续阶段。
 
 **算法与密钥边界**：调用方传入恰好 32 字节的随机主密钥。codec 先把内层 JSON 规范化为紧凑
 UTF-8 字节，再用 RFC 1950 zlib 容器内的 DEFLATE、固定 level 6 压缩；AEAD 明文为
@@ -234,7 +277,7 @@ Rust v1 写入器按下表顺序、无空白序列化 JSON 头；读取器允许
 | `backup_id` | 每包新建的小写、带连字符 UUID |
 | `created_at` | UTC RFC 3339，精确到毫秒，固定形状 `YYYY-MM-DDTHH:MM:SS.sssZ` |
 | `payload_format` | 固定 `solum-export` |
-| `payload_version` | 整数 `2`；必须与解密后文档的 `version` 一致 |
+| `payload_version` | 整数 `2` 或 `3`；必须与解密后文档的 `version` 一致；其他值拒绝，不能降级猜测 |
 | `payload_digest` | 固定 `sha256`；32 字节摘要位于 AEAD 明文开头，不出现在头中 |
 | `compression` | 固定 `zlib-deflate`；写入 level 6，读取接受任何合法 RFC 1950/1951 流 |
 | `encryption` | 固定 `xchacha20-poly1305` |
@@ -275,10 +318,10 @@ nonce 和三个尺寸；任何一个头字段的有效值被改动都会在认�
 ② 校验 framing、头 JSON、版本、算法、字段形状及三个尺寸；③ 以原始头字节构造 AAD 并验证 AEAD
 tag；④ 拆出加密体内的 32 字节摘要并核对压缩流长度；⑤ 受限解压，核对 `plaintext_size` 与
 `SHA-256(规范化 JSON)`；⑥ 解析内层 JSON，交给现有 `plan_import`，并交叉核对内外
-`payload_format/version`。codec 只在全部成功后返回验证过的文档和
-导入计划，本身从不接收或写入 `Store`；后续恢复事务只能消费这个验证结果。仓库固定夹具位于
-`crates/solum-core/tests/fixtures/backup-v1/`，只含明确标注的合成数据、公开测试 key/nonce 和精确容器
-字节，供 Android/iOS/HarmonyOS 实现做逐字节互通测试。
+`payload_format/version`；v3 还要逐项验证 `_portable` 身份、引用与上限。codec 只在全部成功后返回
+验证过的文档和导入计划，本身从不接收或写入 `Store`；后续恢复事务只能消费这个验证结果。仓库固定
+夹具位于 `crates/solum-core/tests/fixtures/backup-v1/`，同时保留 v2 与 v3 的合成 payload、公开测试
+key/nonce 和精确容器字节，供 Android/iOS/HarmonyOS 实现做逐字节互通测试。
 
 #### 历史多设备同步实现（迁移期，只读理解）
 

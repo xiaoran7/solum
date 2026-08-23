@@ -25,6 +25,10 @@ pub const EXPORT_VERSION: u32 = 2;
 
 /// 能被 [`import_document`] 还原的最低格式版本。
 pub const MIN_RESTORABLE_VERSION: u32 = 2;
+/// Newest version this core can fully validate and recovery-plan. v3 requires
+/// a platform transaction and is deliberately not accepted by
+/// [`import_document`], which only knows how to write Store rows.
+pub const MAX_PLANNABLE_VERSION: u32 = crate::export_v3::PORTABLE_EXPORT_VERSION;
 
 /// 导出文档的格式标识。2026-07-20 改名后写出的是 [`FORMAT`]。
 pub const FORMAT: &str = "solum-export";
@@ -286,9 +290,9 @@ fn restore_section(doc: &serde_json::Value) -> Result<&serde_json::Value> {
              该文件仍可人工查阅，但无法自动导入"
         )));
     }
-    if version > EXPORT_VERSION {
+    if version > MAX_PLANNABLE_VERSION {
         return Err(CoreError::Invalid(format!(
-            "导出文件版本 v{version} 比本机（v{EXPORT_VERSION}）新，请先升级再导入"
+            "导出文件版本 v{version} 比本机（v{MAX_PLANNABLE_VERSION}）新，请先升级再导入"
         )));
     }
     doc.get("_restore")
@@ -297,11 +301,16 @@ fn restore_section(doc: &serde_json::Value) -> Result<&serde_json::Value> {
 
 pub fn plan_import(doc: &serde_json::Value) -> Result<ImportPlan> {
     let restore = restore_section(doc)?;
+    let version = doc
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as u32;
+    let mut counts = Store::count_restore_rows(restore);
+    if version == crate::export_v3::PORTABLE_EXPORT_VERSION {
+        counts.extend(crate::export_v3::validate_portable_document(doc)?.counts);
+    }
     Ok(ImportPlan {
-        version: doc
-            .get("version")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0) as u32,
+        version,
         exported_at: doc
             .get("exported_at")
             .and_then(serde_json::Value::as_str)
@@ -312,7 +321,7 @@ pub fn plan_import(doc: &serde_json::Value) -> Result<ImportPlan> {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("import")
             .to_string(),
-        counts: Store::count_restore_rows(restore),
+        counts,
     })
 }
 
@@ -325,6 +334,11 @@ pub fn import_document(
     now: chrono::NaiveDateTime,
 ) -> Result<(ImportPlan, crate::store::MergeCounts)> {
     let plan = plan_import(doc)?;
+    if plan.version == crate::export_v3::PORTABLE_EXPORT_VERSION {
+        return Err(CoreError::Invalid(
+            "solum-export v3 需要平台临时库恢复事务；已在写入 Store 前拒绝部分恢复".into(),
+        ));
+    }
     let restore = restore_section(doc)?;
     let counts = store.import_restore_rows(
         restore,

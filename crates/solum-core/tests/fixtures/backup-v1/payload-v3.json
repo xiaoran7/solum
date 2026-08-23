@@ -1,0 +1,42 @@
+{
+  "_portable": {
+    "agent_settings": {
+      "llm": null,
+      "notification": {
+        "batch_interval_minutes": 15,
+        "filter_rules": []
+      }
+    },
+    "audit_log": [],
+    "chat": {
+      "drafts": [],
+      "sessions": []
+    },
+    "documents": [],
+    "format": "solum-portable",
+    "notification_journal": {
+      "action_proposals": [],
+      "captures": [],
+      "filter_proposals": []
+    },
+    "pending_notifications": [],
+    "restore_intents": {
+      "auto_event_packages": [],
+      "background_reminders": false,
+      "email_accounts": [],
+      "health_sources": [],
+      "notification_cloud_was_enabled": false,
+      "notification_packages": [],
+      "soulous": null
+    },
+    "version": 1
+  },
+  "_restore": {
+    "raw_inputs": []
+  },
+  "device_id": "fixture-device",
+  "exported_at": "2026-01-02T03:04:05",
+  "format": "solum-export",
+  "schema_version": 15,
+  "version": 3
+}

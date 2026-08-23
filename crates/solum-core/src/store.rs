@@ -1218,6 +1218,32 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Stable raw-input identity for the v3 logical backup journal. This is a
+    /// read-only relation translation; SQLite row ids never enter the payload.
+    pub(crate) fn raw_input_guid_for_backup(&self, id: i64) -> Result<String> {
+        self.conn
+            .query_row(
+                "SELECT guid FROM raw_inputs WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::NotFound(format!("raw_input#{id}")))
+    }
+
+    /// Optional event identity for notification history. Historical captures
+    /// remain exportable after their event has been deleted.
+    pub(crate) fn event_guid_for_backup(&self, id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT guid FROM events WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     // ---- events -----------------------------------------------------------
 
     pub fn insert_event(&self, ev: &Event, raw_input_id: Option<i64>) -> Result<i64> {

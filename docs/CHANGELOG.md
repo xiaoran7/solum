@@ -10,6 +10,12 @@
 > Solum Android：0.2.8（1018 文案/时间解析/发布输入修复）· 0.2.7（1017 图标校正）· 0.2.6（1016 启动图标）· 0.2.5（1015 登录闪退修复）· 0.2.4（1014 后端复审收口）· 0.2.3（1013 默认模型/配额）· 0.2.2（1012 账户外壳/UI 重构）· 0.2.1（1011 中心化账号入口）· 0.2.0（1010 登录即恢复密钥）· 0.1.9（1009 UUID 隔离）· 0.1.8（1008 同步按账号隔离）· 0.1.7（1007 福利监控）· 0.1.5（1005 安全默认值收口）· 0.1.4（1004 排版/缓存）· 0.1.3（1003 导航重构）· 0.1.2（1002 UI 重构）· 0.1.1（1001 隐私门文案）· 0.1.0（1000 首个 release）
 > solum-cloud：0.6.4（密码语义/限流收口）· 0.6.3（刷新令牌权限）· 0.6.2（迁移与清理修复）· 0.6.1（AI 代理加固）· 0.6.0（模型目录/额度）· 0.5.1（中心化入口）· 0.5.0（恢复信封）· 0.4.0（PostgreSQL 中心库）
 
+- **F17 `solum-export` v3 core 逻辑载荷（2026-08-23，未接 Android 适配器/附件 blob/恢复事务）**：新增严格、平台中立的 `_portable` schema 与 builder，覆盖 notification captures/filter/action proposals、append-only audit、完整 chat sessions/drafts、document manifest、尚未入库的 notification spool、非秘密 LLM/通知设置以及邮箱/Soulous/健康/后台能力恢复意图。无 guid 台账使用跨语言 canonical JSON + SHA-256 + duplicate ordinal 生成稳定身份，引用 SQLite 领域行时只使用 guid，不输出关系型 row id。
+  - 恢复安全语义固化：源 `queued` capture 的 `restore_state=needs_review`，源 `pending` action proposal 的 `restore_state=stale`；通知 app 白名单、auto-event、通知上云及外部连接只作为恢复意图，目标设备不能自动获得授权。所有 v3 子对象拒绝未知字段，LLM schema 根本没有 API key/token/password 字段；会话、通知、文档、审计分别有数量/字符/字节上限与重复/悬空引用校验。
+  - `plan_import` 同时验证 v2/v3 并预览 portable 域计数；旧 `import_document` 对 v3 在写 Store 前明确拒绝，避免只恢复 SQLite 而静默丢会话/附件。`solum-backup` protocol v1 的 header 从内层读取 payload version，认证支持 v2/v3；原 647 字节 v2 夹具不变，新增 880 字节 v3 固定夹具（SHA-256 `dc010cfb93432f01e2903b584161330f603e42a83f817010567a6d4b59935d4e`）。
+  - 边界仍未越过：Android 尚未冻结/提交 localStorage、IndexedDB、spool 与非秘密配置的一致切片；document blob 分块 AEAD、临时库原子恢复、服务端 API、恢复信封与跨平台实机互通仍待后续，顶层备份 TODO 保持未完成。
+  - 验证：`cargo test --workspace` 377 项（0 failed、0 ignored），Clippy `--workspace --all-targets -- -D warnings`、fmt check 与 `git diff --check` 全绿。
+
 - **F17 备份数据覆盖审计（2026-08-23，未提升载荷版本）**：逐项分类 24 张 SQLite 表，以及 profile 分区的完整会话/草稿、IndexedDB 资料、尚未入库的通知 spool、LLM/邮箱/Soulous/账号/同步/隐私配置和原生权限；明确哪些已由 `solum-export` v2 幂等恢复，哪些属于待补可移植数据、仅恢复意图、按字段拆分或永不备份。新增 core 覆盖注册表及两项回归：运行时对照 `sqlite_schema`，保证新增表未选恢复语义就失败；同时保证 v2 `_restore` 表集合与审计的已恢复集合一致。
   - 审计确认完整会话需平台适配器一致快照，通知台账与 audit 需稳定身份/append-only 恢复，最大 30×20 MiB 的本地资料必须走 manifest + 分块附件密文，不能塞进 64 MiB 主容器；通知/健康/邮箱授权只能恢复意图后重新授权，账号会话、密码、主密钥、API/OAuth token、设备身份和旧同步内部状态不得进入普通逻辑载荷。
   - `solum-export` 仍保持 v2，顶层备份 TODO 仍未完成；本批次没有服务端 API、Android 恢复事务、恢复信封或旧同步退役行为。
