@@ -227,6 +227,15 @@ impl SyncConfig {
         }
         Ok(out)
     }
+
+    /// Return the existing end-to-end master key for local backup codecs.
+    ///
+    /// The caller receives bytes only; this method never logs or persists an
+    /// additional copy. Password derivation and recovery envelopes remain
+    /// outside the backup uploader.
+    pub fn e2ee_master_key(&self) -> Result<[u8; 32]> {
+        self.key_bytes()
+    }
 }
 
 /// Derives `(relay_token_hex, e2e_key_hex)` from a username+password pair

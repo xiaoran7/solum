@@ -4989,6 +4989,61 @@ async function exportPortableDataV3(now) {
   return invoke("export_portable_data", { snapshot, now: now ?? null });
 }
 
+// Internal F17 seam: freeze the same v3 snapshot, then stream each manifest-
+// bound Blob to Rust in bounded chunks. Rust performs all compression,
+// encryption, encrypted-only staging, generation checks, retries, and commit.
+// No visible control or background schedule calls this until product consent
+// and recovery UX are ready.
+const BACKUP_UPLOAD_IPC_CHUNK_BYTES = 512 * 1024;
+function encodeCanonicalBase64(bytes) {
+  let binary = "";
+  const stride = 32 * 1024;
+  for (let offset = 0; offset < bytes.length; offset += stride) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + stride, bytes.length)));
+  }
+  return btoa(binary);
+}
+async function createAndUploadPortableBackup() {
+  const profileId = localProfileId;
+  const snapshot = await buildPortableWebViewSnapshot();
+  if (profileId !== localProfileId) throw new Error("账号在备份准备期间发生变化");
+  const begin = await invoke("backup_upload_begin", { snapshot });
+  const sessionId = String(begin.session_id || "");
+  try {
+    const rows = await listDocuments();
+    const byId = new Map(rows.map((row) => [String(row.id || ""), row]));
+    if (byId.size !== rows.length || rows.length !== (begin.attachments || []).length) {
+      throw new Error("本地资料集合在备份期间发生变化");
+    }
+    for (const expected of begin.attachments || []) {
+      if (profileId !== localProfileId) throw new Error("账号在备份期间发生变化");
+      const row = byId.get(String(expected.id || ""));
+      if (!(row?.blob instanceof Blob) || row.blob.size !== expected.plaintext_size) {
+        throw new Error("本地资料与冻结清单不一致");
+      }
+      for (let offset = 0; offset < row.blob.size; offset += BACKUP_UPLOAD_IPC_CHUNK_BYTES) {
+        const end = Math.min(offset + BACKUP_UPLOAD_IPC_CHUNK_BYTES, row.blob.size);
+        const chunk = new Uint8Array(await row.blob.slice(offset, end).arrayBuffer());
+        await invoke("backup_upload_attachment_chunk", {
+          sessionId,
+          attachmentId: expected.id,
+          offset,
+          dataBase64: encodeCanonicalBase64(chunk),
+        });
+      }
+      await invoke("backup_upload_attachment_finish", {
+        sessionId,
+        attachmentId: expected.id,
+      });
+    }
+    if (profileId !== localProfileId) throw new Error("账号在备份提交前发生变化");
+    return await invoke("backup_upload_commit", { sessionId });
+  } catch (error) {
+    if (sessionId) await invoke("backup_upload_cancel", { sessionId }).catch(() => {});
+    throw error;
+  }
+}
+
 function decodeBase64Bytes(value) {
   const binary = atob(String(value || ""));
   const bytes = new Uint8Array(binary.length);

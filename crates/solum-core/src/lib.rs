@@ -7,6 +7,7 @@
 pub mod account;
 pub mod attachment;
 pub mod backup;
+pub mod backup_upload;
 pub mod brief;
 pub mod capture;
 pub mod classify;

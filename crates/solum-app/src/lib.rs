@@ -28,7 +28,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
-use chrono::{Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike};
+use chrono::{Duration, Local, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use solum_alarm::AlarmExt;
 use solum_health_connect::HealthConnectExt;
@@ -64,6 +64,10 @@ struct AppState {
     profile_root: std::path::PathBuf,
     active_generation: Option<String>,
     webview_restore: Mutex<Option<WebViewRestoreSession>>,
+    /// One frozen encrypted upload attempt. It owns only ciphertext staging
+    /// plus at most the attachment chunk currently being sealed; account or
+    /// profile changes make every command discard it.
+    backup_upload: Mutex<Option<BackupUploadAppSession>>,
     /// Masked provider summary when the cloud reasoner is configured.
     /// Mutable: the settings UI can save/apply a new endpoint at runtime.
     llm_summary: Mutex<Option<String>>,
@@ -112,6 +116,12 @@ struct WebViewRestoreSession {
     reader: solum_core::portable_generation::PortableGenerationReader,
     ready: bool,
     publication_preview: Option<RestorePublicationBinding>,
+}
+
+struct BackupUploadAppSession {
+    profile_id: String,
+    account: solum_core::account::AccountSession,
+    upload: solum_core::backup_upload::BackupUploadSession,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1019,6 +1029,10 @@ async fn account_auth(
     register: bool,
 ) -> CmdResult<String> {
     let _transition = AccountTransitionGuard::acquire(&state.account_transition)?;
+    *state
+        .backup_upload
+        .lock()
+        .map_err(|_| "备份上传会话状态异常".to_string())? = None;
     let session = tauri::async_runtime::spawn_blocking(move || {
         let session = if register {
             solum_core::account::register(&server_url, &username, &password, &model)
@@ -1113,6 +1127,10 @@ async fn account_register(
 #[tauri::command]
 async fn account_logout(state: State<'_, AppState>, app: tauri::AppHandle) -> CmdResult<String> {
     let _transition = AccountTransitionGuard::acquire(&state.account_transition)?;
+    *state
+        .backup_upload
+        .lock()
+        .map_err(|_| "备份上传会话状态异常".to_string())? = None;
     // Keep the selected profile stable until no sync round can still hold its
     // database, then atomically take the latest rotated token and clear local
     // identity. Remote revocation is bounded and happens only after local
@@ -2183,6 +2201,16 @@ fn export_portable_data(
     now: Option<String>,
 ) -> CmdResult<String> {
     let now = parse_now(now)?;
+    let json = collect_portable_json(&state, &app, snapshot, now)?;
+    write_export_json(&state.db_path, &json, "solum-export-v3")
+}
+
+fn collect_portable_json(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    snapshot: portable_snapshot::WebViewPortableSnapshot,
+    now: NaiveDateTime,
+) -> CmdResult<String> {
     let expected_profile = snapshot.profile_id.clone();
     portable_snapshot::validate_profile(&expected_profile, &active_local_profile_id())?;
 
@@ -2214,7 +2242,235 @@ fn export_portable_data(
         orch.export_portable_json(now, platform).map_err(core_err)?
     };
     portable_snapshot::validate_profile(&expected_profile, &active_local_profile_id())?;
-    write_export_json(&state.db_path, &json, "solum-export-v3")
+    Ok(json)
+}
+
+fn current_backup_account(
+    expected_profile: &str,
+    expected: &solum_core::account::AccountSession,
+) -> CmdResult<solum_core::account::AccountSession> {
+    let current = solum_core::account::AccountSession::load_full()
+        .ok_or_else(|| "备份已取消：当前账号会话不可用".to_string())?;
+    if active_local_profile_id() != expected_profile
+        || current.stable_user_id() != Some(expected_profile)
+        || current.user_id != expected.user_id
+        || current.server_url != expected.server_url
+    {
+        return Err("备份已取消：账号或本地 profile 已切换".into());
+    }
+    Ok(current)
+}
+
+fn backup_master_key(account: &solum_core::account::AccountSession) -> CmdResult<[u8; 32]> {
+    let config = solum_core::sync::SyncConfig::load()
+        .ok_or_else(|| "尚未配置端到端主密钥，无法创建加密备份".to_string())?;
+    let bound = config
+        .account
+        .as_ref()
+        .ok_or_else(|| "旧式同步密钥未绑定不可变账号，无法用于云备份".to_string())?;
+    if bound.user_id != account.user_id
+        || bound.server_url != account.server_url
+        || config.url.trim_end_matches('/') != account.server_url
+    {
+        return Err("端到端密钥与当前账号或服务端不匹配".into());
+    }
+    config.e2ee_master_key().map_err(core_err)
+}
+
+fn take_backup_upload(state: &AppState, session_id: &str) -> CmdResult<BackupUploadAppSession> {
+    let mut guard = state
+        .backup_upload
+        .lock()
+        .map_err(|_| "备份上传会话状态异常".to_string())?;
+    let matches = guard.as_ref().is_some_and(|session| {
+        session.upload.session_id() == session_id
+            && current_backup_account(&session.profile_id, &session.account).is_ok()
+    });
+    if !matches {
+        return Err("备份上传会话不存在、已取消或已失效".into());
+    }
+    guard
+        .take()
+        .ok_or_else(|| "备份上传会话不存在、已取消或已失效".into())
+}
+
+fn restore_failed_backup_upload(state: &AppState, session: BackupUploadAppSession) {
+    if current_backup_account(&session.profile_id, &session.account).is_err() {
+        return;
+    }
+    if let Ok(mut guard) = state.backup_upload.lock() {
+        if guard.is_none() {
+            *guard = Some(session);
+        }
+    }
+}
+
+/// Internal F17 seam. No visible control or scheduler invokes this yet.
+#[tauri::command]
+async fn backup_upload_begin(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    snapshot: portable_snapshot::WebViewPortableSnapshot,
+) -> CmdResult<solum_core::backup_upload::BackupUploadBegin> {
+    if state.account_transition.load(Ordering::Acquire) {
+        return Err("账号正在切换，已取消备份".into());
+    }
+    let account = solum_core::account::AccountSession::load_full()
+        .ok_or_else(|| "登录后才能创建加密云备份".to_string())?;
+    let profile_id = account
+        .stable_user_id()
+        .ok_or_else(|| "当前账号缺少不可变用户标识".to_string())?
+        .to_string();
+    portable_snapshot::validate_profile(&snapshot.profile_id, &profile_id)?;
+    let master_key = backup_master_key(&account)?;
+    let json = collect_portable_json(&state, &app, snapshot, Local::now().naive_local())?;
+    // A fresh begin explicitly supersedes any older attempt before core clears
+    // encrypted crash residue. If preparation fails, callers must begin again;
+    // an old plan whose files were removed is never left looking resumable.
+    *state
+        .backup_upload
+        .lock()
+        .map_err(|_| "备份上传会话状态异常".to_string())? = None;
+    let profile_root = state.profile_root.clone();
+    let created_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    let mut cloud_account = account.clone();
+    let worker_profile_id = profile_id.clone();
+    let (cloud_account, upload) = tauri::async_runtime::spawn_blocking(move || {
+        let transport = solum_core::backup_upload::HttpBackupCloudTransport::new();
+        let generation = solum_core::backup_upload::load_or_initialize_device_generation(
+            &profile_root,
+            &worker_profile_id,
+            &transport,
+            &mut cloud_account,
+        )
+        .map_err(|error| error.to_string())?;
+        let upload = solum_core::backup_upload::BackupUploadSession::begin(
+            &profile_root,
+            json.as_bytes(),
+            &worker_profile_id,
+            generation,
+            &created_at,
+            master_key,
+        )
+        .map_err(|error| error.to_string())?;
+        Ok::<_, String>((cloud_account, upload))
+    })
+    .await
+    .map_err(|_| "备份准备任务异常终止".to_string())??;
+    current_backup_account(&profile_id, &cloud_account)?;
+    let begin = upload.begin_info();
+    *state
+        .backup_upload
+        .lock()
+        .map_err(|_| "备份上传会话状态异常".to_string())? = Some(BackupUploadAppSession {
+        profile_id,
+        account: cloud_account,
+        upload,
+    });
+    Ok(begin)
+}
+
+#[tauri::command]
+fn backup_upload_attachment_chunk(
+    state: State<AppState>,
+    session_id: String,
+    attachment_id: String,
+    offset: u64,
+    data_base64: String,
+) -> CmdResult<()> {
+    use base64::Engine as _;
+
+    const MAX_ENCODED_CHARS: usize = solum_core::backup_upload::MAX_IPC_CHUNK_BYTES.div_ceil(3) * 4;
+    if data_base64.len() > MAX_ENCODED_CHARS {
+        return Err("备份附件分块超过 IPC 上限".into());
+    }
+    let mut bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.as_bytes())
+        .map_err(|_| "备份附件分块编码无效".to_string())?;
+    if base64::engine::general_purpose::STANDARD.encode(&bytes) != data_base64 {
+        return Err("备份附件分块编码不是规范 base64".into());
+    }
+    let mut guard = state
+        .backup_upload
+        .lock()
+        .map_err(|_| "备份上传会话状态异常".to_string())?;
+    let session = guard
+        .as_mut()
+        .filter(|session| {
+            session.upload.session_id() == session_id
+                && current_backup_account(&session.profile_id, &session.account).is_ok()
+        })
+        .ok_or_else(|| "备份上传会话不存在、已取消或已失效".to_string())?;
+    let result = session
+        .upload
+        .append_attachment_chunk(&attachment_id, offset, &bytes)
+        .map_err(|error| error.to_string());
+    bytes.fill(0);
+    result
+}
+
+#[tauri::command]
+async fn backup_upload_attachment_finish(
+    state: State<'_, AppState>,
+    session_id: String,
+    attachment_id: String,
+) -> CmdResult<()> {
+    let mut session = take_backup_upload(&state, &session_id)?;
+    let (returned, result) = tauri::async_runtime::spawn_blocking(move || {
+        let result = session
+            .upload
+            .finish_attachment(&attachment_id)
+            .map_err(|error| error.to_string());
+        (session, result)
+    })
+    .await
+    .map_err(|_| "备份附件加密任务异常终止".to_string())?;
+    if let Err(error) = result {
+        restore_failed_backup_upload(&state, returned);
+        return Err(error);
+    }
+    restore_failed_backup_upload(&state, returned);
+    Ok(())
+}
+
+#[tauri::command]
+async fn backup_upload_commit(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> CmdResult<solum_core::backup_upload::BackupUploadOutcome> {
+    let mut session = take_backup_upload(&state, &session_id)?;
+    let (returned, result) = tauri::async_runtime::spawn_blocking(move || {
+        let transport = solum_core::backup_upload::HttpBackupCloudTransport::new();
+        let result = session
+            .upload
+            .upload(&transport, &mut session.account)
+            .map_err(|error| error.to_string());
+        (session, result)
+    })
+    .await
+    .map_err(|_| "备份上传任务异常终止".to_string())?;
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            restore_failed_backup_upload(&state, returned);
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+fn backup_upload_cancel(state: State<AppState>, session_id: String) -> CmdResult<()> {
+    let mut guard = state
+        .backup_upload
+        .lock()
+        .map_err(|_| "备份上传会话状态异常".to_string())?;
+    if guard
+        .as_ref()
+        .is_some_and(|session| session.upload.session_id() == session_id)
+    {
+        *guard = None;
+    }
+    Ok(())
 }
 
 fn write_export_json(db_path: &str, json: &str, prefix: &str) -> CmdResult<String> {
@@ -4423,6 +4679,7 @@ pub fn run() {
                 profile_root,
                 active_generation,
                 webview_restore: Mutex::new(None),
+                backup_upload: Mutex::new(None),
                 llm_summary: Mutex::new(llm_summary),
                 // First poll looks back 6h so a freshly-granted permission
                 // doesn't have to wait for new data to show anything.
@@ -4584,6 +4841,11 @@ pub fn run() {
             fact_update,
             export_data,
             export_portable_data,
+            backup_upload_begin,
+            backup_upload_attachment_chunk,
+            backup_upload_attachment_finish,
+            backup_upload_commit,
+            backup_upload_cancel,
             restore_webview_begin,
             restore_webview_document_chunk,
             restore_webview_finish,
@@ -5181,5 +5443,28 @@ mod tests {
         assert!(html.contains("restore_publish_preview"));
         assert!(html.contains("restore_publish_confirm"));
         assert!(html.contains("const webview = await snapshotLiveWebViewSummary();"));
+    }
+
+    #[test]
+    fn frontend_backup_seam_streams_bounded_chunks_and_commits_last() {
+        let html = include_str!("../dist/index.html");
+        assert!(html.contains("const BACKUP_UPLOAD_IPC_CHUNK_BYTES = 512 * 1024"));
+        assert!(html.contains("async function createAndUploadPortableBackup()"));
+        assert!(html.contains("dataBase64: encodeCanonicalBase64(chunk)"));
+        assert!(html.contains("row.blob.size !== expected.plaintext_size"));
+        let begin = html.find("backup_upload_begin").unwrap();
+        let chunk = html.find("backup_upload_attachment_chunk").unwrap();
+        let finish = html.find("backup_upload_attachment_finish").unwrap();
+        let commit = html.find("backup_upload_commit").unwrap();
+        assert!(begin < chunk && chunk < finish && finish < commit);
+        assert!(html[commit..].contains("backup_upload_cancel"));
+    }
+
+    #[test]
+    fn frontend_backup_seam_has_no_visible_or_scheduled_binding() {
+        let html = include_str!("../dist/index.html");
+        assert_eq!(html.matches("createAndUploadPortableBackup()").count(), 1);
+        assert!(!html.contains("onclick=\"createAndUploadPortableBackup"));
+        assert!(!html.contains("setInterval(createAndUploadPortableBackup"));
     }
 }

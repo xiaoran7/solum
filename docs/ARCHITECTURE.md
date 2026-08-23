@@ -678,6 +678,41 @@ main、由端侧 backup codec 验证认证标签/AAD/export plan，再按已认�
 本节交付的是唯一中心服务的不可读密文存储协议与 PostgreSQL 隔离地基，不包含 Android 上传/下载 UI、
 恢复码/恢复信封、对象存储、生产灾备演练、跨平台实机互通或旧 `/v1/push|pull` 的安全退役。
 
+#### Android encrypted backup uploader v1（2026-08-23，内部 seam）
+
+Android 上传器复用账号恢复信封已经保护的 32 字节端侧主密钥，不另造或上传备份密钥。设备在账号
+profile 根保存严格 `solum-backup-device.json`：
+`{"format":"solum-backup-device","version":1,"user_id":"lowercase UUID","device_generation":1}`。
+它是设备接管资格而非用户数据，不进入 portable generation 或云备份。文件缺失时只有服务器
+`active_generation == 1` 才允许原子建立为 1；服务器已大于 1 时必须等待未来换机 UI 做显式 takeover，
+绝不能由旧安装、重装残留或丢状态的设备自动追平。每次备份先读取服务器 generation 并与本地文件精确
+相等，不一致在快照/上传前失败。未来接管流程只有在用户确认替换后才能调用 generation compare-and-
+increment，并把新值 durable 写入新设备；本节不提供该 UI。
+
+一次上传 session 固定绑定当前账号 UUID、profile、device generation、随机 backup UUID、UTC 毫秒创建时间、
+当前 access/refresh 会话和主密钥；任一期间切号、退出或 profile 改变都取消 session。WebView 先强制保存
+会话/草稿，并在一个 IndexedDB readonly transaction 取得资料 manifest；Rust 随后在 Orchestrator 锁内合并
+SQLite、通知 spool 与非秘密配置，生成 v3 payload，再立即创建 `solum-backup` main 密文。main 与每件附件
+各使用随机、与业务 attachment id 无关的 server object UUID。
+
+资料 blob 不进入主 JSON，也不写明文临时文件。WebView 只按 manifest 顺序把同一 Blob 以最多 512 KiB
+base64 IPC 块传给 Rust；Rust 要求 attachment id、offset、累计尺寸和最终 SHA-256 与已冻结 manifest 精确
+相等，单件最多 20 MiB。单件完整后立即用 `solum-attachment` v1 和生产随机 nonce 加密，主动清零明文
+buffer，只把密文原子写入 profile 私有 `backup-upload-staging/<random-session>/`。该目录不含资料名、media
+type、账号或 attachment id，文件名只使用随机 object UUID；正常成功/取消时删除，进程崩溃残留仍只有
+不可读密文，下一次 begin 只清理该固定 staging 根下严格随机命名的孤儿。
+
+全部 attachment 封装完成后才得到稳定 plan；上传顺序固定为 create plan → main → manifest 顺序附件 →
+commit。每个请求绑定同一账号 server origin，只带 access token；401 最多刷新一次并先 durable 保存轮换
+会话，传输失败最多重试一次。plan、对象 PUT 和 commit 都依赖服务端幂等语义，重试不得重加密或更换
+backup/object id；因此丢响应不会制造两个版本。客户端在 PUT 前再次核对 staging 密文的字节数/SHA-256，
+commit 响应必须回显同 backup id、generation 与 `status=complete` 才可记为成功。错误、状态与诊断只显示
+阶段和稳定分类，不记录 access/refresh token、主密钥、明文、资料 id/名称、完整摘要或服务器响应 body。
+
+本节只提供未来 Android 设置页/后台调度可调用的 begin → attachment chunks → commit 内部 seam；不自动
+定时上传，不新增可见按钮，也不把网络失败接进提醒/ingest。下载、历史选择、恢复发布 UI、恢复码、后台
+充电/Wi-Fi 策略、对象存储与真机大包验收仍属后续，旧同步继续保持迁移态。
+
 #### 历史多设备同步实现（迁移期，只读理解）
 
 - 定位：同步数据面只做**加密数据中转**，不解密、不推理、不保存同步明文；服务端数据库泄露不能直接解开同步正文。这不等于统一中心看不到账号元数据、结构化告警或正在代理的 AI 请求，三者按各自边界单独约束。
