@@ -30,6 +30,7 @@ pub mod persona;
 pub mod persona_import;
 pub mod privacy;
 pub mod proactivity;
+pub mod profile_generation;
 pub mod recall;
 pub mod restore_v3;
 pub mod review;

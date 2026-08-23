@@ -340,6 +340,37 @@ impl Store {
         Ok(store)
     }
 
+    /// Fold every committed WAL frame into the main database and leave the
+    /// connection in single-file journal mode for profile-generation sealing.
+    /// The caller must own the temporary Store exclusively and drop it before
+    /// asking the generation publisher to inventory the directory.
+    pub fn checkpoint_for_profile_generation(&self) -> Result<()> {
+        if !self.conn.is_autocommit() {
+            return Err(CoreError::Invalid(
+                "cannot seal a profile generation during a Store transaction".into(),
+            ));
+        }
+        let busy: i64 = self
+            .conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+        // SQLite returns one row with busy/log/checkpointed integers; only a
+        // zero busy flag is safe to publish.
+        if busy != 0 {
+            return Err(CoreError::Storage(
+                "temporary Store WAL checkpoint is busy".into(),
+            ));
+        }
+        let mode: String = self
+            .conn
+            .query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))?;
+        if !mode.eq_ignore_ascii_case("delete") {
+            return Err(CoreError::Storage(
+                "temporary Store could not enter single-file journal mode".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Run `f` so that everything it writes commits together or not at all.
     ///
     /// Exists because "delete the event, then delete its reminders" and

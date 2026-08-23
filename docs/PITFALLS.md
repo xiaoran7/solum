@@ -14,13 +14,19 @@
 - **Windows/PowerShell/工具链**：08-12 PowerShell 5.1 UTF-8 与 JSON 编码 · 07-21 演示视频三坑 · 07-18 PowerShell round-trip 乱码 · 07-06 link.exe/cl.exe 不在 PATH
 - **时间解析/实体抽取（07-06 系列）**：时钟纳秒穿透 UI / 纯日期漏判 / 中文地点人名贪婪 / 规则抢答压制 LLM 兜底 / datetime-local 连续键入串段
 
+## 2026-08-23 Windows 只读文件句柄调用 `sync_all` 会返回拒绝访问
+
+- **现象**：profile generation seal 能打开并哈希 SQLite/平台文件，但四个发布测试同时在 seal 阶段报 `os error 5`；最初看起来像 Windows 再次锁住目录、导致 staging rename 失败，实际尚未走到 rename。
+- **根因**：`std::fs::File::open` 只申请读权限；Unix 允许对此句柄 `fsync`，Windows 的 `FlushFileBuffers` 要求可写句柄，因此 `sync_all` 返回 Access Denied。哈希需要读，durable seal 又需要 flush，不能假设同一个只读打开在三端语义一致。
+- **解决/避免**：generation staging artifact 由本进程拥有，seal 时用 `OpenOptions::read(true).write(true)` 打开，先 `sync_all` 再哈希；错误定位按实际失败行拆分 seal / rename / pointer 三段，不能看到 `Access Denied` 就沿用旧的“资源管理器锁目录”结论。
+
 ## 2026-08-23 Android listener 按 profile 读白名单，却把 spool 写在 app-data 根目录
 
 - **现象**：F17 主载荷适配按“数据库父目录就是当前 profile”读取 `notif-spool/` 时，代码审计发现登录账号的 SQLite 位于 `profiles/<user_uuid>/solum.sqlite`，Rust ticker 也从该目录排空；但 Kotlin listener 仍固定写 `dataDir/notif-spool` 与 `dataDir/notif-overflow`。更隐蔽的是白名单已经通过 `activeProfileFile("notif-policy.json")` 正确读取 profile 目录，所以静态看起来像“账号隔离已完成”，实际正文进入了无人读取的根目录。
 - **根因**：08-12 账号分区只改了 policy/config/SQLite 路径，没有把原生 listener 的两个写入目录一起收口；跨语言路径契约靠双方各自拼字符串，没有测试钉住。若简单在写入前后分别读取账号，又会留下切号竞态：按账号 A 的白名单读取正文，最终可能写进账号 B。
-- **解决**：listener 每次 `onNotificationPosted` 先只解析一次 `activeProfileDir()`，同一个 `File` 同时用于 policy、spool 和 overflow marker；Rust 增加源码契约测试，明确禁止 `File(dataDir, SPOOL_DIR/OVERFLOW_DIR)` 回归。F17 适配器继续只读取 SQLite 同目录，因此 ticker 与快照看到完全相同的 profile 切片。
+- **解决**：listener 每次 `onNotificationPosted` 先解析一次账号 profile 根目录，取得根目录固定 `active-generation.lock` 后再严格解析 generation 指针；同一个锁和 generation 目录覆盖 policy、spool 与 overflow marker，Rust Android 侧用会与 Kotlin POSIX 锁互斥的 OFD 锁。源码契约测试明确禁止 `File(dataDir, SPOOL_DIR/OVERFLOW_DIR)` 回归；ticker、快照和原生 listener 因而读取同一个已提交 profile 切片。
 - **历史根目录边界**：旧版本已写入根目录、且发生过切号的 pending 文件没有账号 provenance，不能为了“捞数据”静默塞给当前账号，否则会制造跨账号泄露；本批次不删除、不迁移这些历史文件。guest 的数据库父目录本来就是 app-data 根，仍会读取自己的根目录 spool。后续若要处理登录态遗留，只能提供本机明确预览/归属选择，不能自动猜。
-- **避免**：任何账号分区审计必须从“读取策略 → 写入队列 → 消费队列 → 备份队列”整条链逐路径对齐，并让原生端在一次事件内冻结 profile；只验证 policy 文件路径或 SQLite 路径都不够。
+- **避免**：任何账号分区审计必须从“选择 active generation → 读取策略 → 写入队列 → 消费队列 → 备份队列”整条链逐路径对齐，并让原生端在一次事件内持有同一把跨进程锁；只验证 policy 文件路径、SQLite 路径或原子 rename 都不够。
 
 ## 2026-08-22 `solumsync` 灰云误判：只有权威 DNS、CF 边缘证据和业务 200 同时成立才算恢复
 

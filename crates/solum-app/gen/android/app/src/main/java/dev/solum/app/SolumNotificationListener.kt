@@ -140,12 +140,35 @@ class SolumNotificationListener : NotificationListenerService() {
         if (sbn.packageName == packageName) return
         // Ongoing/foreground-service noise (music players, downloads) is not "a message".
         if (sbn.isOngoing) return
+        val profileRoot = activeProfileRoot()
+        // FileChannel's POSIX lock conflicts with Rust's OFD lock even when
+        // both runtimes share one Android process. Hold it across pointer
+        // resolution, policy read and spool publication: publication can then
+        // never switch generations under an in-flight notification write.
+        synchronized(spoolLock) {
+            try {
+                if (!profileRoot.isDirectory) profileRoot.mkdirs()
+                java.io.RandomAccessFile(File(profileRoot, "active-generation.lock"), "rw").use { file ->
+                    file.channel.use { channel ->
+                        channel.lock().use {
+                            handleNotificationPostedLocked(sbn, profileRoot)
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // Fail closed: an unbound notification must not fall back to a
+                // legacy or different generation just to preserve best effort.
+            }
+        }
+    }
+
+    private fun handleNotificationPostedLocked(sbn: StatusBarNotification, profileRoot: File) {
         // Default empty/invalid policy means no capture. This is intentionally
         // checked before reading notification extras or building an inbox row.
         // Freeze one profile for the entire intake. Reading the policy from
         // account A and publishing the payload under account B during a switch
         // would be a cross-account privacy violation.
-        val profileDir = activeProfileDir()
+        val profileDir = activeGenerationDir(profileRoot) ?: return
         if (!isAllowed(profileDir, sbn.packageName)) return
 
         val extras = sbn.notification.extras
@@ -242,7 +265,7 @@ class SolumNotificationListener : NotificationListenerService() {
         }
     }
 
-    private fun activeProfileDir(): File {
+    private fun activeProfileRoot(): File {
         val account = File(dataDir, "solum-account.json")
         val userId = runCatching {
             JSONObject(account.readText()).optString("user_id").trim().lowercase()
@@ -252,5 +275,52 @@ class SolumNotificationListener : NotificationListenerService() {
         } else {
             dataDir
         }
+    }
+
+    /**
+     * Mirror Rust's generation pointer exactly. Missing means the historical
+     * profile root; malformed or incomplete means fail closed. Falling back to
+     * the root after a pointer exists would read one generation's policy and
+     * write another generation's notification body.
+     */
+    private fun activeGenerationDir(profileRoot: File): File? {
+        val pointer = File(profileRoot, "active-generation.json")
+        val pointerPath = pointer.toPath()
+        if (java.nio.file.Files.notExists(pointerPath, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            return profileRoot
+        }
+        return runCatching {
+            if (!pointer.isFile || java.nio.file.Files.isSymbolicLink(pointerPath) || pointer.length() > 4096) {
+                return@runCatching null
+            }
+            val value = JSONObject(pointer.readText())
+            val keys = value.keys().asSequence().toSet()
+            if (keys != setOf("format", "version", "generation") ||
+                value.opt("format") != "solum-profile-generation" ||
+                value.opt("version") != 1
+            ) return@runCatching null
+            val generation = value.opt("generation")
+            if (generation !is String || !Regex("^[0-9a-f]{32}$").matches(generation)) {
+                return@runCatching null
+            }
+            val target = File(File(profileRoot, "generations"), generation)
+            if (!target.isDirectory || java.nio.file.Files.isSymbolicLink(target.toPath())) {
+                return@runCatching null
+            }
+            val manifest = File(target, "generation-manifest.json")
+            val sqlite = File(target, "solum.sqlite")
+            if (!manifest.isFile || manifest.length() > 2L * 1024L * 1024L || !sqlite.isFile) {
+                return@runCatching null
+            }
+            val manifestValue = JSONObject(manifest.readText())
+            val manifestKeys = manifestValue.keys().asSequence().toSet()
+            if (manifestKeys != setOf("format", "version", "generation", "artifacts") ||
+                manifestValue.opt("format") != "solum-profile-image" ||
+                manifestValue.opt("version") != 1 ||
+                manifestValue.opt("generation") != generation ||
+                manifestValue.opt("artifacts") !is org.json.JSONArray
+            ) return@runCatching null
+            target
+        }.getOrNull()
     }
 }

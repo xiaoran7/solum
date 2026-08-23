@@ -51,6 +51,37 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
+/// Atomically replace a file and, on Unix/Android, fsync the containing
+/// directory so the rename itself is durable across sudden power loss.
+///
+/// Most ordinary configs can tolerate retrying after a lost directory entry;
+/// a profile-generation pointer cannot, because it is the commit record for a
+/// whole restored image. Keep the stronger (and potentially fallible) contract
+/// explicit at those call sites.
+pub fn write_atomic_durable(path: &Path, contents: &str) -> Result<()> {
+    write_atomic(path, contents)?;
+    if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
+        sync_directory(parent)?;
+    }
+    Ok(())
+}
+
+/// Persist directory entries on platforms where opening a directory and
+/// calling fsync is supported. Windows has no equivalent through `std`; its
+/// rename remains atomic, while Android/Linux receives the stronger durability
+/// guarantee required by profile publication.
+pub fn sync_directory(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(path)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| CoreError::Invalid(format!("同步 generation 目录失败: {error}")))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 /// Each call gets its own sibling. The PID separates processes and the counter
 /// separates concurrent writers inside one process.
 fn tmp_sibling(path: &Path) -> std::path::PathBuf {
@@ -96,6 +127,19 @@ mod tests {
         let target = dir.join("nested").join("cfg.json");
         write_atomic(&target, "ok").unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "ok");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn durable_replacement_is_readable_after_directory_sync() {
+        let dir = std::env::temp_dir().join(format!("solum-atomic-durable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("pointer.json");
+        write_atomic_durable(&target, "{\"generation\":1}").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "{\"generation\":1}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

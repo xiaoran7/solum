@@ -3762,27 +3762,53 @@ fn resync_alarms(app: &tauri::AppHandle) {
 
 // ---- entry point ------------------------------------------------------------------
 
-/// Where the SQLite store lives. `SOLUM_DB` always wins; the desktop default stays
-/// "solum.sqlite in the cwd" (shared with solum-cli, see MISC.md), while mobile has
-/// no meaningful cwd and uses the platform app-data directory instead.
+struct ResolvedProfilePaths {
+    db_path: String,
+    /// Device credentials/config stay at the profile root even after the user
+    /// data plane switches to a restored generation.
+    config_dir: std::path::PathBuf,
+}
+
+/// Resolve both the active user-data SQLite and the device-config root.
+/// `SOLUM_DB` always wins. Mobile follows the durable generation pointer when
+/// present; desktop remains on the migration-era single profile path.
 ///
 /// Both branches first adopt a `pa.sqlite` left by the 2026-07-20 rename, so an
 /// existing store keeps its data rather than starting empty. On Android this is
 /// effectively a no-op — the identifier changed too, so the old install's data
 /// is in another package's private storage (see `adopt_legacy_db`).
-fn resolve_db_path(#[cfg_attr(desktop, allow(unused_variables))] app: &tauri::App) -> String {
+fn resolve_profile_paths(
+    #[cfg_attr(desktop, allow(unused_variables))] app: &tauri::App,
+) -> solum_core::Result<ResolvedProfilePaths> {
     if let Ok(p) = std::env::var("SOLUM_DB") {
-        return p;
+        let config_dir = std::path::Path::new(&p)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(""))
+            .to_path_buf();
+        return Ok(ResolvedProfilePaths {
+            db_path: p,
+            config_dir,
+        });
     }
     #[cfg(mobile)]
     if let Ok(dir) = app.path().app_data_dir() {
         let _ = std::fs::create_dir_all(&dir);
-        if let Some(profile) = account_profile_root(&dir) {
-            return profile.join("solum.sqlite").to_string_lossy().into_owned();
-        }
-        let current = dir.join("solum.sqlite");
-        report_legacy_adoption(&dir.join("pa.sqlite"), &current);
-        return current.to_string_lossy().into_owned();
+        let profile_root = if let Some(profile) = account_profile_root(&dir) {
+            profile
+        } else {
+            let current = dir.join("solum.sqlite");
+            report_legacy_adoption(&dir.join("pa.sqlite"), &current);
+            dir
+        };
+        let active = solum_core::profile_generation::resolve_active_data_dir(&profile_root)?;
+        return Ok(ResolvedProfilePaths {
+            db_path: active
+                .path()
+                .join(solum_core::profile_generation::SQLITE_FILE)
+                .to_string_lossy()
+                .into_owned(),
+            config_dir: profile_root,
+        });
     }
     // Desktop: app-data, not the working directory.
     //
@@ -3800,11 +3826,23 @@ fn resolve_db_path(#[cfg_attr(desktop, allow(unused_variables))] app: &tauri::Ap
     );
     let base = solum_core::paths::app_data_dir();
     if let Some(profile) = base.as_deref().and_then(account_profile_root) {
-        return profile.join("solum.sqlite").to_string_lossy().into_owned();
+        let db_path = profile.join("solum.sqlite").to_string_lossy().into_owned();
+        return Ok(ResolvedProfilePaths {
+            db_path,
+            config_dir: profile,
+        });
     }
-    solum_core::paths::resolve_with_adoption("solum.sqlite")
+    let db_path = solum_core::paths::resolve_with_adoption("solum.sqlite")
         .to_string_lossy()
-        .into_owned()
+        .into_owned();
+    let config_dir = std::path::Path::new(&db_path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .to_path_buf();
+    Ok(ResolvedProfilePaths {
+        db_path,
+        config_dir,
+    })
 }
 
 fn active_local_profile_id() -> String {
@@ -3864,8 +3902,9 @@ pub fn run() {
                     std::env::set_var("SOLUM_ACCOUNT_CONFIG", dir.join("solum-account.json"));
                 }
             }
-            let db_path = resolve_db_path(app);
-            let profile_dir = std::path::Path::new(&db_path).parent();
+            let resolved_profile = resolve_profile_paths(app)?;
+            let db_path = resolved_profile.db_path;
+            let profile_dir = Some(resolved_profile.config_dir.as_path());
             // Every business config follows the selected SQLite profile. The
             // managed marker lets an app.restart() recalculate our own env
             // override without replacing an operator-supplied path.
@@ -4490,7 +4529,14 @@ mod tests {
         let kotlin = include_str!(
             "../gen/android/app/src/main/java/dev/solum/app/SolumNotificationListener.kt"
         );
-        assert!(kotlin.contains("val profileDir = activeProfileDir()"));
+        assert!(kotlin.contains("handleNotificationPostedLocked(sbn, profileRoot)"));
+        assert!(kotlin.contains("channel.lock().use"));
+        assert!(kotlin.contains("active-generation.lock"));
+        assert!(kotlin.contains("val profileDir = activeGenerationDir(profileRoot) ?: return"));
+        assert!(kotlin.contains("activeGenerationDir(profileRoot)"));
+        assert!(kotlin.contains("active-generation.json"));
+        assert!(kotlin.contains("generation-manifest.json"));
+        assert!(kotlin.contains("Files.notExists(pointerPath"));
         assert!(kotlin.contains("File(profileDir, SPOOL_DIR)"));
         assert!(kotlin.contains("File(profileDir, OVERFLOW_DIR)"));
         assert!(!kotlin.contains("File(dataDir, SPOOL_DIR)"));

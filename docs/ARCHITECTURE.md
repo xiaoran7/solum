@@ -457,6 +457,45 @@ v3 文档与 `{attachment_id, plaintext}` 集合后，按以下固定顺序工�
 复核后以单一 durable generation 指针发布；在该指针与崩溃恢复状态机完成前，不能把本阶段称作
 “原子恢复完成”或把现有 v2 导入入口替换为 v3。
 
+#### Android profile generation 发布协议 v1（2026-08-23）
+
+每个 `guest` 或账号 UUID profile 根目录拥有独立 generation 命名空间。没有
+`active-generation.json` 时继续使用历史 profile 根目录，保证升级不会搬动或遗失现有数据；指针存在后，
+数据面路径固定为 `generations/<32-lower-hex>/`。generation id 由端侧 OS CSPRNG 生成，不接受调用方路径；
+指针与 manifest 均为 UTF-8 紧凑 JSON、拒绝未知字段和符号链接。
+
+`restore-staging/<id>/` 只写尚未发布的候选镜像。seal 前必须关闭临时 Store、完成 WAL checkpoint，且目录中
+必须有独立 `solum.sqlite`，不得残留 `solum.sqlite-wal` / `solum.sqlite-shm`。seal 递归登记全部普通文件的
+相对 POSIX 路径、字节数与 SHA-256，限制文件数与总字节，拒绝绝对路径、`..`、链接、重复路径和未登记
+文件；manifest 自身不计入 artifact。publish 必须重算精确文件集合/尺寸/摘要，随后按以下顺序执行：
+
+指针上限 4 KiB，字段精确为 `{format:"solum-profile-generation",version:1,generation}`；manifest 上限
+2 MiB，字段精确为 `{format:"solum-profile-image",version:1,generation,artifacts}`，每个 artifact 精确为
+`{path,size,sha256}`。artifact 最多 12,000 个、普通文件合计最多 1 GiB；`path` 使用 `/` 分隔的非空
+UTF-8 相对路径，`sha256` 是 64 位小写 hex。generation id、manifest generation 与目录名必须完全一致。
+
+1. 将 sealed staging 目录原子 rename 为同一 profile 文件系统中的 `generations/<id>/`；
+2. fsync generation 与 staging 两个父目录，使新目录项及旧目录项删除均先持久化；
+3. 用同目录临时文件写入并 fsync `active-generation.json`，再原子 rename 并 fsync profile 根目录；
+4. 仅在指针提交成功后返回发布成功；旧 generation 不在此事务删除。
+
+因此进程在 seal/rename 前崩溃只留下 staging，在目录 rename 后、指针提交前崩溃只留下未引用 generation，
+两者启动时都被忽略，旧数据仍是唯一 active；指针提交后新 generation 已完整且可验证。启动时指针缺失
+明确选择 legacy，指针损坏、id 非法、目标/manifest/SQLite 缺失则**停止启动且不回退 legacy/空库**，
+避免把损坏伪装成“数据没了”。清理 staging、未引用 generation 与旧 generation 是后续显式维护动作，
+不得在启动解析中顺手删除。
+
+generation 只接管用户数据面：SQLite、通知 spool/policy，以及后续的附件和 WebView inactive namespace。
+设备级账号会话、隐私同意、主密钥/旧同步 key、LLM API key、邮箱/OAuth/Soulous 凭据仍留在 profile 根，
+不进入 generation，不因恢复被覆盖。Android 原生 listener 必须冻结一次“账号 profile 根 → active
+generation”解析结果，再用同一目录读 policy、写 spool/overflow；指针非法时 fail closed，不得退回根目录。
+profile 根固定 `active-generation.lock` 不随 generation rename：Kotlin `FileChannel.lock()` 持有 POSIX 写锁并
+覆盖 pointer 解析、policy 读取和 spool 原子发布；Android Rust 使用与其同进程也会冲突的 Linux OFD 锁，
+桌面测试路径使用平台文件锁。最终恢复协调器还必须在该锁内停止 intake、把锁前已完成的旧代 late spool
+纳入新代或明确留在设备级待处理区，再提交 pointer；仅有锁能禁止“写到切换一半”，不能自动搬运锁前事件。
+本阶段只建立文件系统发布/启动解析地基；WebView inactive namespace 的 prepare/ack、附件实际落盘、恢复
+协调命令、已有数据选择与 live 连接重启尚未接通，因此顶层原子恢复仍未完成。
+
 #### 历史多设备同步实现（迁移期，只读理解）
 
 - 定位：同步数据面只做**加密数据中转**，不解密、不推理、不保存同步明文；服务端数据库泄露不能直接解开同步正文。这不等于统一中心看不到账号元数据、结构化告警或正在代理的 AI 请求，三者按各自边界单独约束。
