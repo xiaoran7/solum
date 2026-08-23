@@ -518,7 +518,7 @@ fn decode_nonce(encoded: &str) -> BackupResult<[u8; NONCE_LEN]> {
         return Err(BackupError::InvalidContainer);
     }
     let mut nonce = [0u8; NONCE_LEN];
-    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in encoded.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         nonce[index] = (hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?;
     }
     Ok(nonce)

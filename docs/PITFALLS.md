@@ -6,9 +6,9 @@
 
 ## 2026-08-23 自托管 Actions 镜像与 service 网络不能照搬 GitHub-hosted 假设
 
-- **现象**：Gitea runner 接到工作流后，Rust job 在 `rustup: command not found` 处失败；PostgreSQL job 尚未执行测试，就因 service 尝试绑定宿主 `127.0.0.1:5432`、与生产 PostgreSQL 已占端口冲突而失败。
-- **根因**：`ubuntu-latest` runner image 提供构建基础工具但不保证预装 rustup；容器化 act job 与 service 已共享隔离 Docker network，不应再把临时数据库发布到宿主固定端口。原工作流从 GitHub-hosted VM 心智直接复制，两项前置条件都未经真实 Gitea runner 验证。
-- **解决/避免**：工作流缺少 rustup 时从官方 HTTPS 安装最小 stable toolchain 并写入 `GITHUB_PATH`；PostgreSQL 不声明 host port，job 与 provision 脚本统一使用 service DNS `postgres:5432`。CI 验收必须确认测试正文实际出现，不能把 runner 接单或 service 创建当成数据库测试已跑。
+- **现象**：Gitea runner 接到工作流后，Rust job 在 `rustup: command not found` 处失败；PostgreSQL job 先因 service 尝试绑定宿主 `127.0.0.1:5432`、与生产 PostgreSQL 已占端口冲突而失败，修掉端口后又在 provision 阶段报 `psql: not found`。
+- **根因**：`ubuntu-latest` runner image 提供构建基础工具但不保证预装 rustup 或 PostgreSQL client；容器化 act job 与 service 已共享隔离 Docker network，不应再把临时数据库发布到宿主固定端口。原工作流从 GitHub-hosted VM 心智直接复制，三项前置条件都未经真实 Gitea runner 验证。
+- **解决/避免**：工作流缺少 rustup 时从官方 HTTPS 安装最小 stable toolchain 并写入 `GITHUB_PATH`，数据库 job 显式安装 `postgresql-client`；PostgreSQL 不声明 host port，job 与 provision 脚本统一使用 service DNS `postgres:5432`。CI 验收必须确认测试正文实际出现，不能把 runner 接单、service 创建或 provision 启动当成数据库测试已跑。
 
 ## 2026-08-23 generation 是版本栅栏，不是单写者权限
 

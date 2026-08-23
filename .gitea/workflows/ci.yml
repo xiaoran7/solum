@@ -80,6 +80,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
       - name: Provision least-privilege roles exactly as production init does
         run: |
           chmod +x server/db/init/00-roles.sh
