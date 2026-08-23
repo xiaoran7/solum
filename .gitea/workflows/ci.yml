@@ -109,8 +109,9 @@ jobs:
       - name: Solum Cloud tests
         working-directory: server
         run: |
-          npm test 2>&1 | tee /tmp/solum-cloud-tests.log
-          grep -Eq "^ok [0-9]+ - PostgreSQL roles retain" /tmp/solum-cloud-tests.log || {
-            echo "PostgreSQL integration tests did not run (skipped or renamed?)"
-            exit 1
-          }
+          NODE_OPTIONS=--test-reporter=tap npm test 2>&1 | tee /tmp/solum-cloud-tests.log
+          grep -Eq "^ok [0-9]+ - PostgreSQL roles retain exact least-privilege attributes and membership$" /tmp/solum-cloud-tests.log
+          grep -Eq "^ok [0-9]+ - PostgreSQL schema repairs rows with multiple legacy alert violations$" /tmp/solum-cloud-tests.log
+          grep -Eq "^ok [0-9]+ - legacy SQLite importer preserves active sessions, sanitizes alerts and advances identities$" /tmp/solum-cloud-tests.log
+          grep -Eq "^ok [0-9]+ - PostgreSQL runtime enforces auth, RLS, quotas and JSON contracts$" /tmp/solum-cloud-tests.log
+          grep -Fxq "# skipped 0" /tmp/solum-cloud-tests.log
