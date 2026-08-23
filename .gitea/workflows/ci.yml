@@ -84,6 +84,9 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client
+      - name: Install cloud dependencies
+        working-directory: server
+        run: npm ci --ignore-scripts
       - name: Provision least-privilege roles exactly as production init does
         run: |
           chmod +x server/db/init/00-roles.sh

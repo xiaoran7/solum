@@ -13,7 +13,7 @@
 - **F17 备份验收整改（2026-08-23，未发布）**：generation 只表示代次、不再被当作写权限。新 profile 先持久化随机 writer UUID，再由 PostgreSQL tenant advisory lock 在 generation 1 且无 writer/任何备份时原子认领；plan、对象上传和 commit 均逐次校验 writer，接管事务则幂等轮换 writer，杜绝两台新设备同时以 generation 1 上传及空数据抢成最新版本。旧的 v1 本机 writer 状态不自动猜测升级，缺少可验证 writer 时必须恢复并显式接管。
   - 备份中心按服务端 `committed_at`（再以 backup UUID 稳定打破同毫秒并列）排序和展示最近封缄，不再让客户端 `created_at`/错误手机时钟决定最新版本；备份页所有异常均经 `safeUserError` 转为恢复指引，原始 IPC/网络错误只留诊断控制台。前端静态门禁新增排序契约并恢复全绿。
   - 新增 writer claim/竞争认领/陈旧 writer/接管轮换与幂等绑定测试；真实 PostgreSQL RLS/事务闭环仍以本次提交推送后的 Gitea CI 为发布门槛，不把本机缺少 PostgreSQL 的 skip 写成已通过。
-  - Gitea CI 不再假设 runner 镜像预装 `rustup`/`psql`，会显式安装最小 stable toolchain 与 PostgreSQL client；PostgreSQL service 只在 job 隔离网络以 `postgres:5432` 提供，不再绑定宿主 `5432` 与生产数据库冲突。backup-v1 nonce hex 解码改用 Rust 1.98 Clippy 要求的固定数组分块，固定夹具字节保持不变。
+  - Gitea CI 不再假设 runner 镜像预装 `rustup`/`psql` 或已有 `node_modules`，会显式安装最小 stable toolchain、PostgreSQL client 并以 lockfile 执行 `npm ci`；PostgreSQL service 只在 job 隔离网络以 `postgres:5432` 提供，不再绑定宿主 `5432` 与生产数据库冲突。backup-v1 nonce hex 解码及夹具 helper 改用 Rust 1.98 Clippy 要求的固定数组分块，固定夹具字节保持不变。
 
 - **F17 Android 手动备份与恢复中心（2026-08-23，未发布）**：新增账号限定的设置二级页，支持手动创建端到端加密备份、查看 complete 历史安全元数据、下载并在 sealed inactive generation 中校验候选、展示当前本机替换预览，并以独立红色确认执行接管；不增加后台定时，不展示对象 ID/摘要/密钥，也不把尚未接入的云端删除写成已完成。
   - core 新增严格 durable takeover journal，状态为 planned → remote_advanced → device_ready；云端 compare-and-increment 以同一 takeover UUID 幂等重试，设备 generation 持久化后才允许 pointer 发布。联网前与发布锁内各重验一次 SQLite/WebView 摘要，响应丢失和进程重启可续作，pointer 已提交则启动时清理日志；有待续事务时禁止用旧 active 数据创建新备份。
