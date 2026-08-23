@@ -496,6 +496,41 @@ profile 根固定 `active-generation.lock` 不随 generation rename：Kotlin `Fi
 本阶段只建立文件系统发布/启动解析地基；WebView inactive namespace 的 prepare/ack、附件实际落盘、恢复
 协调命令、已有数据选择与 live 连接重启尚未接通，因此顶层原子恢复仍未完成。
 
+#### Portable generation staging image v1（2026-08-23）
+
+恢复协调器在调用 generation publish 前，必须先把 core 已验证的 `PreparedPortableRestore` 一次性组装为
+**sealed、仍未激活**的 generation。组装 API 自己创建随机 staging id 和全新 `solum.sqlite`，在该 Store 的
+单一恢复事务成功后才取得 `PlatformRestoreBundle`；调用方不能把任意未校验 JSON 或附件路径塞进镜像。
+固定布局如下，所有路径都位于 `restore-staging/<generation>/`：
+
+```text
+solum.sqlite
+notif-policy.json
+notif-spool/restore-<stable-id>.json
+notif-spool/failed/restore-<stable-id>.json
+webview/bootstrap-v1.json
+webview/documents/<sha256(document-id)>.blob
+generation-manifest.json                 # seal 最后生成
+```
+
+`notif-policy.json` 必须精确写 `{\"allowed_packages\":[]}`，恢复包中的 app 白名单与 auto-event 白名单只保留
+为重新授权意图，不得借恢复重新开启原生通知正文采集。pending notification 按 `received_at` 转 epoch
+milliseconds，单文件为 listener/ticker 现用的 `{ts,pkg,title,text}` 紧凑 JSON 加换行；源 `failed=true`
+直接进入 `failed/`，其余进入待处理目录。文件名只使用 v3 已验证的 stable id，不包含通知正文或 app 标题。
+
+`webview/bootstrap-v1.json` 是 UTF-8 紧凑 JSON，根字段精确为
+`{format,version,generation,chat,documents,llm,restore_intents}`，格式/版本固定
+`solum-webview-bootstrap` / `1`。`documents` 每项精确为 `{id,name,media_type,plaintext_size,sha256,blob}`；
+`blob` 固定指向 `documents/<sha256(UTF8(id))>.blob`，不直接把跨平台 id 当文件名。blob 字节在写入前已经
+被 backup/attachment AEAD 和 v3 manifest 双重认证，组装时仍重新核对文件字节数与 SHA-256；bootstrap
+包含必要的用户数据，故只能留在 app 私有 profile generation，不能记录到日志或错误文本。
+
+顺序固定为：创建 staging → 恢复全新 SQLite 事务 → 写附件/Bootstrap/spool/空 policy → 对刚写文件逐项
+重读复核 → checkpoint SQLite 并切换 DELETE journal → 关闭 Store → generation seal 重算全目录 manifest。
+任何一步失败均不返回 sealed handle、不写 active pointer、不删除或覆盖 live/旧 generation；残留 staging
+启动时保持 inert。成功只表示磁盘镜像完整，**不表示已恢复**：WebView 尚需在下一阶段把 bootstrap 写入
+generation 绑定的 localStorage/IndexedDB inactive namespace，确认成功后才能在 profile 锁内发布并重启。
+
 #### 历史多设备同步实现（迁移期，只读理解）
 
 - 定位：同步数据面只做**加密数据中转**，不解密、不推理、不保存同步明文；服务端数据库泄露不能直接解开同步正文。这不等于统一中心看不到账号元数据、结构化告警或正在代理的 AI 请求，三者按各自边界单独约束。

@@ -28,6 +28,7 @@ pub mod orchestrator;
 pub mod paths;
 pub mod persona;
 pub mod persona_import;
+pub mod portable_generation;
 pub mod privacy;
 pub mod proactivity;
 pub mod profile_generation;

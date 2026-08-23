@@ -10,6 +10,11 @@
 > Solum Android：0.2.8（1018 文案/时间解析/发布输入修复）· 0.2.7（1017 图标校正）· 0.2.6（1016 启动图标）· 0.2.5（1015 登录闪退修复）· 0.2.4（1014 后端复审收口）· 0.2.3（1013 默认模型/配额）· 0.2.2（1012 账户外壳/UI 重构）· 0.2.1（1011 中心化账号入口）· 0.2.0（1010 登录即恢复密钥）· 0.1.9（1009 UUID 隔离）· 0.1.8（1008 同步按账号隔离）· 0.1.7（1007 福利监控）· 0.1.5（1005 安全默认值收口）· 0.1.4（1004 排版/缓存）· 0.1.3（1003 导航重构）· 0.1.2（1002 UI 重构）· 0.1.1（1001 隐私门文案）· 0.1.0（1000 首个 release）
 > solum-cloud：0.6.4（密码语义/限流收口）· 0.6.3（刷新令牌权限）· 0.6.2（迁移与清理修复）· 0.6.1（AI 代理加固）· 0.6.0（模型目录/额度）· 0.5.1（中心化入口）· 0.5.0（恢复信封）· 0.4.0（PostgreSQL 中心库）
 
+- **F17 sealed portable generation 组装（2026-08-23，core staging，未发布 live profile）**：新增平台中立 assembler，直接消费已通过 v3 schema/引用/附件认证的 `PreparedPortableRestore`；在随机 staging 内完成全新 SQLite 单事务恢复，随后写入严格 `solum-webview-bootstrap` v1、按 `SHA-256(document id)` 命名的附件 blob、ticker 可直接读取的 pending/failed notification 单文件 spool，以及固定空 `notif-policy.json`。恢复包中的通知 app/auto-event 白名单仅留作重新授权意图，不能借恢复静默开启原生正文采集。
+  - bootstrap 精确绑定 generation 并登记 chat、资料 metadata/blob 相对路径、非秘密 LLM 设置和恢复意图；组装器逐项重读 policy/bootstrap/spool，重新核对附件尺寸与 SHA-256，checkpoint SQLite 并切换 DELETE journal、关闭 Store 后才调用 generation seal。失败只留下启动忽略的 inert staging，不返回 sealed handle、不写 active pointer、不删除或覆盖当前数据；seal 后任一平台文件被篡改都会阻止 publish。
+  - 代码放在 core 而非 Android 壳，依据是输入/布局/校验均为平台无关协议数据和私有文件系统操作，未来 iOS/HarmonyOS 可复用；Android WebView inactive namespace hydrate、锁内迟到通知协调、已有数据选择、pointer 发布与进程重启仍未接通，顶层 F17 保持未完成。
+  - 验证：`cargo test --workspace` 410 项（0 failed、0 ignored），Clippy `--workspace --all-targets -- -D warnings`、fmt check 与 `git diff --check` 全绿。
+
 - **F17 Android durable profile generation 发布地基（2026-08-23，未接恢复 UI/服务端）**：core 新增平台文件系统状态机：随机 generation staging 经 SQLite checkpoint/quick-check、WAL/SHM 拒绝、全文件 flush 与严格 manifest（相对路径、尺寸、SHA-256、文件数/总量上限）seal 后，先跨目录原子 rename 并同步 staging/generation 两个父目录，再以 durable 临时文件替换唯一 active pointer。崩溃发生在指针提交前只留下 inert staging/orphan；已知 generation 可安全续传，重复发布幂等，损坏指针或缺失目标一律停止启动，不静默回退到空库或 legacy。
   - 移动启动路径现在只从已提交 generation 打开 SQLite；指针缺失时保留现有 legacy profile，不迁移、不删除。账号会话、主密钥/旧同步 key、邮箱/OAuth 和模型凭据继续留在 profile 根目录，不混入可恢复用户数据 generation。原生通知 listener 与 Rust 端共用根目录固定锁，并在锁内完成 pointer → policy → spool，避免发布中途把通知写进半切换目录。
   - 本阶段仍不是完整 Android 原子恢复：WebView inactive namespace、附件与待处理 spool 尚未实际填入 staging，发布前 intake 协调、锁前迟到通知处理、本机已有数据选择、live WebView/双 SQLite 连接关闭和重启切换仍待下一阶段；顶层 F17、服务端备份 API、恢复码/信封与跨平台实机互通保持未完成。
