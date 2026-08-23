@@ -531,6 +531,32 @@ milliseconds，单文件为 listener/ticker 现用的 `{ts,pkg,title,text}` 紧�
 启动时保持 inert。成功只表示磁盘镜像完整，**不表示已恢复**：WebView 尚需在下一阶段把 bootstrap 写入
 generation 绑定的 localStorage/IndexedDB inactive namespace，确认成功后才能在 profile 锁内发布并重启。
 
+#### WebView inactive generation hydrate v1（2026-08-23）
+
+WebView 数据不通过猜测 Android Chromium 私有目录来“搬库”。Rust 根据当前账号 profile 与 generation
+生成唯一命名空间，并把**精确名称**交给前端：legacy guest 沿用无后缀旧 key，legacy 账号沿用 `.<uuid>`；
+generation 一律使用 `.<profile-id>.generation.<32-lower-hex>` 后缀。该后缀同时作用于
+`pa.chat-sessions.v1`、`solum.ui-state.v1` 与 `pa-local-documents-v1`，所以 hydrate 可以在当前 live
+WebView 中写入另一个 generation，而不会覆盖用户正在使用的会话、草稿或 IndexedDB。
+
+Rust reader 只接受 `restore-staging/<id>/` 中已 seal 的 generation；打开时先重跑 generation manifest
+文件集合/尺寸/SHA-256 校验，再严格解析 `webview/bootstrap-v1.json`，验证 format/version/generation、
+聊天/恢复意图上限、唯一资料 id、blob 固定摘要路径、单件/累计尺寸及每件明文摘要。附件 IPC 固定每块最多
+512 KiB，返回 `{generation,document_id,offset,total_size,data_base64,done}`；reader 会限制 id/offset、拒绝
+符号链接和文件尺寸漂移，错误不含资料名、正文、blob 内容或完整摘要。一次 begin 只建立一个进程内 reader
+session，后续 chunk/finish 必须绑定同一 profile 与 generation，不能借接口读取任意 app 私有文件。
+
+前端 hydrate 顺序固定为：begin 取得 bootstrap 与精确 namespace → 写入目标 chat/UI-state key → 清空目标
+inactive IndexedDB → 每件资料按顺序拉取块、重组 Blob、核对尺寸/SHA-256 后写入 → 在 readonly transaction
+回读**精确资料集合**并再次核对 metadata/Blob 摘要 → 回读两项 localStorage 与预期 JSON 相等 → finish
+提交 `{profile_id,generation,documents:[{id,plaintext_size,sha256}]}`。Rust 只在 receipt 与已打开 bootstrap
+精确相等时把该 generation 标为本进程 `ready`；不接受缺件、多件、重复或摘要变化。
+
+hydrate 允许对同一 inactive namespace 幂等重做：每次先清空目标 IndexedDB，且 active namespace 在整个
+过程中不变。ready 目前故意只在内存中，进程崩溃或重启后必须重新 open/校验/hydrate，不能拿陈旧 ack
+发布；本阶段不提供 pointer publish 命令。下一阶段的恢复协调器必须同时持有 profile generation 锁、处理
+旧 generation 的 late spool、再次确认 WebView ready 与用户的现有数据选择，才可提交 pointer 并重启。
+
 #### 历史多设备同步实现（迁移期，只读理解）
 
 - 定位：同步数据面只做**加密数据中转**，不解密、不推理、不保存同步明文；服务端数据库泄露不能直接解开同步正文。这不等于统一中心看不到账号元数据、结构化告警或正在代理的 AI 请求，三者按各自边界单独约束。

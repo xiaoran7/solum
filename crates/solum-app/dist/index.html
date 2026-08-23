@@ -3336,7 +3336,7 @@ $("simClock").addEventListener("change", refreshAll);
 async function initClock() {
   try {
     const info = await invoke("app_info");
-    selectLocalProfile(info.local_profile_id);
+    selectLocalProfile(info.local_profile_id, info.web_storage);
     $("simClock").value = info.system_now;
     $("dbPath").textContent = info.db_path;
     $("dbPath").title = info.db_path;
@@ -3662,15 +3662,28 @@ function profiledStorageName(base, profileId) {
   return profileId === "guest" ? base : `${base}.${profileId}`;
 }
 
-function selectLocalProfile(value) {
+let localStorageIdentity = "guest-legacy";
+function selectLocalProfile(value, suppliedStorage) {
   const candidate = String(value || "guest").toLowerCase();
   const profileId = candidate === "guest" || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(candidate)
     ? candidate : "guest";
-  if (profileId === localProfileId) return;
+  const fallback = {
+    ui_state_key: profiledStorageName("solum.ui-state.v1", profileId),
+    chat_sessions_key: profiledStorageName("pa.chat-sessions.v1", profileId),
+    document_db_name: profiledStorageName("pa-local-documents-v1", profileId),
+  };
+  const storage = suppliedStorage && typeof suppliedStorage === "object" ? suppliedStorage : fallback;
+  const validStorage = typeof storage.ui_state_key === "string" && storage.ui_state_key.startsWith("solum.ui-state.v1") &&
+    typeof storage.chat_sessions_key === "string" && storage.chat_sessions_key.startsWith("pa.chat-sessions.v1") &&
+    typeof storage.document_db_name === "string" && storage.document_db_name.startsWith("pa-local-documents-v1");
+  const selected = validStorage ? storage : fallback;
+  const identity = `${profileId}\0${selected.ui_state_key}\0${selected.chat_sessions_key}\0${selected.document_db_name}`;
+  if (identity === localStorageIdentity) return;
   localProfileId = profileId;
-  UI_STATE_KEY = profiledStorageName("solum.ui-state.v1", profileId);
-  CHAT_SESSIONS_KEY = profiledStorageName("pa.chat-sessions.v1", profileId);
-  DOCUMENT_DB_NAME = profiledStorageName("pa-local-documents-v1", profileId);
+  localStorageIdentity = identity;
+  UI_STATE_KEY = selected.ui_state_key;
+  CHAT_SESSIONS_KEY = selected.chat_sessions_key;
+  DOCUMENT_DB_NAME = selected.document_db_name;
   uiState = loadUiState();
   chatSessions = loadChatSessions();
   navLastView = { ...uiState.navLastView };
@@ -4899,9 +4912,9 @@ let DOCUMENT_DB_NAME = "pa-local-documents-v1";
 const DOCUMENT_STORE = "documents";
 const DOCUMENT_MAX_BYTES = 20 * 1024 * 1024;
 const DOCUMENT_MAX_COUNT = 30;
-function openDocumentDb() {
+function openDocumentDb(databaseName = DOCUMENT_DB_NAME) {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DOCUMENT_DB_NAME, 1);
+    const request = indexedDB.open(databaseName, 1);
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(DOCUMENT_STORE)) request.result.createObjectStore(DOCUMENT_STORE, { keyPath: "id" });
     };
@@ -4909,8 +4922,8 @@ function openDocumentDb() {
     request.onerror = () => reject(request.error || new Error("无法打开本地资料库"));
   });
 }
-async function withDocuments(mode, action) {
-  const db = await openDocumentDb();
+async function withDocuments(mode, action, databaseName = DOCUMENT_DB_NAME) {
+  const db = await openDocumentDb(databaseName);
   try {
     return await new Promise((resolve, reject) => {
       const tx = db.transaction(DOCUMENT_STORE, mode);
@@ -4966,6 +4979,115 @@ async function buildPortableWebViewSnapshot() {
 async function exportPortableDataV3(now) {
   const snapshot = await buildPortableWebViewSnapshot();
   return invoke("export_portable_data", { snapshot, now: now ?? null });
+}
+
+function decodeBase64Bytes(value) {
+  const binary = atob(String(value || ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+async function sha256Hex(bytes) {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+function portableChatStorage(chat) {
+  const sessions = (chat.sessions || []).map((session) => ({
+    id: session.id,
+    title: session.title,
+    updatedAt: session.updated_at,
+    messages: (session.messages || []).map((message) => ({
+      role: message.role,
+      content: message.content,
+      intent: message.intent || "",
+    })),
+    contextTurns: [],
+  }));
+  return JSON.stringify({ sessions, activeId: sessions[0]?.id || "" });
+}
+function portableUiStateStorage(chat) {
+  const chatDrafts = Object.fromEntries((chat.drafts || []).map((draft) => [draft.session_id, draft.content]));
+  return JSON.stringify({ version: UI_STATE_VERSION, lastView: "chat", navLastView: {}, scroll: {}, chatDrafts });
+}
+// Internal F17 seam. The future restore coordinator calls this before pointer
+// publication; it writes only the generation-specific inactive namespace.
+async function hydratePortableGenerationWebView(generationId) {
+  if (!globalThis.crypto?.subtle) throw new Error("当前 WebView 不支持恢复完整性摘要");
+  const plan = await invoke("restore_webview_begin", { generationId });
+  if (plan.generation !== generationId || plan.bootstrap?.generation !== generationId) {
+    throw new Error("恢复 generation 在 hydrate 前发生变化");
+  }
+  const storage = plan.web_storage;
+  const chatJson = portableChatStorage(plan.bootstrap.chat || { sessions: [], drafts: [] });
+  const uiStateJson = portableUiStateStorage(plan.bootstrap.chat || { sessions: [], drafts: [] });
+  if (!safeLocalSet(storage.chat_sessions_key, chatJson) || !safeLocalSet(storage.ui_state_key, uiStateJson)) {
+    throw new Error("无法写入 inactive WebView 会话命名空间");
+  }
+
+  await withDocuments("readwrite", (store) => { store.clear(); }, storage.document_db_name);
+  for (const document of plan.bootstrap.documents || []) {
+    const parts = [];
+    let offset = 0;
+    while (offset < document.plaintext_size) {
+      const chunk = await invoke("restore_webview_document_chunk", {
+        generationId,
+        documentId: document.id,
+        offset,
+      });
+      if (chunk.generation !== generationId || chunk.document_id !== document.id ||
+          chunk.offset !== offset || chunk.total_size !== document.plaintext_size) {
+        throw new Error("恢复资料分块与 sealed generation 不一致");
+      }
+      const bytes = decodeBase64Bytes(chunk.data_base64);
+      if (!bytes.length || offset + bytes.length > document.plaintext_size) {
+        throw new Error("恢复资料分块长度无效");
+      }
+      parts.push(bytes);
+      offset += bytes.length;
+      if (chunk.done !== (offset === document.plaintext_size)) throw new Error("恢复资料分块结束标记无效");
+    }
+    const blob = new Blob(parts, { type: document.media_type || "application/octet-stream" });
+    if (blob.size !== document.plaintext_size || await sha256Hex(await blob.arrayBuffer()) !== document.sha256) {
+      throw new Error("恢复资料完整性校验失败");
+    }
+    await withDocuments("readwrite", (store) => {
+      store.put({
+        id: document.id,
+        name: document.name,
+        type: document.media_type,
+        size: document.plaintext_size,
+        addedAt: new Date().toISOString(),
+        blob,
+      });
+    }, storage.document_db_name);
+  }
+
+  const restored = await withDocuments("readonly", (store, set) => {
+    const request = store.getAll();
+    request.onsuccess = () => set(request.result || []);
+  }, storage.document_db_name);
+  if (restored.length !== (plan.bootstrap.documents || []).length) throw new Error("恢复资料集合不完整");
+  const restoredById = new Map(restored.map((document) => [document.id, document]));
+  const documents = [];
+  for (const expected of plan.bootstrap.documents || []) {
+    const actual = restoredById.get(expected.id);
+    if (!actual || !(actual.blob instanceof Blob) || actual.name !== expected.name ||
+        actual.type !== expected.media_type || actual.size !== expected.plaintext_size ||
+        actual.blob.size !== expected.plaintext_size ||
+        await sha256Hex(await actual.blob.arrayBuffer()) !== expected.sha256) {
+      throw new Error("恢复资料回读结果不一致");
+    }
+    documents.push({ id: expected.id, plaintext_size: expected.plaintext_size, sha256: expected.sha256 });
+  }
+  if (safeLocalGet(storage.chat_sessions_key) !== chatJson || safeLocalGet(storage.ui_state_key) !== uiStateJson) {
+    throw new Error("恢复会话回读结果不一致");
+  }
+  const status = await invoke("restore_webview_finish", {
+    generationId,
+    receipt: { profile_id: plan.profile_id, generation: generationId, documents },
+  });
+  if (!status.ready || status.generation !== generationId) throw new Error("WebView hydrate 未获得 ready ack");
+  return status;
 }
 async function getDocument(id) {
   return withDocuments("readonly", (store, set) => {

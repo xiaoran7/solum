@@ -5,18 +5,22 @@
 //! the fail-closed native policy have all been written and re-read.
 
 use std::collections::BTreeSet;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
 use chrono::{DateTime, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{CoreError, Result};
 use crate::export::ImportPlan;
-use crate::export_v3::{PortableChat, PortableLlmSettings, PortableRestoreIntents};
+use crate::export_v3::{
+    DocumentManifest, PortableChat, PortableLlmSettings, PortableRestoreIntents,
+};
 use crate::profile_generation::{
-    begin_profile_generation, seal_profile_generation, SealedProfileGeneration, SQLITE_FILE,
+    begin_profile_generation, resume_sealed_profile_generation, seal_profile_generation,
+    SealedProfileGeneration, SQLITE_FILE, STAGING_DIR,
 };
 use crate::restore_v3::{
     restore_portable_into_empty_store, PlatformRestoreBundle, PreparedPortableRestore,
@@ -36,6 +40,7 @@ const BOOTSTRAP_VERSION: u32 = 1;
 const MAX_BOOTSTRAP_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SPOOL_FILE_BYTES: u64 = 64 * 1024;
 const EMPTY_NOTIFICATION_POLICY: &str = "{\"allowed_packages\":[]}";
+pub const WEBVIEW_DOCUMENT_CHUNK_BYTES: usize = 512 * 1024;
 
 #[derive(Debug)]
 pub struct SealedPortableGeneration {
@@ -64,25 +69,110 @@ impl SealedPortableGeneration {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WebViewBootstrap {
-    format: String,
-    version: u32,
-    generation: String,
-    chat: PortableChat,
-    documents: Vec<BootstrapDocument>,
-    llm: Option<PortableLlmSettings>,
-    restore_intents: PortableRestoreIntents,
+pub struct WebViewBootstrap {
+    pub format: String,
+    pub version: u32,
+    pub generation: String,
+    pub chat: PortableChat,
+    pub documents: Vec<BootstrapDocument>,
+    pub llm: Option<PortableLlmSettings>,
+    pub restore_intents: PortableRestoreIntents,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BootstrapDocument {
-    id: String,
-    name: String,
-    media_type: String,
-    plaintext_size: u64,
-    sha256: String,
-    blob: String,
+pub struct BootstrapDocument {
+    pub id: String,
+    pub name: String,
+    pub media_type: String,
+    pub plaintext_size: u64,
+    pub sha256: String,
+    pub blob: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PortableDocumentChunk {
+    pub generation: String,
+    pub document_id: String,
+    pub offset: u64,
+    pub total_size: u64,
+    pub data_base64: String,
+    pub done: bool,
+}
+
+#[derive(Debug)]
+pub struct PortableGenerationReader {
+    generation_path: PathBuf,
+    bootstrap: WebViewBootstrap,
+}
+
+impl PortableGenerationReader {
+    /// Open only a sealed, inactive staging generation. Active/final
+    /// generations are mutable and are never attachment sources for hydrate.
+    pub fn open(profile_root: &Path, generation: &str) -> Result<Self> {
+        resume_sealed_profile_generation(profile_root, generation)?;
+        let generation_path = profile_root.join(STAGING_DIR).join(generation);
+        ensure_directory(&generation_path, "inactive portable generation")?;
+        let bootstrap: WebViewBootstrap = read_bounded_json(
+            &generation_path
+                .join(WEBVIEW_DIR)
+                .join(WEBVIEW_BOOTSTRAP_FILE),
+            MAX_BOOTSTRAP_BYTES,
+            "WebView bootstrap",
+        )?;
+        validate_bootstrap(&generation_path, generation, &bootstrap)?;
+        Ok(Self {
+            generation_path,
+            bootstrap,
+        })
+    }
+
+    pub fn bootstrap(&self) -> &WebViewBootstrap {
+        &self.bootstrap
+    }
+
+    pub fn read_document_chunk(
+        &self,
+        document_id: &str,
+        offset: u64,
+    ) -> Result<PortableDocumentChunk> {
+        let document = self
+            .bootstrap
+            .documents
+            .iter()
+            .find(|document| document.id == document_id)
+            .ok_or_else(|| invalid("portable document is not part of this generation"))?;
+        if offset > document.plaintext_size {
+            return Err(invalid("portable document chunk offset exceeds its size"));
+        }
+        let path = self.generation_path.join(WEBVIEW_DIR).join(&document.blob);
+        let metadata =
+            std::fs::symlink_metadata(&path).map_err(|error| storage("WebView document", error))?;
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() != document.plaintext_size
+        {
+            return Err(invalid("portable document changed after reader validation"));
+        }
+        let remaining = document.plaintext_size - offset;
+        let take = remaining.min(WEBVIEW_DOCUMENT_CHUNK_BYTES as u64) as usize;
+        let mut bytes = vec![0u8; take];
+        let mut file =
+            std::fs::File::open(&path).map_err(|error| storage("WebView document", error))?;
+        file.seek(std::io::SeekFrom::Start(offset))
+            .map_err(|error| storage("WebView document", error))?;
+        file.read_exact(&mut bytes)
+            .map_err(|_| invalid("portable document changed while reading a chunk"))?;
+        let next = offset + bytes.len() as u64;
+        Ok(PortableDocumentChunk {
+            generation: self.bootstrap.generation.clone(),
+            document_id: document.id.clone(),
+            offset,
+            total_size: document.plaintext_size,
+            data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            done: next == document.plaintext_size,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -324,6 +414,72 @@ fn verify_documents(
     Ok(())
 }
 
+fn validate_bootstrap(root: &Path, generation: &str, bootstrap: &WebViewBootstrap) -> Result<()> {
+    if bootstrap.format != BOOTSTRAP_FORMAT
+        || bootstrap.version != BOOTSTRAP_VERSION
+        || bootstrap.generation != generation
+    {
+        return Err(invalid("invalid or unsupported WebView bootstrap"));
+    }
+    crate::export_v3::validate_chat(&bootstrap.chat)?;
+    if let Some(llm) = &bootstrap.llm {
+        crate::export_v3::validate_llm(llm)?;
+    }
+    crate::export_v3::validate_restore_intents(&bootstrap.restore_intents)?;
+    let manifests: Vec<_> = bootstrap
+        .documents
+        .iter()
+        .map(|document| DocumentManifest {
+            id: document.id.clone(),
+            name: document.name.clone(),
+            media_type: document.media_type.clone(),
+            plaintext_size: document.plaintext_size,
+            sha256: document.sha256.clone(),
+        })
+        .collect();
+    crate::export_v3::validate_documents(&manifests)?;
+
+    let directory = root.join(WEBVIEW_DIR).join(WEBVIEW_DOCUMENTS_DIR);
+    ensure_directory(&directory, "WebView document directory")?;
+    let mut expected_names = BTreeSet::new();
+    for document in &bootstrap.documents {
+        let name = document_blob_name(&document.id);
+        if document.blob != format!("{WEBVIEW_DOCUMENTS_DIR}/{name}")
+            || !expected_names.insert(name)
+        {
+            return Err(invalid("invalid WebView bootstrap document path"));
+        }
+        if digest_file(
+            &root.join(WEBVIEW_DIR).join(&document.blob),
+            document.plaintext_size,
+        )? != document.sha256
+        {
+            return Err(invalid("WebView bootstrap document digest does not match"));
+        }
+    }
+    let actual_names: BTreeSet<String> = std::fs::read_dir(&directory)
+        .map_err(|error| storage("WebView document directory", error))?
+        .map(|entry| {
+            let entry = entry.map_err(|error| storage("WebView document directory", error))?;
+            let metadata = std::fs::symlink_metadata(entry.path())
+                .map_err(|error| storage("WebView document", error))?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err(invalid(
+                    "WebView document directory contains an invalid entry",
+                ));
+            }
+            entry
+                .file_name()
+                .into_string()
+                .map_err(|_| invalid("WebView document name is not UTF-8"))
+        })
+        .collect::<Result<_>>()?;
+    if actual_names != expected_names {
+        return Err(invalid("WebView document files do not match bootstrap"));
+    }
+    Ok(())
+}
+
 fn expected_spool(bundle: &PlatformRestoreBundle) -> Result<Vec<ExpectedSpool>> {
     bundle
         .pending_notifications
@@ -547,7 +703,9 @@ mod tests {
             .unwrap();
         source.set_notif_cloud_enabled(true).unwrap();
 
-        let plaintext = b"public synthetic document bytes".to_vec();
+        let plaintext: Vec<u8> = (0..WEBVIEW_DOCUMENT_CHUNK_BYTES + 17)
+            .map(|index| (index % 251) as u8)
+            .collect();
         let sha256 = lower_hex(&Sha256::digest(&plaintext));
         let document = build_portable_export(
             &source,
@@ -698,6 +856,50 @@ mod tests {
         let names = walk_names(&staging);
         assert!(!names.contains("Synthetic"));
         assert!(!names.contains("document:1"));
+        assert!(!root.join(POINTER_FILE).exists());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn sealed_reader_reconstructs_only_declared_documents_in_bounded_chunks() {
+        let root = test_root("reader");
+        let (document, attachments) = fixture();
+        let expected = attachments[0].plaintext.clone();
+        let sealed = stage_portable_generation(
+            &root,
+            prepare_portable_restore(document, attachments).unwrap(),
+            dt(23, 12),
+        )
+        .unwrap();
+        let reader = PortableGenerationReader::open(&root, sealed.generation_id()).unwrap();
+        assert_eq!(reader.bootstrap().documents.len(), 1);
+        assert!(reader.read_document_chunk("not-in-generation", 0).is_err());
+        assert!(reader
+            .read_document_chunk("document:1", expected.len() as u64 + 1)
+            .is_err());
+
+        let first = reader.read_document_chunk("document:1", 0).unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&first.data_base64)
+                .unwrap()
+                .len(),
+            WEBVIEW_DOCUMENT_CHUNK_BYTES
+        );
+        assert!(!first.done);
+        let second = reader
+            .read_document_chunk("document:1", WEBVIEW_DOCUMENT_CHUNK_BYTES as u64)
+            .unwrap();
+        assert!(second.done);
+        let mut reconstructed = base64::engine::general_purpose::STANDARD
+            .decode(first.data_base64)
+            .unwrap();
+        reconstructed.extend(
+            base64::engine::general_purpose::STANDARD
+                .decode(second.data_base64)
+                .unwrap(),
+        );
+        assert_eq!(reconstructed, expected);
         assert!(!root.join(POINTER_FILE).exists());
         std::fs::remove_dir_all(root).ok();
     }

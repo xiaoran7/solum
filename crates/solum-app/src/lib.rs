@@ -59,6 +59,11 @@ struct AppState {
     /// window (Windows「未响应」, 2026-07-18 走查发现 1).
     orch: Arc<Mutex<Orchestrator>>,
     db_path: String,
+    /// Device/profile root outside any mutable data generation. Restore
+    /// readers may open sealed staging children here, never arbitrary paths.
+    profile_root: std::path::PathBuf,
+    active_generation: Option<String>,
+    webview_restore: Mutex<Option<WebViewRestoreSession>>,
     /// Masked provider summary when the cloud reasoner is configured.
     /// Mutable: the settings UI can save/apply a new endpoint at runtime.
     llm_summary: Mutex<Option<String>>,
@@ -100,6 +105,12 @@ struct AppState {
     /// Login, registration and logout all replace the process-wide identity.
     /// Only one transition may issue or publish tokens at a time.
     account_transition: AtomicBool,
+}
+
+struct WebViewRestoreSession {
+    profile_id: String,
+    reader: solum_core::portable_generation::PortableGenerationReader,
+    ready: bool,
 }
 
 struct AccountTransitionGuard<'a>(&'a AtomicBool);
@@ -267,6 +278,8 @@ struct AppInfo {
     /// `guest` or the immutable account UUID. The WebView uses the same value
     /// to partition chat/UI/IndexedDB state that never enters SQLite.
     local_profile_id: String,
+    active_generation: Option<String>,
+    web_storage: WebStorageNames,
     system_now: String,
     /// e.g. "https://… · mimo-v2.5 · key:…zju9"; `None` = offline mode.
     llm: Option<String>,
@@ -274,14 +287,207 @@ struct AppInfo {
 
 #[tauri::command]
 fn app_info(state: State<AppState>) -> CmdResult<AppInfo> {
+    let local_profile_id = active_local_profile_id();
     Ok(AppInfo {
         db_path: state.db_path.clone(),
-        local_profile_id: active_local_profile_id(),
+        web_storage: web_storage_names(&local_profile_id, state.active_generation.as_deref())?,
+        local_profile_id,
+        active_generation: state.active_generation.clone(),
         system_now: Local::now()
             .naive_local()
             .format("%Y-%m-%dT%H:%M")
             .to_string(),
         llm: state.llm_summary.lock().map(|g| g.clone()).unwrap_or(None),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct WebStorageNames {
+    ui_state_key: String,
+    chat_sessions_key: String,
+    document_db_name: String,
+}
+
+fn web_storage_names(profile_id: &str, generation: Option<&str>) -> CmdResult<WebStorageNames> {
+    if profile_id != "guest" && !solum_core::account::is_valid_user_id(profile_id) {
+        return Err("WebView profile id 无效".into());
+    }
+    let suffix = match generation {
+        None if profile_id == "guest" => String::new(),
+        None => format!(".{profile_id}"),
+        Some(value)
+            if value.len() == 32
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) =>
+        {
+            format!(".{profile_id}.generation.{value}")
+        }
+        Some(_) => return Err("WebView generation id 无效".into()),
+    };
+    Ok(WebStorageNames {
+        ui_state_key: format!("solum.ui-state.v1{suffix}"),
+        chat_sessions_key: format!("pa.chat-sessions.v1{suffix}"),
+        document_db_name: format!("pa-local-documents-v1{suffix}"),
+    })
+}
+
+#[derive(Serialize)]
+struct WebViewHydrationPlan {
+    profile_id: String,
+    generation: String,
+    web_storage: WebStorageNames,
+    bootstrap: solum_core::portable_generation::WebViewBootstrap,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct WebViewDocumentReceipt {
+    id: String,
+    plaintext_size: u64,
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WebViewHydrationReceipt {
+    profile_id: String,
+    generation: String,
+    documents: Vec<WebViewDocumentReceipt>,
+}
+
+#[derive(Serialize)]
+struct WebViewHydrationStatus {
+    generation: String,
+    ready: bool,
+}
+
+/// Internal F17 seam: verify one sealed inactive generation and return only
+/// its strict bootstrap plus exact, generation-isolated Web Storage names.
+#[tauri::command]
+fn restore_webview_begin(
+    state: State<AppState>,
+    generation_id: String,
+) -> CmdResult<WebViewHydrationPlan> {
+    let profile_id = active_local_profile_id();
+    let reader = solum_core::portable_generation::PortableGenerationReader::open(
+        &state.profile_root,
+        &generation_id,
+    )
+    .map_err(core_err)?;
+    let bootstrap = reader.bootstrap().clone();
+    let plan = WebViewHydrationPlan {
+        profile_id: profile_id.clone(),
+        generation: generation_id.clone(),
+        web_storage: web_storage_names(&profile_id, Some(&generation_id))?,
+        bootstrap,
+    };
+    *state
+        .webview_restore
+        .lock()
+        .map_err(|_| "WebView restore session 状态异常".to_string())? =
+        Some(WebViewRestoreSession {
+            profile_id,
+            reader,
+            ready: false,
+        });
+    Ok(plan)
+}
+
+#[tauri::command]
+fn restore_webview_document_chunk(
+    state: State<AppState>,
+    generation_id: String,
+    document_id: String,
+    offset: u64,
+) -> CmdResult<solum_core::portable_generation::PortableDocumentChunk> {
+    let session = state
+        .webview_restore
+        .lock()
+        .map_err(|_| "WebView restore session 状态异常".to_string())?;
+    let session = session
+        .as_ref()
+        .filter(|session| {
+            session.reader.bootstrap().generation == generation_id
+                && session.profile_id == active_local_profile_id()
+        })
+        .ok_or_else(|| "WebView restore session 不存在或已失效".to_string())?;
+    session
+        .reader
+        .read_document_chunk(&document_id, offset)
+        .map_err(core_err)
+}
+
+#[tauri::command]
+fn restore_webview_finish(
+    state: State<AppState>,
+    generation_id: String,
+    receipt: WebViewHydrationReceipt,
+) -> CmdResult<WebViewHydrationStatus> {
+    let mut session = state
+        .webview_restore
+        .lock()
+        .map_err(|_| "WebView restore session 状态异常".to_string())?;
+    let session = session
+        .as_mut()
+        .filter(|session| {
+            session.reader.bootstrap().generation == generation_id
+                && session.profile_id == active_local_profile_id()
+        })
+        .ok_or_else(|| "WebView restore session 不存在或已失效".to_string())?;
+    let expected: Vec<_> = session
+        .reader
+        .bootstrap()
+        .documents
+        .iter()
+        .map(|document| WebViewDocumentReceipt {
+            id: document.id.clone(),
+            plaintext_size: document.plaintext_size,
+            sha256: document.sha256.clone(),
+        })
+        .collect();
+    validate_webview_hydration_receipt(&session.profile_id, &generation_id, &expected, &receipt)?;
+    session.ready = true;
+    Ok(WebViewHydrationStatus {
+        generation: generation_id,
+        ready: true,
+    })
+}
+
+fn validate_webview_hydration_receipt(
+    profile_id: &str,
+    generation: &str,
+    expected: &[WebViewDocumentReceipt],
+    receipt: &WebViewHydrationReceipt,
+) -> CmdResult<()> {
+    if receipt.profile_id != profile_id
+        || receipt.generation != generation
+        || receipt.documents != expected
+    {
+        return Err("WebView hydrate 回读结果与 sealed generation 不一致".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn restore_webview_status(
+    state: State<AppState>,
+    generation_id: String,
+) -> CmdResult<WebViewHydrationStatus> {
+    let session = state
+        .webview_restore
+        .lock()
+        .map_err(|_| "WebView restore session 状态异常".to_string())?;
+    let session = session
+        .as_ref()
+        .filter(|session| {
+            session.reader.bootstrap().generation == generation_id
+                && session.profile_id == active_local_profile_id()
+        })
+        .ok_or_else(|| "WebView restore session 不存在或已失效".to_string())?;
+    Ok(WebViewHydrationStatus {
+        generation: generation_id,
+        ready: session.ready,
     })
 }
 
@@ -3767,6 +3973,7 @@ struct ResolvedProfilePaths {
     /// Device credentials/config stay at the profile root even after the user
     /// data plane switches to a restored generation.
     config_dir: std::path::PathBuf,
+    active_generation: Option<String>,
 }
 
 /// Resolve both the active user-data SQLite and the device-config root.
@@ -3788,6 +3995,7 @@ fn resolve_profile_paths(
         return Ok(ResolvedProfilePaths {
             db_path: p,
             config_dir,
+            active_generation: None,
         });
     }
     #[cfg(mobile)]
@@ -3801,6 +4009,7 @@ fn resolve_profile_paths(
             dir
         };
         let active = solum_core::profile_generation::resolve_active_data_dir(&profile_root)?;
+        let active_generation = active.generation_id().map(str::to_owned);
         return Ok(ResolvedProfilePaths {
             db_path: active
                 .path()
@@ -3808,6 +4017,7 @@ fn resolve_profile_paths(
                 .to_string_lossy()
                 .into_owned(),
             config_dir: profile_root,
+            active_generation,
         });
     }
     // Desktop: app-data, not the working directory.
@@ -3830,6 +4040,7 @@ fn resolve_profile_paths(
         return Ok(ResolvedProfilePaths {
             db_path,
             config_dir: profile,
+            active_generation: None,
         });
     }
     let db_path = solum_core::paths::resolve_with_adoption("solum.sqlite")
@@ -3842,6 +4053,7 @@ fn resolve_profile_paths(
     Ok(ResolvedProfilePaths {
         db_path,
         config_dir,
+        active_generation: None,
     })
 }
 
@@ -3904,6 +4116,8 @@ pub fn run() {
             }
             let resolved_profile = resolve_profile_paths(app)?;
             let db_path = resolved_profile.db_path;
+            let profile_root = resolved_profile.config_dir.clone();
+            let active_generation = resolved_profile.active_generation;
             let profile_dir = Some(resolved_profile.config_dir.as_path());
             // Every business config follows the selected SQLite profile. The
             // managed marker lets an app.restart() recalculate our own env
@@ -3958,6 +4172,9 @@ pub fn run() {
             app.manage(AppState {
                 orch: Arc::new(Mutex::new(orch)),
                 db_path: db_path.clone(),
+                profile_root,
+                active_generation,
+                webview_restore: Mutex::new(None),
                 llm_summary: Mutex::new(llm_summary),
                 // First poll looks back 6h so a freshly-granted permission
                 // doesn't have to wait for new data to show anything.
@@ -4119,6 +4336,10 @@ pub fn run() {
             fact_update,
             export_data,
             export_portable_data,
+            restore_webview_begin,
+            restore_webview_document_chunk,
+            restore_webview_finish,
+            restore_webview_status,
             event_reschedule,
         ])
         .run(tauri::generate_context!())
@@ -4575,5 +4796,79 @@ mod tests {
         assert!(daily_brief_is_due(None, first));
         assert!(!daily_brief_is_due(Some(first), first));
         assert!(daily_brief_is_due(Some(first), next));
+    }
+
+    #[test]
+    fn web_storage_names_keep_legacy_compatible_and_isolate_generations() {
+        let user = "11111111-1111-4111-8111-111111111111";
+        let generation = "0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            web_storage_names("guest", None).unwrap(),
+            WebStorageNames {
+                ui_state_key: "solum.ui-state.v1".into(),
+                chat_sessions_key: "pa.chat-sessions.v1".into(),
+                document_db_name: "pa-local-documents-v1".into(),
+            }
+        );
+        assert_eq!(
+            web_storage_names(user, None).unwrap().chat_sessions_key,
+            format!("pa.chat-sessions.v1.{user}")
+        );
+        let restored = web_storage_names(user, Some(generation)).unwrap();
+        assert_eq!(
+            restored.document_db_name,
+            format!("pa-local-documents-v1.{user}.generation.{generation}")
+        );
+        assert_ne!(restored, web_storage_names(user, None).unwrap());
+        assert!(web_storage_names(user, Some("../escape")).is_err());
+    }
+
+    #[test]
+    fn webview_hydration_receipt_requires_exact_profile_generation_and_ordered_set() {
+        let expected = vec![WebViewDocumentReceipt {
+            id: "document-1".into(),
+            plaintext_size: 7,
+            sha256: "01".repeat(32),
+        }];
+        let valid = WebViewHydrationReceipt {
+            profile_id: "guest".into(),
+            generation: "0123456789abcdef0123456789abcdef".into(),
+            documents: vec![WebViewDocumentReceipt {
+                id: "document-1".into(),
+                plaintext_size: 7,
+                sha256: "01".repeat(32),
+            }],
+        };
+        assert!(validate_webview_hydration_receipt(
+            "guest",
+            "0123456789abcdef0123456789abcdef",
+            &expected,
+            &valid
+        )
+        .is_ok());
+        let missing = WebViewHydrationReceipt {
+            documents: Vec::new(),
+            ..valid
+        };
+        assert!(validate_webview_hydration_receipt(
+            "guest",
+            "0123456789abcdef0123456789abcdef",
+            &expected,
+            &missing
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn frontend_hydrates_only_inactive_generation_and_does_not_publish_pointer() {
+        let html = include_str!("../dist/index.html");
+        assert!(html.contains("hydratePortableGenerationWebView(generationId)"));
+        assert!(html.contains("restore_webview_begin"));
+        assert!(html.contains("restore_webview_document_chunk"));
+        assert!(html.contains("restore_webview_finish"));
+        assert!(html.contains("store.clear()"));
+        assert!(html.contains("await sha256Hex(await actual.blob.arrayBuffer())"));
+        assert!(html.contains("safeLocalGet(storage.chat_sessions_key) !== chatJson"));
+        assert!(!html.contains("publish_profile_generation"));
     }
 }

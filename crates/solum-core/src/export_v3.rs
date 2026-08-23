@@ -592,7 +592,7 @@ fn validate_section(section: &PortableSection, restore: Option<&Value>) -> Resul
     validate_pending_rows(&section.pending_notifications)
 }
 
-fn validate_chat(chat: &PortableChat) -> Result<()> {
+pub(crate) fn validate_chat(chat: &PortableChat) -> Result<()> {
     if chat.sessions.len() > MAX_CHAT_SESSIONS || chat.drafts.len() > MAX_CHAT_SESSIONS {
         return Err(invalid("chat count exceeds limit"));
     }
@@ -634,7 +634,7 @@ fn validate_chat(chat: &PortableChat) -> Result<()> {
     Ok(())
 }
 
-fn validate_documents(documents: &[DocumentManifest]) -> Result<()> {
+pub(crate) fn validate_documents(documents: &[DocumentManifest]) -> Result<()> {
     if documents.len() > MAX_DOCUMENTS {
         return Err(invalid("document count exceeds limit"));
     }
@@ -709,7 +709,7 @@ fn validate_pending_fields(
     validate_rfc3339(received_at)
 }
 
-fn validate_llm(llm: &PortableLlmSettings) -> Result<()> {
+pub(crate) fn validate_llm(llm: &PortableLlmSettings) -> Result<()> {
     crate::net::validate_endpoint(&llm.base_url, "backup LLM base_url")?;
     if llm.model.trim().is_empty()
         || llm.model.chars().count() > 200
@@ -729,7 +729,7 @@ fn validate_external_intents(intents: &ExternalRestoreIntents) -> Result<()> {
     validate_string_set(&intents.health_sources, 32, 128)
 }
 
-fn validate_restore_intents(intents: &PortableRestoreIntents) -> Result<()> {
+pub(crate) fn validate_restore_intents(intents: &PortableRestoreIntents) -> Result<()> {
     validate_string_set(&intents.notification_packages, 256, 255)?;
     validate_string_set(&intents.auto_event_packages, 256, 255)?;
     if !intents
