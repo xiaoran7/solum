@@ -94,6 +94,11 @@ jobs:
           POSTGRES_USER=postgres POSTGRES_DB=solum_test \
           PGHOST=postgres PGPASSWORD=ci-owner-password \
           server/db/init/00-roles.sh
+      - name: Provision schema exactly as production init does
+        run: |
+          PGPASSWORD=ci-owner-password psql \
+            --host=postgres --username=postgres --dbname=solum_test \
+            --file=server/db/init/01-schema.sql
       - name: Frontend static checks
         run: node scripts/check-frontend.mjs
       - name: Assert the integration environment is really wired up
