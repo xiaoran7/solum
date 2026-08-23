@@ -214,6 +214,14 @@ function backupUuid(value) {
   return value;
 }
 
+function backupWriterId(value, code = 'invalid_backup_plan') {
+  if (typeof value !== 'string' || !UUID_PATTERN.test(value) ||
+      value === '00000000-0000-0000-0000-000000000000') {
+    throw new HttpError(code === 'backup_writer_stale' ? 409 : 400, code);
+  }
+  return value;
+}
+
 function backupGeneration(value) {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new HttpError(400, 'invalid_backup_plan');
@@ -284,11 +292,20 @@ function parseBackupPlan(body, config) {
 }
 
 function parseTakeover(body) {
-  requireExactKeys(body, ['expected_generation', 'takeover_id'], 'invalid_backup_plan');
+  requireExactKeys(body, ['expected_generation', 'takeover_id', 'writer_id'],
+    'invalid_backup_plan');
   return {
     expectedGeneration: backupGeneration(body.expected_generation),
     takeoverId: backupUuid(body.takeover_id),
+    writerId: backupWriterId(body.writer_id),
   };
+}
+
+function parseWriterClaim(body) {
+  requireExactKeys(body, ['expected_generation', 'writer_id'], 'invalid_backup_plan');
+  const expectedGeneration = backupGeneration(body.expected_generation);
+  if (expectedGeneration !== 1) throw new HttpError(400, 'invalid_backup_plan');
+  return { expectedGeneration, writerId: backupWriterId(body.writer_id) };
 }
 
 function quotedDigest(buffer) {
@@ -646,7 +663,7 @@ async function backupState(client, tenantId) {
      values($1,1) on conflict(tenant_id) do nothing`, [tenantId]
   );
   const selected = await client.query(
-    `select active_generation,last_takeover_id,updated_at
+    `select active_generation,last_takeover_id,writer_id,updated_at
      from vault.backup_state where tenant_id=$1`, [tenantId]
   );
   if (selected.rowCount !== 1) throw new Error('backup state initialization failed');
@@ -655,8 +672,15 @@ async function backupState(client, tenantId) {
       selected.rows[0].active_generation, 'backup_active_generation'
     ),
     lastTakeoverId: selected.rows[0].last_takeover_id,
+    writerId: selected.rows[0].writer_id,
     updatedAt: selected.rows[0].updated_at,
   };
+}
+
+function requireBackupWriter(req, state) {
+  const writerId = backupWriterId(req.headers['x-solum-backup-writer'], 'backup_writer_stale');
+  if (state.writerId !== writerId) throw new HttpError(409, 'backup_writer_stale');
+  return writerId;
 }
 
 function backupObjectJson(row) {
@@ -1242,7 +1266,7 @@ async function createPostgresServer(overrides = {}) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Headers',
-        'Content-Type, Authorization, X-Device, If-Match');
+        'Content-Type, Authorization, X-Device, X-Solum-Backup-Writer, If-Match');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
       res.setHeader('Access-Control-Expose-Headers',
         'X-Solum-Request-Id, X-Solum-Requested-Model, X-Solum-Effective-Model, ' +
@@ -1542,14 +1566,47 @@ async function createPostgresServer(overrides = {}) {
       });
     }
 
+    if (req.method === 'POST' && url.pathname === '/v1/backups/writer') {
+      const tenantId = await authenticate(req);
+      const claim = parseWriterClaim(await readJson(req));
+      const result = await withTenant(pool, tenantId, async (client) => {
+        await lockTenantMutation(client, tenantId);
+        const state = await backupState(client, tenantId);
+        if (state.activeGeneration !== claim.expectedGeneration) {
+          throw new HttpError(409, 'backup_generation_stale');
+        }
+        if (state.writerId === claim.writerId) {
+          return { activeGeneration: state.activeGeneration, claimed: false };
+        }
+        if (state.writerId !== null) throw new HttpError(409, 'backup_writer_stale');
+        const existing = await client.query(
+          'select 1 from vault.backups where tenant_id=$1 limit 1', [tenantId]
+        );
+        if (existing.rowCount !== 0) throw new HttpError(409, 'backup_writer_required');
+        await client.query(
+          `update vault.backup_state set writer_id=$2,updated_at=now()
+           where tenant_id=$1 and writer_id is null`, [tenantId, claim.writerId]
+        );
+        return { activeGeneration: state.activeGeneration, claimed: true };
+      });
+      return json(res, 200, {
+        active_generation: result.activeGeneration,
+        claimed: result.claimed,
+      });
+    }
+
     if (req.method === 'POST' && url.pathname === '/v1/backups/generation') {
       const tenantId = await authenticate(req);
       const takeover = parseTakeover(await readJson(req));
       const advanced = await withTenant(pool, tenantId, async (client) => {
         await lockTenantMutation(client, tenantId);
         const state = await backupState(client, tenantId);
-        if (state.lastTakeoverId === takeover.takeoverId) {
+        if (state.lastTakeoverId === takeover.takeoverId &&
+            state.writerId === takeover.writerId) {
           return { activeGeneration: state.activeGeneration, prunedPending: 0, replay: true };
+        }
+        if (state.lastTakeoverId === takeover.takeoverId) {
+          throw new HttpError(409, 'backup_writer_stale');
         }
         if (state.activeGeneration !== takeover.expectedGeneration ||
             state.activeGeneration === Number.MAX_SAFE_INTEGER) {
@@ -1557,8 +1614,9 @@ async function createPostgresServer(overrides = {}) {
         }
         const next = state.activeGeneration + 1;
         await client.query(
-          `update vault.backup_state set active_generation=$2,last_takeover_id=$3,updated_at=now()
-           where tenant_id=$1`, [tenantId, next, takeover.takeoverId]
+          `update vault.backup_state
+           set active_generation=$2,last_takeover_id=$3,writer_id=$4,updated_at=now()
+           where tenant_id=$1`, [tenantId, next, takeover.takeoverId, takeover.writerId]
         );
         const removed = await client.query(
           `delete from vault.backups
@@ -1580,6 +1638,7 @@ async function createPostgresServer(overrides = {}) {
       const created = await withTenant(pool, tenantId, async (client) => {
         await lockTenantMutation(client, tenantId);
         const state = await backupState(client, tenantId);
+        requireBackupWriter(req, state);
         if (state.activeGeneration !== plan.generation) {
           throw new HttpError(409, 'backup_generation_stale');
         }
@@ -1694,6 +1753,7 @@ async function createPostgresServer(overrides = {}) {
       const uploaded = await withTenant(pool, tenantId, async (client) => {
         await lockTenantMutation(client, tenantId);
         const state = await backupState(client, tenantId);
+        requireBackupWriter(req, state);
         const selected = await client.query(
           `select b.status,b.generation,o.declared_bytes,o.declared_sha256,o.ciphertext
            from vault.backups b join vault.backup_objects o
@@ -1764,6 +1824,7 @@ async function createPostgresServer(overrides = {}) {
       const committed = await withTenant(pool, tenantId, async (client) => {
         await lockTenantMutation(client, tenantId);
         const state = await backupState(client, tenantId);
+        requireBackupWriter(req, state);
         const selected = await client.query(
           `select backup_id,generation,protocol_version,client_created_at,committed_at,
                   plan_sha256,total_bytes,object_count,status
@@ -2117,5 +2178,5 @@ module.exports = {
   createPostgresServer, verifyAccessToken, withTenant, parseModelCatalog, usageProjection,
   validateCompletionOptions, readBodyLimited, recoverTenantStaleAiRequests, proxyCompletion,
   optionalBoundedNumber, optionalHttpUrl, requiredOpaqueString, safeDatabaseInteger,
-  parseBackupPlan, parseTakeover, parseIfMatch, buildConfig,
+  parseBackupPlan, parseTakeover, parseWriterClaim, parseIfMatch, buildConfig,
 };

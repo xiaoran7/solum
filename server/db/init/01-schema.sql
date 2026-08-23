@@ -294,8 +294,11 @@ create table if not exists vault.backup_state (
   tenant_id uuid primary key references auth.users(id) on delete cascade,
   active_generation bigint not null default 1 check (active_generation between 1 and 9007199254740991),
   last_takeover_id uuid,
+  writer_id uuid,
   updated_at timestamptz not null default now()
 );
+
+alter table vault.backup_state add column if not exists writer_id uuid;
 
 create table if not exists vault.backups (
   tenant_id uuid not null references auth.users(id) on delete cascade,

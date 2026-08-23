@@ -5334,7 +5334,7 @@ async function prepareBackupRestore(backupId, stagedGeneration) {
     showBackupPreview({ backupId, generationId, staged, preview });
     toast("候选版本已校验，本机尚未改变", "ok");
   } catch (error) {
-    toast(`恢复准备失败：${String(error)}`, "danger", 5200);
+    toast(safeUserError(error, "恢复准备暂时无法完成，本机数据未改变。"), "danger", 5200);
   } finally { backupSetBusy(false); }
 }
 async function confirmBackupTakeover() {
@@ -5355,7 +5355,7 @@ async function confirmBackupTakeover() {
       });
     } catch (error) {
       backupSetBusy(false);
-      toast(`接管未完成：${String(error)}`, "danger", 6000);
+      toast(safeUserError(error, "接管未完成，请重新校验后重试。"), "danger", 6000);
       await refreshBackupCenter();
     }
   }, { icon: "shield" });
@@ -5371,10 +5371,12 @@ async function refreshBackupCenter() {
       invoke("backup_restore_pending"),
     ]);
     const backups = Array.isArray(catalog.backups) ? catalog.backups.slice() : [];
-    backups.sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)));
+    backups.sort((left, right) =>
+      String(right.committed_at).localeCompare(String(left.committed_at))
+      || String(right.backup_id).localeCompare(String(left.backup_id)));
     $("backupCount").textContent = `${backups.length} 个版本`;
     const latest = backups[0];
-    $("backupSealTitle").textContent = latest ? `最近封缄于 ${backupDate(latest.created_at)}` : "还没有云端备份";
+    $("backupSealTitle").textContent = latest ? `最近封缄于 ${backupDate(latest.committed_at)}` : "还没有云端备份";
     $("backupSealMeta").textContent = latest
       ? `${readableDocumentSize(Number(latest.total_bytes || 0))} 密文 · 设备代次 ${latest.generation} · 不会自动备份`
       : `当前云端代次 ${catalog.active_generation || 1} · 只在你点击时创建`;
@@ -5398,7 +5400,7 @@ async function refreshBackupCenter() {
       versions.appendChild(el("div", { class: "backup-version" }, [
         el("span", { class: "backup-pin" }),
         el("span", { class: "backup-version-copy" }, [
-          el("span", { class: "backup-version-title", text: backupDate(version.created_at) }),
+          el("span", { class: "backup-version-title", text: backupDate(version.committed_at) }),
           el("span", { class: "backup-version-meta", text: `${readableDocumentSize(Number(version.total_bytes || 0))} 密文 · ${version.object_count || 0} 个密文对象 · 协议 v${version.protocol_version}` }),
           el("span", { class: "backup-version-meta", text: `设备代次 ${version.generation}${isPending ? " · 接管待继续" : ""}` }),
         ]),
@@ -5410,7 +5412,7 @@ async function refreshBackupCenter() {
     $("backupSealTitle").textContent = "暂时无法读取备份";
     $("backupSealMeta").textContent = "本机数据未受影响";
     versions.textContent = "";
-    versions.appendChild(emptyBox("cloud", "封缄点读取失败", String(error)));
+    versions.appendChild(emptyBox("cloud", "封缄点读取失败", safeUserError(error, "封缄点暂时无法读取，请稍后重试。")));
   }
 }
 async function createBackupFromCenter() {
@@ -5421,7 +5423,7 @@ async function createBackupFromCenter() {
     toast("加密备份已封缄并提交", "ok");
     await refreshBackupCenter();
   } catch (error) {
-    toast(`备份未完成：${String(error)}`, "danger", 6000);
+    toast(safeUserError(error, "备份未完成，本机数据已保留。"), "danger", 6000);
   } finally { backupSetBusy(false); }
 }
 $("backupSealIcon").appendChild(icon("lock", 20));

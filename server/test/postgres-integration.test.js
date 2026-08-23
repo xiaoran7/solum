@@ -532,6 +532,9 @@ test('PostgreSQL runtime enforces auth, RLS, quotas and JSON contracts',
 
     const backupPayload = Buffer.from('opaque-backup-ciphertext');
     const backupDigest = crypto.createHash('sha256').update(backupPayload).digest('hex');
+    const backupWriter = '40000000-0000-4000-8000-000000000001';
+    const competingWriter = '40000000-0000-4000-8000-000000000002';
+    const takeoverWriter = '40000000-0000-4000-8000-000000000003';
     const makePlan = (suffix, createdAt = '2026-01-02T03:04:05.000Z') => ({
       backup_id: `10000000-0000-4000-8000-${suffix.padStart(12, '0')}`,
       generation: 1,
@@ -542,14 +545,16 @@ test('PostgreSQL runtime enforces auth, RLS, quotas and JSON contracts',
         kind: 'main', bytes: backupPayload.length, sha256: backupDigest,
       }],
     });
-    const putBackup = (token, plan, payload = backupPayload) => fetch(
+    const putBackup = (token, plan, payload = backupPayload, writer = backupWriter) => fetch(
       `${base}/v1/backups/${plan.backup_id}/objects/${plan.objects[0].object_id}`,
       { method: 'PUT', headers: { Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/octet-stream' }, body: payload }
+        'Content-Type': 'application/octet-stream',
+        'X-Solum-Backup-Writer': writer }, body: payload }
     );
-    const commitBackup = (token, plan) => fetch(
+    const commitBackup = (token, plan, writer = backupWriter) => fetch(
       `${base}/v1/backups/${plan.backup_id}/commit`,
-      { method: 'POST', headers: { Authorization: `Bearer ${token}` } }
+      { method: 'POST', headers: { Authorization: `Bearer ${token}`,
+        'X-Solum-Backup-Writer': writer } }
     );
 
     const generation = await jsonRequest(base, '/v1/backups/generation', {
@@ -557,9 +562,31 @@ test('PostgreSQL runtime enforces auth, RLS, quotas and JSON contracts',
     });
     assert.equal(generation.response.status, 200);
     assert.equal(generation.data.active_generation, 1);
+    const writerClaim = await jsonRequest(base, '/v1/backups/writer', {
+      method: 'POST', token: rotated.data.access_token,
+      body: { expected_generation: 1, writer_id: backupWriter },
+    });
+    assert.equal(writerClaim.response.status, 200);
+    assert.equal(writerClaim.data.claimed, true);
+    const writerReplay = await jsonRequest(base, '/v1/backups/writer', {
+      method: 'POST', token: rotated.data.access_token,
+      body: { expected_generation: 1, writer_id: backupWriter },
+    });
+    assert.equal(writerReplay.response.status, 200);
+    assert.equal(writerReplay.data.claimed, false);
+    const competingClaim = await jsonRequest(base, '/v1/backups/writer', {
+      method: 'POST', token: rotated.data.access_token,
+      body: { expected_generation: 1, writer_id: competingWriter },
+    });
+    assert.equal(competingClaim.response.status, 409,
+      'a second device must not become a generation-1 writer');
     const firstPlan = makePlan('1');
+    assert.equal((await jsonRequest(base, '/v1/backups', {
+      method: 'POST', token: rotated.data.access_token, body: firstPlan,
+    })).response.status, 409, 'backup mutations require the claimed writer id');
     const createdBackup = await jsonRequest(base, '/v1/backups', {
       method: 'POST', token: rotated.data.access_token, body: firstPlan,
+      headers: { 'X-Solum-Backup-Writer': backupWriter },
     });
     assert.equal(createdBackup.response.status, 201);
     assert.equal((await commitBackup(rotated.data.access_token, firstPlan)).status, 409,
@@ -601,6 +628,7 @@ test('PostgreSQL runtime enforces auth, RLS, quotas and JSON contracts',
     const conflictingPlan = { ...firstPlan, created_at: '2026-01-02T03:04:06.000Z' };
     assert.equal((await jsonRequest(base, '/v1/backups', {
       method: 'POST', token: rotated.data.access_token, body: conflictingPlan,
+      headers: { 'X-Solum-Backup-Writer': backupWriter },
     })).response.status, 409);
     assert.equal((await fetch(`${base}/v1/backups/${firstPlan.backup_id}`, {
       method: 'DELETE', headers: { Authorization: `Bearer ${rotated.data.access_token}` },
@@ -614,6 +642,7 @@ test('PostgreSQL runtime enforces auth, RLS, quotas and JSON contracts',
       const plan = makePlan(String(index), `2026-01-02T03:04:0${index}.000Z`);
       assert.equal((await jsonRequest(base, '/v1/backups', {
         method: 'POST', token: rotated.data.access_token, body: plan,
+        headers: { 'X-Solum-Backup-Writer': backupWriter },
       })).response.status, 201);
       assert.equal((await putBackup(rotated.data.access_token, plan)).status, 201);
       assert.equal((await commitBackup(rotated.data.access_token, plan)).status, 200);
@@ -634,6 +663,7 @@ test('PostgreSQL runtime enforces auth, RLS, quotas and JSON contracts',
     const takeover = {
       expected_generation: 1,
       takeover_id: '30000000-0000-4000-8000-000000000001',
+      writer_id: takeoverWriter,
     };
     const advanced = await jsonRequest(base, '/v1/backups/generation', {
       method: 'POST', token: rotated.data.access_token, body: takeover,
@@ -644,9 +674,23 @@ test('PostgreSQL runtime enforces auth, RLS, quotas and JSON contracts',
     });
     assert.equal(retriedAdvance.data.active_generation, 2);
     assert.equal(retriedAdvance.data.replay, true);
+    assert.equal((await jsonRequest(base, '/v1/backups/generation', {
+      method: 'POST', token: rotated.data.access_token,
+      body: { ...takeover, writer_id: competingWriter },
+    })).response.status, 409, 'takeover replay is bound to the same writer id');
     assert.equal((await jsonRequest(base, '/v1/backups', {
       method: 'POST', token: rotated.data.access_token, body: makePlan('4'),
+      headers: { 'X-Solum-Backup-Writer': backupWriter },
     })).response.status, 409, 'the old generation cannot create another upload');
+    const nextGenerationPlan = { ...makePlan('4'), generation: 2 };
+    assert.equal((await jsonRequest(base, '/v1/backups', {
+      method: 'POST', token: rotated.data.access_token, body: nextGenerationPlan,
+      headers: { 'X-Solum-Backup-Writer': takeoverWriter },
+    })).response.status, 201, 'the confirmed takeover writer owns the new generation');
+    assert.equal((await putBackup(rotated.data.access_token, nextGenerationPlan,
+      backupPayload, takeoverWriter)).status, 201);
+    assert.equal((await commitBackup(rotated.data.access_token,
+      nextGenerationPlan, takeoverWriter)).status, 200);
 
     const legacyDevice = await pool.connect();
     try {

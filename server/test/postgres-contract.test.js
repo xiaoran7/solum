@@ -11,7 +11,7 @@ const {
   verifyAccessToken, withTenant, parseModelCatalog, usageProjection,
   validateCompletionOptions, readBodyLimited, recoverTenantStaleAiRequests,
   optionalBoundedNumber, optionalHttpUrl, requiredOpaqueString, safeDatabaseInteger,
-  parseBackupPlan, parseTakeover, parseIfMatch, buildConfig,
+  parseBackupPlan, parseTakeover, parseWriterClaim, parseIfMatch, buildConfig,
 } = require('../src/postgres-server');
 const {
   createRefreshToken,
@@ -115,12 +115,26 @@ test('backup takeover and delete preconditions reject ambiguous inputs', () => {
   assert.deepEqual(parseTakeover({
     expected_generation: 3,
     takeover_id: '44444444-4444-4444-8444-444444444444',
+    writer_id: '55555555-5555-4555-8555-555555555555',
   }), {
     expectedGeneration: 3,
     takeoverId: '44444444-4444-4444-8444-444444444444',
+    writerId: '55555555-5555-4555-8555-555555555555',
   });
   assert.throws(() => parseTakeover({ expected_generation: 3,
-    takeover_id: '44444444-4444-4444-8444-444444444444', tenant_id: 'leak' }));
+    takeover_id: '44444444-4444-4444-8444-444444444444',
+    writer_id: '55555555-5555-4555-8555-555555555555', tenant_id: 'leak' }));
+  assert.deepEqual(parseWriterClaim({
+    expected_generation: 1,
+    writer_id: '55555555-5555-4555-8555-555555555555',
+  }), {
+    expectedGeneration: 1,
+    writerId: '55555555-5555-4555-8555-555555555555',
+  });
+  assert.throws(() => parseWriterClaim({
+    expected_generation: 2,
+    writer_id: '55555555-5555-4555-8555-555555555555',
+  }));
   assert.equal(parseIfMatch(`"${'ab'.repeat(32)}"`).toString('hex'), 'ab'.repeat(32));
   assert.throws(() => parseIfMatch(undefined), /precondition_required/);
   assert.throws(() => parseIfMatch('ab'.repeat(32)), /precondition_failed/);
@@ -151,7 +165,8 @@ test('backup routes keep ciphertext opaque and commit before retention pruning',
   assert.ok(routes.indexOf("status='complete',committed_at=now()") <
     routes.indexOf('order by committed_at desc,backup_id desc offset $2'));
   assert.match(routes, /If-Match|if-match/);
-  assert.match(source, /Content-Type, Authorization, X-Device, If-Match/);
+  assert.match(source,
+    /Content-Type, Authorization, X-Device, X-Solum-Backup-Writer, If-Match/);
   assert.match(source, /GET, POST, PUT, DELETE, OPTIONS/);
   assert.match(source, /delete from vault\.backups where tenant_id=\$1 and status='pending'/);
   assert.doesNotMatch(source, /console\.error\(error\)|console\.error\('request failed', error\)/);

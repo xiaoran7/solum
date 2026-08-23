@@ -18,7 +18,7 @@ use crate::backup_upload;
 pub const TAKEOVER_JOURNAL_FILE: &str = "solum-backup-takeover.json";
 
 const JOURNAL_FORMAT: &str = "solum-backup-takeover";
-const JOURNAL_VERSION: u32 = 1;
+const JOURNAL_VERSION: u32 = 2;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 type TakeoverResult<T> = std::result::Result<T, BackupTakeoverError>;
@@ -77,6 +77,7 @@ struct TakeoverJournal {
     staged_generation: String,
     expected_generation: u64,
     takeover_id: String,
+    writer_id: String,
     phase: TakeoverPhase,
     target_generation: Option<u64>,
 }
@@ -147,6 +148,7 @@ pub fn begin_or_resume_takeover(
                 staged_generation: binding.staged_generation.into(),
                 expected_generation: binding.expected_generation,
                 takeover_id: random_uuid_v4()?,
+                writer_id: random_uuid_v4()?,
                 phase: TakeoverPhase::Planned,
                 target_generation: None,
             };
@@ -202,6 +204,7 @@ pub fn advance_takeover(
                 session,
                 pending.journal.expected_generation,
                 &pending.journal.takeover_id,
+                &pending.journal.writer_id,
             )
             .map_err(map_cloud_error)?;
         let target = pending
@@ -226,6 +229,7 @@ pub fn advance_takeover(
         &pending.journal.user_id,
         pending.journal.expected_generation,
         target,
+        &pending.journal.writer_id,
     )
     .map_err(|_| BackupTakeoverError::DeviceState)?;
     if pending.journal.phase != TakeoverPhase::DeviceReady {
@@ -291,6 +295,7 @@ fn validate_journal(journal: &TakeoverJournal) -> TakeoverResult<()> {
         || journal.expected_generation == 0
         || journal.expected_generation >= MAX_SAFE_INTEGER
         || !valid_uuid(&journal.takeover_id)
+        || !valid_uuid(&journal.writer_id)
     {
         return Err(BackupTakeoverError::InvalidJournal);
     }
@@ -401,6 +406,7 @@ mod tests {
             _session: &mut AccountSession,
             expected_generation: u64,
             _takeover_id: &str,
+            _writer_id: &str,
         ) -> std::result::Result<CloudTakeoverOutcome, BackupDownloadError> {
             *self.calls.lock().unwrap() += 1;
             self.result.clone().map(|mut outcome| {

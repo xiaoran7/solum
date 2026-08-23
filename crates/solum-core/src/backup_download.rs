@@ -159,6 +159,7 @@ pub trait BackupCloudTakeover {
         session: &mut AccountSession,
         expected_generation: u64,
         takeover_id: &str,
+        writer_id: &str,
     ) -> DownloadResult<CloudTakeoverOutcome>;
 }
 
@@ -487,6 +488,7 @@ impl HttpBackupCloudReader {
 struct TakeoverRequest<'a> {
     expected_generation: u64,
     takeover_id: &'a str,
+    writer_id: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -503,16 +505,20 @@ impl BackupCloudTakeover for HttpBackupCloudReader {
         session: &mut AccountSession,
         expected_generation: u64,
         takeover_id: &str,
+        writer_id: &str,
     ) -> DownloadResult<CloudTakeoverOutcome> {
         if expected_generation == 0
             || expected_generation >= MAX_SAFE_INTEGER
             || !valid_uuid(takeover_id)
+            || !valid_uuid(writer_id)
+            || writer_id != writer_id.to_ascii_lowercase()
         {
             return Err(BackupDownloadError::InvalidCatalog);
         }
         let request = TakeoverRequest {
             expected_generation,
             takeover_id,
+            writer_id,
         };
         let response = self.request(session, |current| {
             self.agent

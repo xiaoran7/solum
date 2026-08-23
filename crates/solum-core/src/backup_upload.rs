@@ -26,7 +26,7 @@ pub const UPLOAD_STAGING_DIR: &str = "backup-upload-staging";
 pub const MAX_IPC_CHUNK_BYTES: usize = 512 * 1024;
 
 const DEVICE_STATE_FORMAT: &str = "solum-backup-device";
-const DEVICE_STATE_VERSION: u32 = 1;
+const DEVICE_STATE_VERSION: u32 = 2;
 const HTTP_TIMEOUT_SECS: u64 = 30;
 const OBJECT_ID_KDF_SALT: &[u8] = b"solum-backup-object-id:hkdf-salt:v1";
 const OBJECT_ID_KDF_INFO: &[u8] = b"solum-backup-object-id:info:v1";
@@ -92,6 +92,21 @@ struct BackupDeviceState {
     version: u32,
     user_id: String,
     device_generation: u64,
+    writer_id: String,
+    phase: BackupDevicePhase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BackupDevicePhase {
+    Claiming,
+    Active,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupDeviceAuthority {
+    pub generation: u64,
+    pub writer_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +168,7 @@ struct StagedObject {
 pub struct BackupUploadSession {
     session_id: String,
     metadata: BackupMetadata,
+    writer_id: String,
     master_key: [u8; 32],
     manifests: Vec<DocumentManifest>,
     next_attachment: usize,
@@ -166,10 +182,21 @@ pub struct BackupUploadSession {
 /// below performs bounded retry and access-token rotation.
 pub trait BackupCloudTransport {
     fn active_generation(&self, session: &mut AccountSession) -> UploadResult<u64>;
-    fn create_plan(&self, session: &mut AccountSession, plan: &BackupPlan) -> UploadResult<()>;
+    fn claim_initial_writer(
+        &self,
+        session: &mut AccountSession,
+        writer_id: &str,
+    ) -> UploadResult<u64>;
+    fn create_plan(
+        &self,
+        session: &mut AccountSession,
+        writer_id: &str,
+        plan: &BackupPlan,
+    ) -> UploadResult<()>;
     fn put_object(
         &self,
         session: &mut AccountSession,
+        writer_id: &str,
         backup_id: &str,
         object: &BackupObjectPlan,
         ciphertext: &[u8],
@@ -177,28 +204,28 @@ pub trait BackupCloudTransport {
     fn commit(
         &self,
         session: &mut AccountSession,
+        writer_id: &str,
         plan: &BackupPlan,
     ) -> UploadResult<BackupUploadOutcome>;
 }
 
 /// Load local single-writer authority and compare it to the server. A missing
-/// file can initialize generation 1 only; a higher remote generation is never
-/// silently adopted by an old or reinstalled device.
+/// file first persists a resumable random writer claim; the server atomically
+/// accepts at most one writer for an empty generation-1 tenant.
 pub fn load_or_initialize_device_generation(
     profile_root: &Path,
     user_id: &str,
     transport: &dyn BackupCloudTransport,
     session: &mut AccountSession,
-) -> UploadResult<u64> {
+) -> UploadResult<BackupDeviceAuthority> {
     if !valid_uuid(user_id) || user_id != user_id.to_ascii_lowercase() {
         return Err(BackupUploadError::InvalidDeviceState);
     }
     let path = profile_root.join(DEVICE_STATE_FILE);
     let local = match std::fs::read_to_string(&path) {
-        Ok(raw) => Some(
-            serde_json::from_str::<BackupDeviceState>(&raw)
-                .map_err(|_| BackupUploadError::InvalidDeviceState)?,
-        ),
+        Ok(raw) => serde_json::from_str::<BackupDeviceState>(&raw)
+            .map(Some)
+            .map_err(|_| BackupUploadError::InvalidDeviceState)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(_) => return Err(BackupUploadError::InvalidDeviceState),
     };
@@ -207,33 +234,57 @@ pub fn load_or_initialize_device_generation(
             || state.version != DEVICE_STATE_VERSION
             || state.user_id != user_id
             || state.device_generation == 0
+            || !valid_uuid(&state.writer_id)
+            || state.writer_id != state.writer_id.to_ascii_lowercase()
+            || (state.phase == BackupDevicePhase::Claiming && state.device_generation != 1)
         {
             return Err(BackupUploadError::InvalidDeviceState);
         }
     }
 
-    let remote = transport.active_generation(session)?;
-    if remote == 0 {
-        return Err(BackupUploadError::InvalidResponse);
-    }
-    match local {
-        Some(state) if state.device_generation == remote => Ok(remote),
-        Some(_) => Err(BackupUploadError::StaleGeneration),
-        None if remote == 1 => {
+    let mut state = match local {
+        Some(state) => state,
+        None => {
             let state = BackupDeviceState {
                 format: DEVICE_STATE_FORMAT.to_string(),
                 version: DEVICE_STATE_VERSION,
                 user_id: user_id.to_string(),
                 device_generation: 1,
+                writer_id: random_uuid_v4()?,
+                phase: BackupDevicePhase::Claiming,
             };
-            let encoded =
-                serde_json::to_string(&state).map_err(|_| BackupUploadError::InvalidDeviceState)?;
-            crate::fsatomic::write_atomic_durable(&path, &encoded)
-                .map_err(|_| BackupUploadError::InvalidDeviceState)?;
-            Ok(1)
+            persist_device_state(&path, &state)?;
+            state
         }
-        None => Err(BackupUploadError::StaleGeneration),
+    };
+
+    if state.phase == BackupDevicePhase::Claiming {
+        let remote = transport.claim_initial_writer(session, &state.writer_id)?;
+        if remote != 1 {
+            return Err(BackupUploadError::InvalidResponse);
+        }
+        state.phase = BackupDevicePhase::Active;
+        persist_device_state(&path, &state)?;
+    } else {
+        let remote = transport.active_generation(session)?;
+        if remote == 0 {
+            return Err(BackupUploadError::InvalidResponse);
+        }
+        if state.device_generation != remote {
+            return Err(BackupUploadError::StaleGeneration);
+        }
     }
+    Ok(BackupDeviceAuthority {
+        generation: state.device_generation,
+        writer_id: state.writer_id,
+    })
+}
+
+fn persist_device_state(path: &Path, state: &BackupDeviceState) -> UploadResult<()> {
+    let encoded =
+        serde_json::to_string(state).map_err(|_| BackupUploadError::InvalidDeviceState)?;
+    crate::fsatomic::write_atomic_durable(path, &encoded)
+        .map_err(|_| BackupUploadError::InvalidDeviceState)
 }
 
 /// Persist the generation returned by an authenticated, journaled takeover.
@@ -244,11 +295,14 @@ pub fn persist_taken_over_device_generation(
     user_id: &str,
     expected_generation: u64,
     target_generation: u64,
+    writer_id: &str,
 ) -> UploadResult<()> {
     if !valid_uuid(user_id)
         || user_id != user_id.to_ascii_lowercase()
         || expected_generation == 0
         || expected_generation.checked_add(1) != Some(target_generation)
+        || !valid_uuid(writer_id)
+        || writer_id != writer_id.to_ascii_lowercase()
     {
         return Err(BackupUploadError::InvalidDeviceState);
     }
@@ -269,6 +323,8 @@ pub fn persist_taken_over_device_generation(
                 state.device_generation,
                 value if value == expected_generation || value == target_generation
             )
+            || (state.device_generation == target_generation
+                && (state.writer_id != writer_id || state.phase != BackupDevicePhase::Active))
         {
             return Err(BackupUploadError::InvalidDeviceState);
         }
@@ -281,11 +337,10 @@ pub fn persist_taken_over_device_generation(
         version: DEVICE_STATE_VERSION,
         user_id: user_id.to_string(),
         device_generation: target_generation,
+        writer_id: writer_id.to_string(),
+        phase: BackupDevicePhase::Active,
     };
-    let encoded =
-        serde_json::to_string(&state).map_err(|_| BackupUploadError::InvalidDeviceState)?;
-    crate::fsatomic::write_atomic_durable(&path, &encoded)
-        .map_err(|_| BackupUploadError::InvalidDeviceState)
+    persist_device_state(&path, &state)
 }
 
 impl BackupUploadSession {
@@ -294,9 +349,13 @@ impl BackupUploadSession {
         portable_json: &[u8],
         user_id: &str,
         device_generation: u64,
+        writer_id: String,
         created_at: &str,
         master_key: [u8; 32],
     ) -> UploadResult<Self> {
+        if !valid_uuid(&writer_id) || writer_id != writer_id.to_ascii_lowercase() {
+            return Err(BackupUploadError::InvalidDeviceState);
+        }
         let document: Value = serde_json::from_slice(portable_json)
             .map_err(|_| BackupUploadError::InvalidSnapshot)?;
         crate::export::plan_import(&document).map_err(|_| BackupUploadError::InvalidSnapshot)?;
@@ -331,6 +390,7 @@ impl BackupUploadSession {
             Ok(Self {
                 session_id,
                 metadata,
+                writer_id,
                 master_key,
                 manifests,
                 next_attachment: 0,
@@ -459,7 +519,7 @@ impl BackupUploadSession {
             verify_staged_object(staged)?;
         }
 
-        transport.create_plan(account, &plan)?;
+        transport.create_plan(account, &self.writer_id, &plan)?;
         for staged in &self.staged {
             // Only one opaque object is resident at a time. Recheck after the
             // pre-plan pass so an unexpected local modification cannot turn a
@@ -473,9 +533,15 @@ impl BackupUploadSession {
             {
                 return Err(BackupUploadError::Staging);
             }
-            transport.put_object(account, &plan.backup_id, &staged.plan, &ciphertext)?;
+            transport.put_object(
+                account,
+                &self.writer_id,
+                &plan.backup_id,
+                &staged.plan,
+                &ciphertext,
+            )?;
         }
-        let outcome = transport.commit(account, &plan)?;
+        let outcome = transport.commit(account, &self.writer_id, &plan)?;
         if outcome.backup_id != plan.backup_id
             || outcome.generation != plan.generation
             || outcome.object_count != plan.objects.len()
@@ -792,6 +858,19 @@ struct GenerationResponse {
     updated_at: String,
 }
 
+#[derive(Serialize)]
+struct WriterClaimRequest<'a> {
+    expected_generation: u64,
+    writer_id: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WriterClaimResponse {
+    active_generation: u64,
+    claimed: bool,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CreateResponse {
@@ -842,11 +921,43 @@ impl BackupCloudTransport for HttpBackupCloudTransport {
         Ok(response.active_generation)
     }
 
-    fn create_plan(&self, session: &mut AccountSession, plan: &BackupPlan) -> UploadResult<()> {
+    fn claim_initial_writer(
+        &self,
+        session: &mut AccountSession,
+        writer_id: &str,
+    ) -> UploadResult<u64> {
+        if !valid_uuid(writer_id) || writer_id != writer_id.to_ascii_lowercase() {
+            return Err(BackupUploadError::InvalidDeviceState);
+        }
+        let request = WriterClaimRequest {
+            expected_generation: 1,
+            writer_id,
+        };
+        let response: WriterClaimResponse = self.request_json(session, |current| {
+            self.agent
+                .post(&Self::url(current, "/v1/backups/writer"))
+                .set("Authorization", &format!("Bearer {}", current.access_token))
+                .send_json(&request)
+                .map_err(HttpFailure::from)
+        })?;
+        if response.active_generation != 1 {
+            return Err(BackupUploadError::InvalidResponse);
+        }
+        let _ = response.claimed;
+        Ok(response.active_generation)
+    }
+
+    fn create_plan(
+        &self,
+        session: &mut AccountSession,
+        writer_id: &str,
+        plan: &BackupPlan,
+    ) -> UploadResult<()> {
         let response: CreateResponse = self.request_json(session, |current| {
             self.agent
                 .post(&Self::url(current, "/v1/backups"))
                 .set("Authorization", &format!("Bearer {}", current.access_token))
+                .set("X-Solum-Backup-Writer", writer_id)
                 .send_json(plan)
                 .map_err(HttpFailure::from)
         })?;
@@ -869,6 +980,7 @@ impl BackupCloudTransport for HttpBackupCloudTransport {
     fn put_object(
         &self,
         session: &mut AccountSession,
+        writer_id: &str,
         backup_id: &str,
         object: &BackupObjectPlan,
         ciphertext: &[u8],
@@ -881,6 +993,7 @@ impl BackupCloudTransport for HttpBackupCloudTransport {
             self.agent
                 .put(&Self::url(current, &path))
                 .set("Authorization", &format!("Bearer {}", current.access_token))
+                .set("X-Solum-Backup-Writer", writer_id)
                 .set("Content-Type", "application/octet-stream")
                 .set("Content-Length", &ciphertext.len().to_string())
                 .send_bytes(ciphertext)
@@ -898,6 +1011,7 @@ impl BackupCloudTransport for HttpBackupCloudTransport {
     fn commit(
         &self,
         session: &mut AccountSession,
+        writer_id: &str,
         plan: &BackupPlan,
     ) -> UploadResult<BackupUploadOutcome> {
         let path = format!("/v1/backups/{}/commit", plan.backup_id);
@@ -905,6 +1019,7 @@ impl BackupCloudTransport for HttpBackupCloudTransport {
             self.agent
                 .post(&Self::url(current, &path))
                 .set("Authorization", &format!("Bearer {}", current.access_token))
+                .set("X-Solum-Backup-Writer", writer_id)
                 .set("Content-Length", "0")
                 .send_bytes(&[])
                 .map_err(HttpFailure::from)
@@ -947,11 +1062,13 @@ mod tests {
     use crate::store::Store;
 
     const USER_ID: &str = "11111111-1111-4111-8111-111111111111";
+    const WRITER_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const CREATED_AT: &str = "2026-01-02T03:04:05.000Z";
     const KEY: [u8; 32] = [7; 32];
 
     struct FakeTransport {
         generation: u64,
+        writer: Mutex<Option<String>>,
         calls: Mutex<Vec<String>>,
         uploaded: Mutex<Vec<Vec<u8>>>,
     }
@@ -960,8 +1077,26 @@ mod tests {
         fn new(generation: u64) -> Self {
             Self {
                 generation,
+                writer: Mutex::new(Some(WRITER_ID.into())),
                 calls: Mutex::new(Vec::new()),
                 uploaded: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn unclaimed(generation: u64) -> Self {
+            Self {
+                generation,
+                writer: Mutex::new(None),
+                calls: Mutex::new(Vec::new()),
+                uploaded: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn require_writer(&self, writer_id: &str) -> UploadResult<()> {
+            if self.writer.lock().unwrap().as_deref() == Some(writer_id) {
+                Ok(())
+            } else {
+                Err(BackupUploadError::CloudConflict)
             }
         }
     }
@@ -972,11 +1107,33 @@ mod tests {
             Ok(self.generation)
         }
 
+        fn claim_initial_writer(
+            &self,
+            _session: &mut AccountSession,
+            writer_id: &str,
+        ) -> UploadResult<u64> {
+            self.calls.lock().unwrap().push("claim_writer".into());
+            if self.generation != 1 {
+                return Err(BackupUploadError::CloudConflict);
+            }
+            let mut writer = self.writer.lock().unwrap();
+            match writer.as_deref() {
+                Some(existing) if existing != writer_id => Err(BackupUploadError::CloudConflict),
+                Some(_) => Ok(1),
+                None => {
+                    *writer = Some(writer_id.to_string());
+                    Ok(1)
+                }
+            }
+        }
+
         fn create_plan(
             &self,
             _session: &mut AccountSession,
+            writer_id: &str,
             _plan: &BackupPlan,
         ) -> UploadResult<()> {
+            self.require_writer(writer_id)?;
             self.calls.lock().unwrap().push("plan".into());
             Ok(())
         }
@@ -984,10 +1141,12 @@ mod tests {
         fn put_object(
             &self,
             _session: &mut AccountSession,
+            writer_id: &str,
             _backup_id: &str,
             object: &BackupObjectPlan,
             ciphertext: &[u8],
         ) -> UploadResult<()> {
+            self.require_writer(writer_id)?;
             self.calls
                 .lock()
                 .unwrap()
@@ -999,8 +1158,10 @@ mod tests {
         fn commit(
             &self,
             _session: &mut AccountSession,
+            writer_id: &str,
             plan: &BackupPlan,
         ) -> UploadResult<BackupUploadOutcome> {
+            self.require_writer(writer_id)?;
             self.calls.lock().unwrap().push("commit".into());
             Ok(BackupUploadOutcome {
                 backup_id: plan.backup_id.clone(),
@@ -1061,30 +1222,38 @@ mod tests {
     }
 
     #[test]
-    fn generation_initializes_only_at_one_and_never_adopts_remote_advance() {
+    fn generation_one_writer_claim_is_atomic_and_never_adopts_remote_advance() {
         let root = temp_dir("generation");
         let mut session = account();
+        let transport = FakeTransport::unclaimed(1);
+        let authority =
+            load_or_initialize_device_generation(&root, USER_ID, &transport, &mut session).unwrap();
+        assert_eq!(authority.generation, 1);
+        let state: BackupDeviceState =
+            serde_json::from_str(&std::fs::read_to_string(root.join(DEVICE_STATE_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(state.phase, BackupDevicePhase::Active);
+        assert_eq!(state.writer_id, authority.writer_id);
+        assert!(!serde_json::to_string(&state)
+            .unwrap()
+            .contains("access-test-only"));
+
+        let competing = temp_dir("generation-competing");
         assert_eq!(
-            load_or_initialize_device_generation(
-                &root,
-                USER_ID,
-                &FakeTransport::new(1),
-                &mut session
-            )
-            .unwrap(),
-            1
+            load_or_initialize_device_generation(&competing, USER_ID, &transport, &mut session)
+                .unwrap_err(),
+            BackupUploadError::CloudConflict
         );
-        let state = std::fs::read_to_string(root.join(DEVICE_STATE_FILE)).unwrap();
-        assert!(!state.contains("access-test-only"));
+        let competing_state: BackupDeviceState = serde_json::from_str(
+            &std::fs::read_to_string(competing.join(DEVICE_STATE_FILE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(competing_state.phase, BackupDevicePhase::Claiming);
+        assert_ne!(competing_state.writer_id, authority.writer_id);
+
         assert_eq!(
-            load_or_initialize_device_generation(
-                &root,
-                USER_ID,
-                &FakeTransport::new(2),
-                &mut session
-            )
-            .unwrap_err(),
-            BackupUploadError::StaleGeneration
+            load_or_initialize_device_generation(&root, USER_ID, &transport, &mut session).unwrap(),
+            authority
         );
 
         let fresh = temp_dir("generation-fresh");
@@ -1092,14 +1261,18 @@ mod tests {
             load_or_initialize_device_generation(
                 &fresh,
                 USER_ID,
-                &FakeTransport::new(2),
+                &FakeTransport::unclaimed(2),
                 &mut session
             )
             .unwrap_err(),
-            BackupUploadError::StaleGeneration
+            BackupUploadError::CloudConflict
         );
-        assert!(!fresh.join(DEVICE_STATE_FILE).exists());
+        let fresh_state: BackupDeviceState =
+            serde_json::from_str(&std::fs::read_to_string(fresh.join(DEVICE_STATE_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(fresh_state.phase, BackupDevicePhase::Claiming);
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(competing);
         let _ = std::fs::remove_dir_all(fresh);
     }
 
@@ -1127,6 +1300,8 @@ mod tests {
                     version: DEVICE_STATE_VERSION,
                     user_id: USER_ID.into(),
                     device_generation,
+                    writer_id: WRITER_ID.into(),
+                    phase: BackupDevicePhase::Active,
                 };
                 std::fs::write(
                     root.join(DEVICE_STATE_FILE),
@@ -1134,8 +1309,8 @@ mod tests {
                 )
                 .unwrap();
             }
-            persist_taken_over_device_generation(&root, USER_ID, 4, 5).unwrap();
-            persist_taken_over_device_generation(&root, USER_ID, 4, 5).unwrap();
+            persist_taken_over_device_generation(&root, USER_ID, 4, 5, WRITER_ID).unwrap();
+            persist_taken_over_device_generation(&root, USER_ID, 4, 5, WRITER_ID).unwrap();
             let state: BackupDeviceState = serde_json::from_str(
                 &std::fs::read_to_string(root.join(DEVICE_STATE_FILE)).unwrap(),
             )
@@ -1150,6 +1325,8 @@ mod tests {
             version: DEVICE_STATE_VERSION,
             user_id: USER_ID.into(),
             device_generation: 3,
+            writer_id: WRITER_ID.into(),
+            phase: BackupDevicePhase::Active,
         };
         std::fs::write(
             root.join(DEVICE_STATE_FILE),
@@ -1157,7 +1334,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            persist_taken_over_device_generation(&root, USER_ID, 4, 5).unwrap_err(),
+            persist_taken_over_device_generation(&root, USER_ID, 4, 5, WRITER_ID).unwrap_err(),
             BackupUploadError::InvalidDeviceState
         );
         let _ = std::fs::remove_dir_all(root);
@@ -1172,7 +1349,8 @@ mod tests {
         let document = portable_document(vec![manifest(ids[0], first), manifest(ids[1], second)]);
         let json = serde_json::to_vec(&document).unwrap();
         let mut upload =
-            BackupUploadSession::begin(&root, &json, USER_ID, 1, CREATED_AT, KEY).unwrap();
+            BackupUploadSession::begin(&root, &json, USER_ID, 1, WRITER_ID.into(), CREATED_AT, KEY)
+                .unwrap();
         let begin = upload.begin_info();
         assert_eq!(begin.attachments.len(), 2);
         upload.append_attachment_chunk(ids[0], 0, first).unwrap();
@@ -1230,6 +1408,7 @@ mod tests {
             &serde_json::to_vec(&document).unwrap(),
             USER_ID,
             1,
+            WRITER_ID.into(),
             CREATED_AT,
             KEY,
         )
@@ -1273,8 +1452,16 @@ mod tests {
         let root = temp_dir("randomness");
         let document = portable_document(Vec::new());
         let encoded = serde_json::to_vec(&document).unwrap();
-        let first =
-            BackupUploadSession::begin(&root, &encoded, USER_ID, 1, CREATED_AT, KEY).unwrap();
+        let first = BackupUploadSession::begin(
+            &root,
+            &encoded,
+            USER_ID,
+            1,
+            WRITER_ID.into(),
+            CREATED_AT,
+            KEY,
+        )
+        .unwrap();
         let first_plan = first.plan().unwrap();
         let first_bytes = std::fs::read(&first.staged[0].path).unwrap();
         let orphan = root.join(UPLOAD_STAGING_DIR).join("a".repeat(32));
@@ -1283,8 +1470,16 @@ mod tests {
         drop(first);
         std::fs::create_dir_all(&orphan).unwrap();
 
-        let second =
-            BackupUploadSession::begin(&root, &encoded, USER_ID, 1, CREATED_AT, KEY).unwrap();
+        let second = BackupUploadSession::begin(
+            &root,
+            &encoded,
+            USER_ID,
+            1,
+            WRITER_ID.into(),
+            CREATED_AT,
+            KEY,
+        )
+        .unwrap();
         let second_plan = second.plan().unwrap();
         let second_bytes = std::fs::read(&second.staged[0].path).unwrap();
         assert_ne!(first_plan.backup_id, second_plan.backup_id);
@@ -1354,6 +1549,7 @@ mod tests {
             &serde_json::to_vec(&document).unwrap(),
             USER_ID,
             1,
+            WRITER_ID.into(),
             CREATED_AT,
             KEY,
         )

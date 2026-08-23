@@ -2382,7 +2382,7 @@ async fn backup_upload_begin(
     let worker_profile_id = profile_id.clone();
     let (cloud_account, upload) = tauri::async_runtime::spawn_blocking(move || {
         let transport = solum_core::backup_upload::HttpBackupCloudTransport::new();
-        let generation = solum_core::backup_upload::load_or_initialize_device_generation(
+        let authority = solum_core::backup_upload::load_or_initialize_device_generation(
             &profile_root,
             &worker_profile_id,
             &transport,
@@ -2393,7 +2393,8 @@ async fn backup_upload_begin(
             &profile_root,
             json.as_bytes(),
             &worker_profile_id,
-            generation,
+            authority.generation,
+            authority.writer_id,
             &created_at,
             master_key,
         )

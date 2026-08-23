@@ -88,8 +88,11 @@ SOLUM_REGISTRATION_MODE=open
 同对象字节和 complete commit 都可安全重试，同 id 不同 plan 返回冲突。删除整版必须带列表返回的
 `If-Match: "{plan_etag}"`，避免陈旧界面误删。
 
-`GET|POST /v1/backups/generation` 提供 compare-and-increment 接管；成功提升后旧 generation 不能创建或
-提交备份，旧 pending 会被删除，已完成历史保留。列表 metadata/密文摘要只用于传输和重试，恢复端仍须
+首次写入前，客户端以本机持久化的随机 UUID 调用 `POST /v1/backups/writer`；服务端只允许空租户在
+generation 1 原子认领一次。plan、对象上传和 commit 都须携带 `X-Solum-Backup-Writer`，所以另一台新设备
+即使同样看到 generation 1 也不能把空数据写成最新版本。`GET|POST /v1/backups/generation` 提供
+compare-and-increment 接管，并在成功时轮换 writer；旧 generation/writer 不能创建或提交备份，旧 pending
+会被删除，已完成历史保留。列表 metadata/密文摘要只用于传输和重试，恢复端仍须
 用端侧主密钥验证 `solum-backup` AEAD、manifest 与附件后才可写入临时 Store。完整字段、canonical plan
 字节、错误码、容量和保留顺序见 `docs/ARCHITECTURE.md` 的 opaque backup API v1 小节。
 

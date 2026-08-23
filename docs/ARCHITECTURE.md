@@ -648,11 +648,20 @@ lock 内重验 generation、plan、每个对象已到齐及字节数/摘要，�
   `If-Match: "{plan_etag}"`；缺失为 428、陈旧/不符为 412，成功返回被删 id。用户可以删除最后一个版本；
   未来 UI 必须对此给强确认，但服务端不能假装用户没有删除权。
 
-**单写者 generation**：`GET /v1/backups/generation` 返回当前值（新租户惰性初始化为 1）。换机确认接管后，
-客户端用 `POST /v1/backups/generation` 提交严格 JSON
-`{"expected_generation":1,"takeover_id":"non-nil lowercase UUID"}`。服务端在 tenant advisory lock 下执行
+**单写者 generation**：`GET /v1/backups/generation` 返回当前值（新租户惰性初始化为 1），但 generation
+本身不构成写权限。服务端另存一个不在目录、响应或日志中公开的随机 writer UUID；首台设备必须先以
+`POST /v1/backups/writer` 原子 claim。claim 仅在 generation 仍为 1、尚无 writer 且租户没有任何
+pending/complete 备份时成功，同一 writer 重试幂等，其他 writer 一律 409。因此两台新设备即使同时看到
+generation 1，也只有一台能成为写者；已有任何备份时，缺少本地 writer 状态的新设备必须先走恢复接管，
+不能把空 profile 认作首台设备。创建 plan、PUT 对象与 commit 都必须携带
+`X-Solum-Backup-Writer`，服务端在租户 advisory lock 内同时核对 generation 与 writer，不能只靠客户端
+本地文件自律。
+
+换机确认接管后，客户端用 `POST /v1/backups/generation` 提交严格 JSON
+`{"expected_generation":1,"takeover_id":"non-nil lowercase UUID","writer_id":"new writer UUID"}`。服务端在 tenant advisory lock 下执行
 compare-and-increment：expected 不等于当前值返回 409；首次成功只加一并记录 takeover id；同 takeover id
-的丢响应重试返回同一新 generation，其他重放不能再次推进。推进时删除旧 generation 的 pending 上传，
+且 writer id 相同的丢响应重试返回同一新 generation，其他重放或换 writer 不能再次推进。推进时原子轮换
+writer 并删除旧 generation 的 pending 上传，
 保留已 complete 历史；旧设备此后的 create/仍存在的 commit 以 409 失败，已随接管删除的 pending object
 路径按不存在返回 404。这防的是正常旧客户端误写，
 不是把仍持有有效账号 token 的恶意设备变成不可信方；真正撤销仍需撤销账号会话/设备授权。
@@ -667,7 +676,8 @@ compare-and-increment：expected 不等于当前值返回 409；首次成功只�
 
 错误只返回稳定 code：`invalid_backup_plan` / `unsupported_backup_version`（400）、
 `backup_not_found` / `backup_object_not_found`（404）、`backup_plan_conflict` /
-`backup_object_mismatch` / `backup_incomplete` / `backup_generation_stale`（409）、
+`backup_object_mismatch` / `backup_incomplete` / `backup_generation_stale` /
+`backup_writer_stale` / `backup_writer_required`（409）、
 `backup_object_too_large` / `backup_package_too_large` / `backup_quota_exceeded`（413）、
 `backup_pending_limit`（429）、`precondition_required`（428）、`precondition_failed`（412）；对象上传缺少精确
 `Content-Length` 返回 `content_length_required`（411）。恢复端必须先完整下载
@@ -681,13 +691,15 @@ main、由端侧 backup codec 验证认证标签/AAD/export plan，再按已认�
 #### Android encrypted backup uploader v1（2026-08-23，内部 seam）
 
 Android 上传器复用账号恢复信封已经保护的 32 字节端侧主密钥，不另造或上传备份密钥。设备在账号
-profile 根保存严格 `solum-backup-device.json`：
-`{"format":"solum-backup-device","version":1,"user_id":"lowercase UUID","device_generation":1}`。
+profile 根保存严格 `solum-backup-device.json` v2：
+`{"format":"solum-backup-device","version":2,"user_id":"lowercase UUID","device_generation":1,"writer_id":"lowercase UUID","phase":"claiming|active"}`。
 它是设备接管资格而非用户数据，不进入 portable generation 或云备份。文件缺失时只有服务器
-`active_generation == 1` 才允许原子建立为 1；服务器已大于 1 时必须等待下文换机 UI 做显式 takeover，
-绝不能由旧安装、重装残留或丢状态的设备自动追平。每次备份先读取服务器 generation 并与本地文件精确
-相等，不一致在快照/上传前失败。下文接管流程只有在用户确认替换后才能调用 generation compare-and-
-increment，并把新值 durable 写入新设备；上传 seam 本身不能执行接管。
+`active_generation == 1` 仍不够：客户端先 durable 写入带随机 writer UUID 的 `claiming`，再调用服务端
+原子 claim；响应丢失只可用同一 writer 重试，成功后才 durable 改为 `active`。服务端已有 writer 或任一
+备份记录时 claim 失败，文件保持不可写状态并要求走显式恢复接管。每次备份先读取服务器 generation 并与
+本地 active 文件精确相等，写请求再由服务端逐次核对 writer；任一不一致在上传前或服务端事务内失败。
+下文接管流程只有在用户确认替换后才能调用 generation compare-and-increment、原子轮换 writer，并把新值
+durable 写入新设备；上传 seam 本身不能执行接管。
 
 一次上传 session 固定绑定当前账号 UUID、profile、device generation、随机 backup UUID、UTC 毫秒创建时间、
 当前 access/refresh 会话和主密钥；任一期间切号、退出或 profile 改变都取消 session。WebView 先强制保存
@@ -767,11 +779,11 @@ live SQLite/WebView 摘要，任何变化都要求重新预览。
 
 **generation takeover 的持久事务**：云端恢复不能直接调用裸 pointer publish。最终确认前先在 profile 私有根
 原子写严格 `solum-backup-takeover.json`，只含 format/version、账号 UUID、server origin SHA-256、所选
-backup UUID、sealed generation id、expected active generation、随机 takeover UUID、phase 与可选 target
+backup UUID、sealed generation id、expected active generation、随机 takeover UUID、随机新 writer UUID、phase 与可选 target
 generation；不含 token、主密钥、明文、资料 id 或服务器响应 body。顺序固定为：
 
 1. 在不持有 Orchestrator/SQLite/profile 锁时先重读 live preview，仍精确匹配才建立 `planned` journal；
-2. 用 journal 中同一 takeover id 调用服务端 compare-and-increment；传输结果不明时保留 journal 并只允许原 id
+2. 用 journal 中同一 takeover id 与 writer id 调用服务端 compare-and-increment；传输结果不明时保留 journal 并只允许原值
    重试，不能生成新 id。响应必须是 `expected + 1`；durable 记录 `remote_advanced` 后，才把本机严格
    `solum-backup-device.json` 从缺失/expected 幂等推进到 target，再记录 `device_ready`；
 3. 重新取得 Orchestrator → sync Store → profile generation 锁，第二次重读并消费同一 preview token；仍一致才

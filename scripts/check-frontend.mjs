@@ -32,6 +32,19 @@ for (const pattern of rawErrorRenderPatterns) {
     throw new Error(`raw exceptions must pass through safeUserError: ${pattern}`);
   }
 }
+const backupSortStart = html.indexOf("backups.sort(");
+const backupSortEnd = html.indexOf('$("backupCount")', backupSortStart);
+const backupSort = html.slice(backupSortStart, backupSortEnd);
+if (backupSortStart < 0 || backupSortEnd < 0
+    || !/right\.committed_at[\s\S]*?left\.committed_at[\s\S]*?right\.backup_id[\s\S]*?left\.backup_id/.test(backupSort)) {
+  throw new Error("backup center must order sealed versions by server committed_at with a stable backup_id tie-breaker");
+}
+if (backupSort.includes("created_at")) {
+  throw new Error("backup center must not determine the latest sealed version from the client clock");
+}
+if (!html.includes("backupDate(latest.committed_at)") || !html.includes("backupDate(version.committed_at)")) {
+  throw new Error("backup center must display server commit time for sealed versions");
+}
 
 const ids = [...html.matchAll(/\bid\s*=\s*["']([^"']+)["']/gi)].map((match) => match[1]);
 const duplicates = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
