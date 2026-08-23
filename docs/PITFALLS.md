@@ -4,6 +4,12 @@
 >
 > 插入规则（2026-08-21 定）：新条目插在本行下方、保持全文件新→旧；**不要追加到文件尾部**——历史上尾部追加造成时序错乱（2026-08-21 已修正归位）。
 
+## 2026-08-23 自托管 Actions 镜像与 service 网络不能照搬 GitHub-hosted 假设
+
+- **现象**：Gitea runner 接到工作流后，Rust job 在 `rustup: command not found` 处失败；PostgreSQL job 尚未执行测试，就因 service 尝试绑定宿主 `127.0.0.1:5432`、与生产 PostgreSQL 已占端口冲突而失败。
+- **根因**：`ubuntu-latest` runner image 提供构建基础工具但不保证预装 rustup；容器化 act job 与 service 已共享隔离 Docker network，不应再把临时数据库发布到宿主固定端口。原工作流从 GitHub-hosted VM 心智直接复制，两项前置条件都未经真实 Gitea runner 验证。
+- **解决/避免**：工作流缺少 rustup 时从官方 HTTPS 安装最小 stable toolchain 并写入 `GITHUB_PATH`；PostgreSQL 不声明 host port，job 与 provision 脚本统一使用 service DNS `postgres:5432`。CI 验收必须确认测试正文实际出现，不能把 runner 接单或 service 创建当成数据库测试已跑。
+
 ## 2026-08-23 generation 是版本栅栏，不是单写者权限
 
 - **现象**：新手机没有本机设备状态时，只要云端仍为 generation 1 就会把自己初始化为写者；旧手机已有备份时，两台手机仍可同时以 generation 1 上传，新手机的空 profile 甚至可能成为最新版本。
@@ -16,7 +22,7 @@
 - **Android 构建/打包/真机**：08-23 listener 白名单分 profile 但 spool 仍写根目录 · 08-19 restart 只退出进程 · 08-14 JNI 预编译跳过注入 / `Os.flock` 不存在 · 08-13 ndk 相对路径 / Release 输出被占用 · 08-12 Kotlin daemon 跨盘 · 08-11 arm64 flavor 配对 / vivo ADB 断连 / CSP nonce 拒内联 style · 07-21 打包三连坑（native-tls / 改名遗留生成文件 / PERL5LIB）· 07-20 改名两坑 · 07-14 构建五连坑 / AlarmManager 三连坑 · 07-12 Health Connect Kotlin 三连坑 · 07-07 Tauri Android 首建三连坑 / app_data_dir
 - **前端验证量具**：08-20 错误脱敏不只账号页 · 07-27 未显示面板零视口 · 07-20 details 几何失效 / offsetParent 对 fixed 恒真 / 后台标签冻结动画 / px 字号不随根字号 / 滚动量具视图切走失效 / 删节点遗留脚本调用 / 连续改状态再采样 · 07-19 hidden 被 display 压过 / harness 集合形状 / data URL 被拒 / 16×16 窗口 · 07-15 重构验证两坑
 - **同步/迁移/SQLite**：08-21 push 侧毒丸（pull 侧 07-19 条目的孪生）/ 整仓搬迁后 target 缓存引用旧绝对路径 · 08-14 无快照增量不能靠留存回收 · 08-12 服务器隔离了客户端仍可能混库 · 07-20 加列漏触发器 payload / 迁移不在事务撞唯一索引 / 标量列 LWW 吃掉一半 / FK 级联不触发子表触发器 / 不同步表更易漏导出 / 未来表名占位符 · 07-19 合并循环 return Err = 同步永久卡死
-- **服务端/账号/PostgreSQL**：08-23 generation 不是同代单写者权限 · 08-22 solumsync 灰云误判与橙云四项验收 / 生产迁移海外 VPS 核实 / 恢复演练要预建 solum_api·solum_runtime 角色 / 业务表不在 public schema / 空 crontab 下管道式安装会静默失败 · 08-14 集成测试要全新空库 / 密码裁剪语义不可猜升级 / 限流键无限+同步 KDF 自成 DoS / 注册成功与本机初始化的部分成功 / 进程内 Mutex 护不了跨进程会话文件 · 08-13 FOR UPDATE 需表级 UPDATE 权限 / git archive CRLF / Node 测试并行 socket 假失败 / 并行测试改环境变量互相覆盖 · 08-12 relay 仪表盘 CORS
+- **服务端/账号/PostgreSQL**：08-23 自托管 Actions 镜像/service 网络假设 / generation 不是同代单写者权限 · 08-22 solumsync 灰云误判与橙云四项验收 / 生产迁移海外 VPS 核实 / 恢复演练要预建 solum_api·solum_runtime 角色 / 业务表不在 public schema / 空 crontab 下管道式安装会静默失败 · 08-14 集成测试要全新空库 / 密码裁剪语义不可猜升级 / 限流键无限+同步 KDF 自成 DoS / 注册成功与本机初始化的部分成功 / 进程内 Mutex 护不了跨进程会话文件 · 08-13 FOR UPDATE 需表级 UPDATE 权限 / git archive CRLF / Node 测试并行 socket 假失败 / 并行测试改环境变量互相覆盖 · 08-12 relay 仪表盘 CORS
 - **安全审核修复期教训（07-21 系列）**：宽松断言给缺陷让路 · 跨进程共享可变文件要换数据结构 · 计数器加锁/rename 都不够 · spool 改造自己丢数据 · 复审打回六条 · 修复期五连坑 · 幂等 receipt 配按龄清理等于重开洞 · 把状态误当事件
 - **Windows/PowerShell/工具链**：08-12 PowerShell 5.1 UTF-8 与 JSON 编码 · 07-21 演示视频三坑 · 07-18 PowerShell round-trip 乱码 · 07-06 link.exe/cl.exe 不在 PATH
 - **时间解析/实体抽取（07-06 系列）**：时钟纳秒穿透 UI / 纯日期漏判 / 中文地点人名贪婪 / 规则抢答压制 LLM 兜底 / datetime-local 连续键入串段

@@ -38,6 +38,12 @@ jobs:
             libjavascriptcoregtk-4.1-dev
       - name: Select stable Rust
         run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            . "$HOME/.cargo/env"
+          fi
           rustup default stable
           rustup component add rustfmt clippy
       - name: Formatting
@@ -60,16 +66,14 @@ jobs:
           POSTGRES_DB: solum_test
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: ci-owner-password
-        ports:
-          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
-      SOLUM_TEST_DATABASE_URL: postgres://solum_runtime:ci-app-password@127.0.0.1:5432/solum_test
-      SOLUM_TEST_OWNER_DATABASE_URL: postgres://postgres:ci-owner-password@127.0.0.1:5432/solum_test
+      SOLUM_TEST_DATABASE_URL: postgres://solum_runtime:ci-app-password@postgres:5432/solum_test
+      SOLUM_TEST_OWNER_DATABASE_URL: postgres://postgres:ci-owner-password@postgres:5432/solum_test
       SOLUM_TEST_DATABASE_IS_DISPOSABLE: "true"
     steps:
       - uses: actions/checkout@v4
@@ -81,7 +85,7 @@ jobs:
           chmod +x server/db/init/00-roles.sh
           SOLUM_DB_APP_PASSWORD=ci-app-password \
           POSTGRES_USER=postgres POSTGRES_DB=solum_test \
-          PGHOST=127.0.0.1 PGPASSWORD=ci-owner-password \
+          PGHOST=postgres PGPASSWORD=ci-owner-password \
           server/db/init/00-roles.sh
       - name: Frontend static checks
         run: node scripts/check-frontend.mjs
