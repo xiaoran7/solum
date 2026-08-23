@@ -434,6 +434,29 @@ AAD = UTF8("solum-attachment:aad:v1") || 0x00 ||
 故意采用 16 字节块覆盖多块 framing；生产 API 不暴露固定 nonce 入口。本阶段仍不包含服务端 API、
 Android UI、临时库原子恢复、恢复码/信封或三端实机互通，顶层 F17 继续保持未完成。
 
+#### v3 临时恢复镜像 core 契约 v1（2026-08-23）
+
+这是 Android 原子恢复的第一段提交边界，不是 live profile 切换。调用方必须先用 `solum-backup` v1
+认证并解出 `solum-export` v3，再用同一外层 binding 认证并解出全部 `solum-attachment` v1；core 接收
+v3 文档与 `{attachment_id, plaintext}` 集合后，按以下固定顺序工作：
+
+1. 调用 `plan_import` 重跑格式、版本、字段、上限、稳定 id 与引用校验，并反序列化同一份 `_portable`；
+2. 要求附件集合与 `documents` manifest **精确相等**：不得缺件、多件或重复 id，逐件重算明文字节数与
+   SHA-256，并再次执行 30 件 / 单件 20 MiB / 合计 600 MiB 上限；
+3. 只允许写入由恢复协调器新建的空 Store。先检查所有用户域为空，再用一个最外层 SQLite 事务导入
+   `_restore`，随后按 guid 将通知台账引用翻译为临时库 row id，append 审计历史，并恢复非权限设置；
+4. `queued` capture 只能按 v3 已验证的 `restore_state=needs_review` 落库，旧 `pending` 动作只能按
+   `restore_state=stale` 落库；`notif_cloud`、通知白名单、auto-event 白名单和外部连接只进入恢复意图，
+   不得在新设备静默授权；
+5. 全部 SQLite 写入成功后才返回平台交接包（会话/草稿、资料明文、待处理通知、非秘密 LLM 设置和
+   重新授权意图）。任一 SQL、guid 引用、附件摘要或设置错误回滚整个事务，不返回部分交接包。
+
+错误必须只说明失败类别/域/id，不包含密钥、附件明文、通知正文、聊天正文或完整个人数据。该 API
+不合并已有 Store，也不删除、覆盖或重命名 live profile；现有数据场景须由后续 UI 预览并明确选择。
+平台层下一步必须把临时 SQLite、WebView inactive namespace、附件与 spool 一并持久化，完成哈希/行数
+复核后以单一 durable generation 指针发布；在该指针与崩溃恢复状态机完成前，不能把本阶段称作
+“原子恢复完成”或把现有 v2 导入入口替换为 v3。
+
 #### 历史多设备同步实现（迁移期，只读理解）
 
 - 定位：同步数据面只做**加密数据中转**，不解密、不推理、不保存同步明文；服务端数据库泄露不能直接解开同步正文。这不等于统一中心看不到账号元数据、结构化告警或正在代理的 AI 请求，三者按各自边界单独约束。

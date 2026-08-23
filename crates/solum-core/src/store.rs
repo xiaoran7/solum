@@ -2716,6 +2716,227 @@ impl Store {
         self.apply_remote_ops(&ops)
     }
 
+    /// Refuse merge-style v3 recovery. The platform coordinator must provide a
+    /// newly created temporary Store, never a live profile with user data.
+    pub(crate) fn ensure_empty_for_portable_restore(&self) -> Result<()> {
+        const USER_TABLES: &[&str] = &[
+            "raw_inputs",
+            "events",
+            "notifications",
+            "behavior_log",
+            "suggestions",
+            "persona_versions",
+            "health_samples",
+            "memory_facts",
+            "routines",
+            "soulous_facts",
+            "notification_captures",
+            "notification_filter_proposals",
+            "notification_action_proposals",
+            "widget_defs",
+            "widget_fields",
+            "widget_records",
+            "widget_schema_rejections",
+            "audit_log",
+            "sync_oplog",
+            "sync_quarantine",
+            "capture_loss_receipts",
+            "sync_bad_blobs",
+            "sync_push_holds",
+        ];
+        for table in USER_TABLES {
+            let sql = format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)");
+            if self.conn.query_row(&sql, [], |row| row.get::<_, bool>(0))? {
+                return Err(CoreError::Invalid(
+                    "portable restore requires a new empty temporary Store".into(),
+                ));
+            }
+        }
+        let has_non_bootstrap_meta = self.conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM meta
+                WHERE key NOT IN ('device_id', 'schema_version')
+            )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if has_non_bootstrap_meta {
+            return Err(CoreError::Invalid(
+                "portable restore requires a new empty temporary Store".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Restore v3's non-guid SQLite ledgers after `_restore` has populated the
+    /// guid-bearing parents. The caller owns the encompassing transaction.
+    pub(crate) fn import_portable_section(
+        &self,
+        section: &crate::export_v3::PortableSection,
+    ) -> Result<()> {
+        use crate::notification_intelligence::{
+            NotificationFilterRule, NotificationIntelligenceConfig,
+        };
+        use std::collections::BTreeMap;
+
+        let mut capture_ids = BTreeMap::new();
+        for row in &section.notification_journal.captures {
+            let (raw_input_id, raw_local_only): (i64, bool) = self
+                .conn
+                .query_row(
+                    "SELECT id, local_only FROM raw_inputs WHERE guid = ?1",
+                    params![row.raw_input_guid],
+                    |record| Ok((record.get(0)?, record.get::<_, i64>(1)? != 0)),
+                )
+                .optional()?
+                .ok_or_else(|| {
+                    CoreError::Invalid(format!(
+                        "portable capture {} has no restored raw input",
+                        row.id
+                    ))
+                })?;
+            if raw_local_only != row.local_only {
+                return Err(CoreError::Invalid(format!(
+                    "portable capture {} privacy scope does not match its raw input",
+                    row.id
+                )));
+            }
+            let event_id = row
+                .event_guid
+                .as_deref()
+                .map(|guid| {
+                    self.conn
+                        .query_row(
+                            "SELECT id FROM events WHERE guid = ?1",
+                            params![guid],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .optional()
+                        .map_err(CoreError::from)
+                })
+                .transpose()?
+                .flatten();
+            self.conn.execute(
+                "INSERT INTO notification_captures(
+                    raw_input_id, package_name, title, body, received_at,
+                    content_hash, local_only, lane, state, reason, event_id, created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    raw_input_id,
+                    row.package_name,
+                    row.title,
+                    row.body,
+                    row.received_at,
+                    row.content_hash,
+                    row.local_only as i64,
+                    row.lane,
+                    row.restore_state.as_str(),
+                    row.reason,
+                    event_id,
+                    row.created_at,
+                ],
+            )?;
+            capture_ids.insert(row.id.as_str(), self.conn.last_insert_rowid());
+        }
+
+        for row in &section.notification_journal.filter_proposals {
+            let matcher = match row.matcher {
+                crate::classify::NotificationMatchKind::Substring => "substring",
+                crate::classify::NotificationMatchKind::Regex => "regex",
+            };
+            self.conn.execute(
+                "INSERT INTO notification_filter_proposals(
+                    package_name, pattern, matcher, reason, state, created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    row.package_name,
+                    row.pattern,
+                    matcher,
+                    row.reason,
+                    row.state,
+                    row.created_at,
+                ],
+            )?;
+        }
+
+        for row in &section.notification_journal.action_proposals {
+            let capture_id = capture_ids.get(row.capture_id.as_str()).ok_or_else(|| {
+                CoreError::Invalid(format!(
+                    "portable action {} has no restored capture",
+                    row.id
+                ))
+            })?;
+            let resolved_event = row
+                .event_guid
+                .as_deref()
+                .map(|guid| {
+                    self.conn
+                        .query_row(
+                            "SELECT id FROM events WHERE guid = ?1",
+                            params![guid],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .optional()
+                        .map_err(CoreError::from)
+                })
+                .transpose()?
+                .flatten();
+            self.conn.execute(
+                "INSERT INTO notification_action_proposals(
+                    capture_id, kind, event_id, event_title, event_guid,
+                    event_start, new_start, reason, state, created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    capture_id,
+                    row.kind.as_str(),
+                    resolved_event.unwrap_or_default(),
+                    row.event_title,
+                    row.event_guid.as_deref().unwrap_or_default(),
+                    row.event_start,
+                    row.new_start,
+                    row.reason,
+                    row.restore_state.as_str(),
+                    row.created_at,
+                ],
+            )?;
+        }
+
+        for row in &section.audit_log {
+            self.conn.execute(
+                "INSERT INTO audit_log(ts, tool, risk, summary, decision, token_id, detail)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    row.ts,
+                    row.tool,
+                    row.risk,
+                    row.summary,
+                    row.decision,
+                    row.token_id,
+                    row.detail,
+                ],
+            )?;
+        }
+
+        let notification = &section.agent_settings.notification;
+        self.save_notification_intelligence_config(&NotificationIntelligenceConfig {
+            allowed_packages: Vec::new(),
+            auto_event_packages: Vec::new(),
+            batch_interval_minutes: notification.batch_interval_minutes,
+            filter_rules: notification
+                .filter_rules
+                .iter()
+                .map(|row| NotificationFilterRule {
+                    id: row.id.clone(),
+                    pattern: row.pattern.clone(),
+                    package_name: row.package_name.clone(),
+                    matcher: row.matcher,
+                    reason: row.reason.clone(),
+                })
+                .collect(),
+        })?;
+        Ok(())
+    }
+
     /// How many rows a `_restore` section would offer, per table — the
     /// Guard preview needs this before anything is written.
     pub fn count_restore_rows(restore: &serde_json::Value) -> Vec<(String, usize)> {
@@ -3901,8 +4122,14 @@ impl Store {
     /// in the oplog with their original stamp so future comparisons see them.
     /// Returns (applied, skipped).
     pub fn apply_remote_ops(&self, ops: &[crate::sync::SyncOp]) -> Result<MergeCounts> {
-        let tx = self.conn.unchecked_transaction()?;
-        tx.execute(
+        self.with_transaction(|store| store.apply_remote_ops_in_transaction(ops))
+    }
+
+    /// The merge body without its own BEGIN/COMMIT. Keeping this separate lets
+    /// a fresh-profile restore wrap the guid-bearing rows and the portable
+    /// local ledgers in one wider transaction.
+    fn apply_remote_ops_in_transaction(&self, ops: &[crate::sync::SyncOp]) -> Result<MergeCounts> {
+        self.conn.execute(
             "INSERT INTO meta(key, value) VALUES ('sync_applying', '1')
              ON CONFLICT(key) DO UPDATE SET value = '1'",
             [],
@@ -3920,7 +4147,7 @@ impl Store {
         // to stamps that passed this gate (`trg_hlc_advance` fires on the
         // oplog insert below), so a rejected op cannot drag this device's own
         // clock into the future with it.
-        let horizon: String = tx.query_row(
+        let horizon: String = self.conn.query_row(
             "SELECT strftime('%Y-%m-%dT%H:%M:%f', 'now', '+1 day')",
             [],
             |r| r.get(0),
@@ -3977,8 +4204,8 @@ impl Store {
                 Err(e) => return Err(e),
             }
         }
-        tx.execute("DELETE FROM meta WHERE key = 'sync_applying'", [])?;
-        tx.commit()?;
+        self.conn
+            .execute("DELETE FROM meta WHERE key = 'sync_applying'", [])?;
         Ok(counts)
     }
 

@@ -10,6 +10,10 @@
 > Solum Android：0.2.8（1018 文案/时间解析/发布输入修复）· 0.2.7（1017 图标校正）· 0.2.6（1016 启动图标）· 0.2.5（1015 登录闪退修复）· 0.2.4（1014 后端复审收口）· 0.2.3（1013 默认模型/配额）· 0.2.2（1012 账户外壳/UI 重构）· 0.2.1（1011 中心化账号入口）· 0.2.0（1010 登录即恢复密钥）· 0.1.9（1009 UUID 隔离）· 0.1.8（1008 同步按账号隔离）· 0.1.7（1007 福利监控）· 0.1.5（1005 安全默认值收口）· 0.1.4（1004 排版/缓存）· 0.1.3（1003 导航重构）· 0.1.2（1002 UI 重构）· 0.1.1（1001 隐私门文案）· 0.1.0（1000 首个 release）
 > solum-cloud：0.6.4（密码语义/限流收口）· 0.6.3（刷新令牌权限）· 0.6.2（迁移与清理修复）· 0.6.1（AI 代理加固）· 0.6.0（模型目录/额度）· 0.5.1（中心化入口）· 0.5.0（恢复信封）· 0.4.0（PostgreSQL 中心库）
 
+- **F17 v3 临时恢复事务 core 地基（2026-08-23，未发布 live profile）**：新增严格的 prepare/restore 两段式 API；prepare 重跑 `solum-export` v3 校验，并要求已认证附件明文与 manifest 的 id/数量/尺寸/SHA-256 精确相等。restore 只接受全新空 Store，在一个最外层 SQLite 事务内导入 guid 领域行、通知台账、append-only 审计与非权限通知设置；任何漏行、重复 guid、隔离、引用/隐私 scope 或 SQL 失败均整体回滚，成功后才返回 WebView/附件/spool/非秘密设置和重新授权意图的完整平台交接包。通知上云、capture/auto-event 白名单及外部连接不会静默启用。
+  - `apply_remote_ops` 改为可嵌套 savepoint 的事务体，使 v3 能把既有 LWW 导入与本地台账纳入同一外层事务；v2 行为和普通同步批处理仍走同一入口。新增 5 项恢复回归。Android durable generation 指针、WebView inactive namespace、崩溃恢复、已有数据选择与 live profile 重启仍未完成，顶层 F17 保持未完成。
+  - 验证：`cargo test --workspace` 397 项（0 failed、0 ignored），Clippy `--workspace --all-targets -- -D warnings`、fmt check 与 `git diff --check` 全绿。
+
 - **F17 `solum-attachment` v1 分块密文地基（2026-08-23，core 协议/codec，未接服务端/Android UI/恢复事务）**：新增平台中立附件容器，资料 blob 不压缩、不塞进主 JSON；生产固定 1 MiB 分块，每块使用 OS 随机 24-byte nonce 与 XChaCha20-Poly1305。每件附件以 HKDF-SHA256 从 32-byte 主密钥派生独立子密钥，HKDF/AAD 隐式绑定账号 UUID、device generation、backup id、attachment id 及 v3 manifest 的精确明文尺寸/SHA-256；明文容器不含账号、backup/attachment 身份或内容摘要，服务端只能保存不透明字节，但 framing/密文长度仍会暴露精确字节长度。
   - 解包在派生/解密前限制 20 MiB 单件、4096 块和容器总长，完整扫描严格 JSON/framing、算法/版本、块数、连续 index/offset、实测尺寸、nonce 唯一性、截断和尾随字节；全部 chunk tag 通过后才核对总长与 SHA-256 并返回有界内存结果，任何失败都不返回部分明文。集合 helper 同时约束同账号/代次/backup、唯一附件 id、最多 30 件/600 MiB。
   - 新增不含真实数据的 667-byte 三块固定夹具（公开 key/nonce；SHA-256 `b0e113feb33d49dd9e20aecdad0793b2e98d7780d6967430d2537695e94864f3`）及 8 项 core 回归，覆盖往返/零字节、错误 key、密文/tag/显式与隐藏 AAD 篡改、乱序/重复 nonce、截断/尾随、未来版本/未知算法、各级上限、生产随机 nonce、manifest 构造、明文头隐私与固定字节读取。

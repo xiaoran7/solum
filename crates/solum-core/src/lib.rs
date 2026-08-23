@@ -31,6 +31,7 @@ pub mod persona_import;
 pub mod privacy;
 pub mod proactivity;
 pub mod recall;
+pub mod restore_v3;
 pub mod review;
 pub mod routine;
 pub mod scene;
