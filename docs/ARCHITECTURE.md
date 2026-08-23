@@ -557,6 +557,47 @@ hydrate 允许对同一 inactive namespace 幂等重做：每次先清空目标 
 发布；本阶段不提供 pointer publish 命令。下一阶段的恢复协调器必须同时持有 profile generation 锁、处理
 旧 generation 的 late spool、再次确认 WebView ready 与用户的现有数据选择，才可提交 pointer 并重启。
 
+#### Android restore publication coordinator v1（2026-08-23）
+
+publication 是恢复的唯一破坏性提交点，只允许 Android 移动壳内部调用，不成为普通网页/桌面导入入口。
+调用方必须先完成上节 hydrate ready，再取得一次性 replacement preview：WebView 先强制刷盘当前 active
+chat/UI-state，按资料 Blob 原始字节生成精确摘要与计数；Rust 同时在旧 Orchestrator 与 sync Store 都被冻结
+时生成当前 SQLite portable snapshot 的计数和 SHA-256。preview 返回随机 32-byte token，只在本进程内保存，
+绑定 profile、目标 generation、SQLite fingerprint 与 WebView fingerprint；错误、日志和 UI 预览只显示各域
+计数，不回显聊天、通知、资料名或正文。
+
+即使目标 profile 看似新建，publish 也不接受裸 generation id：未来恢复 UI 必须展示 preview，并由用户明确
+选择“用此备份替换本机数据”后原样交回 token。confirm 会再次刷盘/摘要 WebView、重算 SQLite fingerprint，
+并要求 profile、generation、ready、token、两端摘要与 preview 全部相等；任一期间写入、切号、重复确认或
+陈旧 token 都在 pointer 前失败，重新 preview。token 一次性消费，publish 成败都不能把它当长期恢复凭据。
+
+提交锁顺序固定为 `Orchestrator -> sync Store -> active-generation.lock`，与 ticker/sync 的现有顺序一致；这样
+确认后旧 SQLite 不再接受写入，Rust ticker 也不能同时把 spool 搬入 SQLite，原生 listener 则被 profile 锁
+挡在 pointer 边界外。profile 锁内顺序固定如下：
+
+1. 重验 sealed staging 与当前 active generation；把当前 active 数据目录里仍待处理的 `notif-spool/*.json`、
+   `failed/*.json`、升级遗留 inbox，以及 overflow marker/旧计数转换为严格、有界、内容寻址的副本，写入
+   `restore-handoff/<target-generation>/` 并逐文件/目录 fsync。handoff 位于 profile 私有根，不进入备份，
+   文件名不含通知正文；单文件 64 KiB、总项 10,000，未知字段、符号链接、超限或半包在 pointer 前拒绝。
+2. 重跑 candidate manifest；将 staging 原子 rename 到 `generations/<id>`，随后按 generation v1 协议 durable
+   替换唯一 pointer。pointer 是唯一恢复提交记录，提交前任何失败都保持旧 profile active。
+3. pointer 提交后，在同一 profile 锁内把 handoff 幂等写入新 generation 的 live spool/overflow 目录，再
+   fsync 并删除已完成 handoff。旧 generation 的原文件不删除；重复内容最多由现有 capture dedup 吸收，
+   不能以去重为名冒险丢一条通知。
+4. 将本进程永久置为 profile-transition 状态并整进程重启；Android 必须先创建新的 launch task 再退出，
+   不能热换 SQLite/WebView。若 Activity 重启调用异常，旧进程仍拒绝任何业务/同步写入，并明确要求用户
+   重新打开应用，不能在 pointer 已提交后继续把数据写进旧 Store。
+
+崩溃恢复由 handoff 保证：pointer 前崩溃时旧 active 和原 spool 均未动，已写 handoff 只是 inert 副本；
+pointer 后、handoff 合并前崩溃时，新进程在打开 SQLite、启动 ticker/listener 前，必须按 active generation id
+续完对应 handoff。合并为 create-or-verify，同名目标只有逐字节相等才算幂等；损坏 handoff 或无法落盘必须
+停止启动，不能静默丢弃后继续。pointer 提交后 generation manifest 只代表发布时 sealed 基线；live spool、
+overflow 与 SQLite 此后按既有运行时规则可变，不重新冒充 sealed snapshot。
+
+本节仍是内部发布 seam：没有备份下载/解密 UI、服务端 `/v1/backups`、恢复码/信封、隐私政策迁移或实机
+跨平台互通。未来 UI 负责把 preview 计数和不可撤销替换后果呈现为有重量的确认，但不得绕开这里的一次性
+token、重读校验与进程重启边界。
+
 #### 历史多设备同步实现（迁移期，只读理解）
 
 - 定位：同步数据面只做**加密数据中转**，不解密、不推理、不保存同步明文；服务端数据库泄露不能直接解开同步正文。这不等于统一中心看不到账号元数据、结构化告警或正在代理的 AI 请求，三者按各自边界单独约束。

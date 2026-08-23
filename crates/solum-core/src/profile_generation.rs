@@ -117,7 +117,7 @@ pub fn resolve_active_data_dir(profile_root: &Path) -> Result<ActiveProfileData>
     })
 }
 
-fn resolve_active_data_dir_unlocked(profile_root: &Path) -> Result<ActiveProfileData> {
+pub(crate) fn resolve_active_data_dir_unlocked(profile_root: &Path) -> Result<ActiveProfileData> {
     let pointer_path = profile_root.join(POINTER_FILE);
     if !path_entry_exists(&pointer_path)? {
         return Ok(ActiveProfileData::Legacy {
@@ -208,7 +208,7 @@ pub fn resume_sealed_profile_generation(
     })
 }
 
-fn resume_sealed_profile_generation_unlocked(
+pub(crate) fn resume_sealed_profile_generation_unlocked(
     profile_root: &Path,
     id: &str,
 ) -> Result<SealedProfileGeneration> {
@@ -254,7 +254,7 @@ pub fn publish_profile_generation(sealed: &SealedProfileGeneration) -> Result<Ac
     })
 }
 
-fn publish_profile_generation_unlocked(
+pub(crate) fn publish_profile_generation_unlocked(
     sealed: &SealedProfileGeneration,
 ) -> Result<ActiveProfileData> {
     validate_generation_id(&sealed.id)?;
@@ -493,7 +493,7 @@ fn scan_directory(root: &Path, directory: &Path, out: &mut Vec<GenerationArtifac
     Ok(())
 }
 
-fn sync_tree_directories(root: &Path) -> Result<()> {
+pub(crate) fn sync_tree_directories(root: &Path) -> Result<()> {
     let mut directories = vec![root.to_path_buf()];
     let mut index = 0;
     while index < directories.len() {
@@ -589,7 +589,7 @@ fn path_entry_exists(path: &Path) -> Result<bool> {
     }
 }
 
-fn with_generation_lock<T>(
+pub(crate) fn with_generation_lock<T>(
     profile_root: &Path,
     operation: impl FnOnce() -> Result<T>,
 ) -> Result<T> {

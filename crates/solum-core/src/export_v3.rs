@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use chrono::{DateTime, NaiveDateTime};
+use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -273,6 +273,43 @@ pub struct PortableRestoreIntents {
 pub struct PortableRecoveryPlan {
     pub counts: Vec<(String, usize)>,
     pub attachment_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PortableStoreSnapshot {
+    pub counts: Vec<(String, usize)>,
+    pub fingerprint: String,
+}
+
+/// Produce a deterministic logical snapshot of every SQLite-backed domain
+/// represented by the portable export. Platform-owned data is deliberately
+/// empty: callers fingerprint that storage independently in its owning
+/// runtime. This function does not expose row contents to its caller.
+pub fn snapshot_portable_store(store: &Store) -> Result<PortableStoreSnapshot> {
+    let fixed_time = NaiveDate::from_ymd_opt(2000, 1, 1)
+        .and_then(|date| date.and_hms_opt(0, 0, 0))
+        .ok_or_else(|| invalid("portable snapshot timestamp is invalid"))?;
+    let document = build_portable_export(
+        store,
+        fixed_time,
+        PlatformPortableData {
+            chat: PortableChat::default(),
+            documents: Vec::new(),
+            pending_notifications: Vec::new(),
+            llm: None,
+            external_restore_intents: ExternalRestoreIntents::default(),
+        },
+    )?;
+    let plan = crate::export::plan_import(&document)?;
+    let encoded = serde_json::to_vec(&document)?;
+    let fingerprint = Sha256::digest(encoded)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Ok(PortableStoreSnapshot {
+        counts: plan.counts,
+        fingerprint,
+    })
 }
 
 /// Build v3 from the current Store plus a same-profile platform snapshot.
@@ -1115,6 +1152,18 @@ mod tests {
                 background_reminders: true,
             },
         }
+    }
+
+    #[test]
+    fn portable_store_snapshot_is_stable_and_tracks_logical_changes() {
+        let store = Store::open(":memory:").unwrap();
+        let first = snapshot_portable_store(&store).unwrap();
+        assert_eq!(first, snapshot_portable_store(&store).unwrap());
+        assert_eq!(first.fingerprint.len(), 64);
+
+        store.set_notif_cloud_enabled(true).unwrap();
+        let changed = snapshot_portable_store(&store).unwrap();
+        assert_ne!(first.fingerprint, changed.fingerprint);
     }
 
     #[test]

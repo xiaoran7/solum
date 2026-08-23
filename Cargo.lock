@@ -3814,6 +3814,7 @@ name = "solum-app"
 version = "0.2.8"
 dependencies = [
  "chrono",
+ "getrandom 0.2.17",
  "serde",
  "serde_json",
  "solum-alarm",

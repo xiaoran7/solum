@@ -104,13 +104,21 @@ struct AppState {
     capture_inbox: Mutex<solum_core::capture::CaptureInbox>,
     /// Login, registration and logout all replace the process-wide identity.
     /// Only one transition may issue or publish tokens at a time.
-    account_transition: AtomicBool,
+    account_transition: Arc<AtomicBool>,
 }
 
 struct WebViewRestoreSession {
     profile_id: String,
     reader: solum_core::portable_generation::PortableGenerationReader,
     ready: bool,
+    publication_preview: Option<RestorePublicationBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestorePublicationBinding {
+    token: String,
+    sqlite_fingerprint: String,
+    webview: LiveWebViewSummary,
 }
 
 struct AccountTransitionGuard<'a>(&'a AtomicBool);
@@ -120,6 +128,11 @@ impl<'a> AccountTransitionGuard<'a> {
         flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map(|_| Self(flag))
             .map_err(|_| "账号正在切换，请等待当前操作完成".to_string())
+    }
+
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    fn hold_until_restart(self) {
+        std::mem::forget(self);
     }
 }
 
@@ -212,12 +225,16 @@ fn intent_str(intent: Intent) -> &'static str {
 }
 
 macro_rules! lock {
-    ($state:expr) => {
-        $state
+    ($state:expr) => {{
+        let guard = $state
             .orch
             .lock()
-            .map_err(|_| "内部状态异常（锁中毒）".to_string())?
-    };
+            .map_err(|_| "内部状态异常（锁中毒）".to_string())?;
+        if $state.account_transition.load(Ordering::Acquire) {
+            return Err("Solum profile is switching; reopen the app to continue".to_string());
+        }
+        guard
+    }};
 }
 
 fn core_err(e: solum_core::CoreError) -> String {
@@ -390,6 +407,7 @@ fn restore_webview_begin(
             profile_id,
             reader,
             ready: false,
+            publication_preview: None,
         });
     Ok(plan)
 }
@@ -496,6 +514,199 @@ fn restore_webview_status(
 /// The JSON file the settings UI reads/writes. Matches `LlmConfig::load`'s
 /// fallback: explicit `SOLUM_LLM_CONFIG` first, then the active account profile
 /// (or the historical app-data path for guest).
+const MAX_REPLACEMENT_PREVIEW_ITEMS: usize = 1_000_000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LiveWebViewSummary {
+    profile_id: String,
+    chat_sessions: usize,
+    chat_messages: usize,
+    drafts: usize,
+    documents: usize,
+    fingerprint: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RestorePublicationPreview {
+    profile_id: String,
+    generation: String,
+    token: String,
+    sqlite_counts: Vec<(String, usize)>,
+    webview: LiveWebViewSummary,
+    has_existing_data: bool,
+}
+
+fn validate_live_webview_summary(summary: &LiveWebViewSummary, profile_id: &str) -> CmdResult<()> {
+    let total = summary
+        .chat_sessions
+        .checked_add(summary.chat_messages)
+        .and_then(|value| value.checked_add(summary.drafts))
+        .and_then(|value| value.checked_add(summary.documents))
+        .ok_or_else(|| "WebView replacement summary count overflow".to_string())?;
+    if summary.profile_id != profile_id
+        || total > MAX_REPLACEMENT_PREVIEW_ITEMS
+        || summary.fingerprint.len() != 64
+        || !summary
+            .fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("WebView replacement summary is invalid".into());
+    }
+    Ok(())
+}
+
+fn random_publication_token() -> CmdResult<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|_| "OS random source is unavailable".to_string())?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+#[cfg_attr(not(any(test, target_os = "android")), allow(dead_code))]
+fn validate_publication_binding(
+    binding: &RestorePublicationBinding,
+    token: &str,
+    sqlite_fingerprint: &str,
+    webview: &LiveWebViewSummary,
+) -> CmdResult<()> {
+    if binding.token != token
+        || binding.sqlite_fingerprint != sqlite_fingerprint
+        || binding.webview != *webview
+    {
+        return Err("Replacement preview is stale; generate a new preview".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn restore_publish_preview(
+    state: State<AppState>,
+    generation_id: String,
+    webview: LiveWebViewSummary,
+) -> CmdResult<RestorePublicationPreview> {
+    let profile_id = active_local_profile_id();
+    validate_live_webview_summary(&webview, &profile_id)?;
+    let _orch_guard = state
+        .orch
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    if state.account_transition.load(Ordering::Acquire) {
+        return Err("Solum profile is switching; reopen the app to continue".into());
+    }
+    let sync_store = state
+        .sync_store
+        .lock()
+        .map_err(|_| "sync store lock poisoned".to_string())?;
+    let sqlite = solum_core::export_v3::snapshot_portable_store(&sync_store).map_err(core_err)?;
+    let token = random_publication_token()?;
+    let mut session = state
+        .webview_restore
+        .lock()
+        .map_err(|_| "WebView restore session state is unavailable".to_string())?;
+    let session = session
+        .as_mut()
+        .filter(|session| {
+            session.ready
+                && session.reader.bootstrap().generation == generation_id
+                && session.profile_id == profile_id
+        })
+        .ok_or_else(|| "WebView restore generation is not ready for publication".to_string())?;
+    session.publication_preview = Some(RestorePublicationBinding {
+        token: token.clone(),
+        sqlite_fingerprint: sqlite.fingerprint,
+        webview: webview.clone(),
+    });
+    let sqlite_total = sqlite.counts.iter().try_fold(0usize, |total, (_, count)| {
+        total
+            .checked_add(*count)
+            .ok_or_else(|| "SQLite replacement summary count overflow".to_string())
+    })?;
+    let webview_total =
+        webview.chat_sessions + webview.chat_messages + webview.drafts + webview.documents;
+    Ok(RestorePublicationPreview {
+        profile_id,
+        generation: generation_id,
+        token,
+        sqlite_counts: sqlite.counts,
+        webview,
+        has_existing_data: sqlite_total > 0 || webview_total > 0,
+    })
+}
+
+#[tauri::command]
+fn restore_publish_confirm(
+    state: State<AppState>,
+    app: tauri::AppHandle,
+    generation_id: String,
+    token: String,
+    webview: LiveWebViewSummary,
+) -> CmdResult<String> {
+    restore_publish_confirm_platform(&state, &app, &generation_id, &token, &webview)
+}
+
+#[cfg(target_os = "android")]
+fn restore_publish_confirm_platform(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    generation_id: &str,
+    token: &str,
+    webview: &LiveWebViewSummary,
+) -> CmdResult<String> {
+    let transition = AccountTransitionGuard::acquire(&state.account_transition)?;
+    let profile_id = active_local_profile_id();
+    validate_live_webview_summary(webview, &profile_id)?;
+    let _orch_guard = state
+        .orch
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    let sync_store = state
+        .sync_store
+        .lock()
+        .map_err(|_| "sync store lock poisoned".to_string())?;
+    let sqlite = solum_core::export_v3::snapshot_portable_store(&sync_store).map_err(core_err)?;
+    let binding = {
+        let mut session_guard = state
+            .webview_restore
+            .lock()
+            .map_err(|_| "WebView restore session state is unavailable".to_string())?;
+        let session = session_guard
+            .as_mut()
+            .filter(|session| {
+                session.ready
+                    && session.reader.bootstrap().generation == generation_id
+                    && session.profile_id == profile_id
+            })
+            .ok_or_else(|| "WebView restore generation is not ready for publication".to_string())?;
+        session
+            .publication_preview
+            .take()
+            .ok_or_else(|| "Replacement preview is missing or already consumed".to_string())?
+    };
+    validate_publication_binding(&binding, token, &sqlite.fingerprint, webview)?;
+    let outcome = solum_core::portable_generation::publish_portable_generation(
+        &state.profile_root,
+        generation_id,
+    )
+    .map_err(core_err)?;
+    transition.hold_until_restart();
+    if outcome.handoff_pending {
+        eprintln!("restore pointer committed; startup must resume late notification handoff");
+    }
+    restart_account_app(app)
+}
+
+#[cfg(not(target_os = "android"))]
+fn restore_publish_confirm_platform(
+    _state: &AppState,
+    _app: &tauri::AppHandle,
+    _generation_id: &str,
+    _token: &str,
+    _webview: &LiveWebViewSummary,
+) -> CmdResult<String> {
+    Err("Restore publication is available only in the Android app".into())
+}
+
 fn llm_config_file() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("SOLUM_LLM_CONFIG") {
         return p.into();
@@ -1223,10 +1434,14 @@ async fn soulous_pull(
     require_full_account()?;
     let now = parse_now(now)?;
     let orch = state.orch.clone();
+    let transition = state.account_transition.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let o = orch
             .lock()
             .map_err(|_| "内部状态异常（锁中毒）".to_string())?;
+        if transition.load(Ordering::Acquire) {
+            return Err("Solum profile is switching; reopen the app to continue".into());
+        }
         let outcome = o.pull_soulous(now).map_err(core_err)?;
         let cache = o.soulous_status(now).map_err(core_err)?;
         Ok(SoulousPullResp {
@@ -1710,10 +1925,14 @@ async fn ingest(
         return Err("请输入内容".into());
     }
     let orch = state.orch.clone();
+    let transition = state.account_transition.clone();
     let out = tauri::async_runtime::spawn_blocking(move || {
         let mut o = orch
             .lock()
             .map_err(|_| "内部状态异常（锁中毒）".to_string())?;
+        if transition.load(Ordering::Acquire) {
+            return Err("Solum profile is switching; reopen the app to continue".into());
+        }
         match stream_id {
             Some(sid) => {
                 let mut on_delta = |d: &str| {
@@ -2628,10 +2847,14 @@ async fn guard_confirm(
     require_tool_account(&tool)?;
     let now = parse_now(now)?;
     let orch = state.orch.clone();
+    let transition = state.account_transition.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut o = orch
             .lock()
             .map_err(|_| "内部状态异常（锁中毒）".to_string())?;
+        if transition.load(Ordering::Acquire) {
+            return Err("Solum profile is switching; reopen the app to continue".into());
+        }
         let token = o.confirm(&pending_id, now).map_err(core_err)?;
         match o.run_tool(&tool, &args, Some(token), now) {
             Ok(output) => Ok(GuardRunResp { ok: true, output }),
@@ -2822,10 +3045,14 @@ async fn review(
     let from = now - Duration::days(days.clamp(1, 365));
     let styled = styled.unwrap_or(false);
     let orch = state.orch.clone();
+    let transition = state.account_transition.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let o = orch
             .lock()
             .map_err(|_| "内部状态异常（锁中毒）".to_string())?;
+        if transition.load(Ordering::Acquire) {
+            return Err("Solum profile is switching; reopen the app to continue".into());
+        }
         if styled {
             let (text, styled) = o.review_text(from, now).map_err(core_err)?;
             Ok(ReviewResp { text, styled })
@@ -3287,6 +3514,9 @@ fn sync_round(state: &AppState) -> CmdResult<solum_core::sync::SyncOutcome> {
             .sync_store
             .lock()
             .map_err(|_| "sync store lock poisoned".to_string())?;
+        if state.account_transition.load(Ordering::Acquire) {
+            return Err("Solum profile is switching; reopen the app to continue".into());
+        }
         solum_core::sync::sync_once(&store, &transport, &cfg).map_err(core_err)?
     };
     if outcome.applied > 0 {
@@ -3688,6 +3918,10 @@ fn ticker(app: tauri::AppHandle) {
     loop {
         let now = system_now();
         let state = app.state::<AppState>();
+        if state.account_transition.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            continue;
+        }
         let full_account = solum_core::account::AccountSession::load_full().is_some();
         let should_emit_daily_brief = full_account
             && state
@@ -3697,7 +3931,7 @@ fn ticker(app: tauri::AppHandle) {
                 .unwrap_or(false);
         let (fired_msgs, checkin, fresh, captured, notification_batch, daily_brief) =
             match state.orch.lock() {
-                Ok(mut o) => {
+                Ok(mut o) if !state.account_transition.load(Ordering::Acquire) => {
                     let captured = if full_account {
                         drain_capture_inbox(&mut o, &state.db_path, now)
                     } else {
@@ -3750,7 +3984,13 @@ fn ticker(app: tauri::AppHandle) {
                     )
                 }
                 Err(_) => (Vec::new(), None, Vec::new(), Vec::new(), 0, None),
+                Ok(_) => (Vec::new(), None, Vec::new(), Vec::new(), 0, None),
             };
+
+        if state.account_transition.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            continue;
+        }
 
         // OS notifications are reserved for event reminders (user decision
         // 2026-07-14): check-ins / suggestions / captures are informational
@@ -3820,7 +4060,12 @@ fn ticker(app: tauri::AppHandle) {
                         let samples: Vec<HealthSample> =
                             raw.into_iter().filter_map(convert_raw_sample).collect();
                         let stored = match state.orch.lock() {
-                            Ok(mut o) => o.record_health_samples(samples, now),
+                            Ok(mut o) if !state.account_transition.load(Ordering::Acquire) => {
+                                o.record_health_samples(samples, now)
+                            }
+                            Ok(_) => Err(solum_core::CoreError::Invalid(
+                                "profile is switching".into(),
+                            )),
                             Err(_) => {
                                 Err(solum_core::CoreError::Invalid("state lock poisoned".into()))
                             }
@@ -4010,6 +4255,9 @@ fn resolve_profile_paths(
         };
         let active = solum_core::profile_generation::resolve_active_data_dir(&profile_root)?;
         let active_generation = active.generation_id().map(str::to_owned);
+        if let Some(generation) = active_generation.as_deref() {
+            solum_core::portable_generation::resume_portable_handoff(&profile_root, generation)?;
+        }
         return Ok(ResolvedProfilePaths {
             db_path: active
                 .path()
@@ -4196,7 +4444,7 @@ pub fn run() {
                         .expect("sync store opens on the already-migrated db"),
                 ),
                 capture_inbox: Mutex::new(solum_core::capture::CaptureInbox::new()),
-                account_transition: AtomicBool::new(false),
+                account_transition: Arc::new(AtomicBool::new(false)),
             });
             // The native listener consults this projection before it writes an
             // inbox line. A missing/corrupt file intentionally means capture
@@ -4340,6 +4588,8 @@ pub fn run() {
             restore_webview_document_chunk,
             restore_webview_finish,
             restore_webview_status,
+            restore_publish_preview,
+            restore_publish_confirm,
             event_reschedule,
         ])
         .run(tauri::generate_context!())
@@ -4870,5 +5120,66 @@ mod tests {
         assert!(html.contains("await sha256Hex(await actual.blob.arrayBuffer())"));
         assert!(html.contains("safeLocalGet(storage.chat_sessions_key) !== chatJson"));
         assert!(!html.contains("publish_profile_generation"));
+    }
+
+    #[test]
+    fn publication_binding_rejects_token_sqlite_and_webview_changes() {
+        let webview = LiveWebViewSummary {
+            profile_id: "guest".into(),
+            chat_sessions: 1,
+            chat_messages: 2,
+            drafts: 1,
+            documents: 0,
+            fingerprint: "11".repeat(32),
+        };
+        assert!(validate_live_webview_summary(&webview, "guest").is_ok());
+        let binding = RestorePublicationBinding {
+            token: "22".repeat(32),
+            sqlite_fingerprint: "33".repeat(32),
+            webview: webview.clone(),
+        };
+        assert!(validate_publication_binding(
+            &binding,
+            &"22".repeat(32),
+            &"33".repeat(32),
+            &webview
+        )
+        .is_ok());
+        assert!(validate_publication_binding(
+            &binding,
+            &"44".repeat(32),
+            &"33".repeat(32),
+            &webview
+        )
+        .is_err());
+        assert!(validate_publication_binding(
+            &binding,
+            &"22".repeat(32),
+            &"55".repeat(32),
+            &webview
+        )
+        .is_err());
+        let mut changed_webview = webview;
+        changed_webview.fingerprint = "66".repeat(32);
+        assert!(validate_publication_binding(
+            &binding,
+            &"22".repeat(32),
+            &"33".repeat(32),
+            &changed_webview
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn frontend_publication_requires_fresh_exact_webview_snapshot() {
+        let html = include_str!("../dist/index.html");
+        assert!(html.contains("snapshotLiveWebViewSummary()"));
+        assert!(html.contains("saveCurrentChatDraft(true)"));
+        assert!(html.contains("chat_json: chatJson"));
+        assert!(html.contains("ui_state_json: uiStateJson"));
+        assert!(html.contains("await sha256Hex(await row.blob.arrayBuffer())"));
+        assert!(html.contains("restore_publish_preview"));
+        assert!(html.contains("restore_publish_confirm"));
+        assert!(html.contains("const webview = await snapshotLiveWebViewSummary();"));
     }
 }

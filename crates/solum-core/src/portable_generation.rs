@@ -19,8 +19,10 @@ use crate::export_v3::{
     DocumentManifest, PortableChat, PortableLlmSettings, PortableRestoreIntents,
 };
 use crate::profile_generation::{
-    begin_profile_generation, resume_sealed_profile_generation, seal_profile_generation,
-    SealedProfileGeneration, SQLITE_FILE, STAGING_DIR,
+    begin_profile_generation, publish_profile_generation_unlocked,
+    resolve_active_data_dir_unlocked, resume_sealed_profile_generation,
+    resume_sealed_profile_generation_unlocked, seal_profile_generation, sync_tree_directories,
+    with_generation_lock, SealedProfileGeneration, SQLITE_FILE, STAGING_DIR,
 };
 use crate::restore_v3::{
     restore_portable_into_empty_store, PlatformRestoreBundle, PreparedPortableRestore,
@@ -41,6 +43,11 @@ const MAX_BOOTSTRAP_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SPOOL_FILE_BYTES: u64 = 64 * 1024;
 const EMPTY_NOTIFICATION_POLICY: &str = "{\"allowed_packages\":[]}";
 pub const WEBVIEW_DOCUMENT_CHUNK_BYTES: usize = 512 * 1024;
+pub const RESTORE_HANDOFF_DIR: &str = "restore-handoff";
+const MAX_HANDOFF_ITEMS: usize = 10_000;
+const MAX_HANDOFF_FILE_BYTES: u64 = 64 * 1024;
+const LEGACY_INBOX_FILES: &[&str] = &["notif-inbox.jsonl", "notif-inbox.processing.jsonl"];
+const LEGACY_OVERFLOW_FILES: &[&str] = &["notif-spool.overflow", "notif-spool.overflow.taking"];
 
 #[derive(Debug)]
 pub struct SealedPortableGeneration {
@@ -173,6 +180,364 @@ impl PortableGenerationReader {
             done: next == document.plaintext_size,
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PortablePublishOutcome {
+    pub generation: String,
+    pub late_items: usize,
+    /// The pointer is already committed when this is true. Startup must resume
+    /// the durable handoff before opening the new Store.
+    pub handoff_pending: bool,
+}
+
+/// Atomically publish one WebView-ready portable generation while preserving
+/// notification intake that landed in the old active data directory. The
+/// caller must already have frozen both live SQLite connections.
+pub fn publish_portable_generation(
+    profile_root: &Path,
+    generation: &str,
+) -> Result<PortablePublishOutcome> {
+    with_generation_lock(profile_root, || {
+        let sealed = resume_sealed_profile_generation_unlocked(profile_root, generation)?;
+        let active_before = resolve_active_data_dir_unlocked(profile_root)?;
+        let already_active = active_before.generation_id() == Some(generation);
+        let late_items = if already_active {
+            0
+        } else {
+            prepare_restore_handoff(profile_root, generation, active_before.path())?
+        };
+        let active = publish_profile_generation_unlocked(&sealed)?;
+        let handoff_pending =
+            merge_restore_handoff(profile_root, generation, active.path()).is_err();
+        Ok(PortablePublishOutcome {
+            generation: generation.to_owned(),
+            late_items,
+            handoff_pending,
+        })
+    })
+}
+
+/// Complete a pointer-committed handoff before the active Store or ticker is
+/// opened. Missing handoff state is a normal no-op; malformed state is fatal.
+pub fn resume_portable_handoff(profile_root: &Path, generation: &str) -> Result<usize> {
+    with_generation_lock(profile_root, || {
+        let active = resolve_active_data_dir_unlocked(profile_root)?;
+        if active.generation_id() != Some(generation) {
+            return Err(invalid(
+                "restore handoff does not match the active profile generation",
+            ));
+        }
+        merge_restore_handoff(profile_root, generation, active.path())
+    })
+}
+
+fn prepare_restore_handoff(
+    profile_root: &Path,
+    generation: &str,
+    source_root: &Path,
+) -> Result<usize> {
+    let handoff = restore_handoff_path(profile_root, generation)?;
+    let mut count = 0usize;
+    collect_spool_handoff(source_root, &handoff, false, &mut count)?;
+    collect_spool_handoff(source_root, &handoff, true, &mut count)?;
+    collect_legacy_inbox_handoff(source_root, &handoff, &mut count)?;
+    collect_overflow_handoff(source_root, &handoff, &mut count)?;
+    if handoff.exists() {
+        sync_tree_directories(&handoff)?;
+        crate::fsatomic::sync_directory(
+            handoff
+                .parent()
+                .ok_or_else(|| invalid("restore handoff parent is missing"))?,
+        )?;
+    }
+    Ok(count)
+}
+
+fn collect_spool_handoff(
+    source_root: &Path,
+    handoff: &Path,
+    failed: bool,
+    count: &mut usize,
+) -> Result<()> {
+    let mut source = source_root.join(NOTIFICATION_SPOOL_DIR);
+    if failed {
+        source.push(FAILED_NOTIFICATION_DIR);
+    }
+    if !source.exists() {
+        return Ok(());
+    }
+    ensure_directory(&source, "active notification spool directory")?;
+    let mut entries = std::fs::read_dir(&source)
+        .map_err(|error| storage("active notification spool directory", error))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(|error| storage("active notification spool directory", error))?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        if !failed && entry.file_name() == FAILED_NOTIFICATION_DIR {
+            continue;
+        }
+        let path = entry.path();
+        if failed || entry.file_name() != FAILED_NOTIFICATION_DIR {
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            let record: SpoolRecord =
+                read_bounded_json(&path, MAX_HANDOFF_FILE_BYTES, "active notification spool")?;
+            stage_handoff_record(handoff, failed, &record, count)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_legacy_inbox_handoff(
+    source_root: &Path,
+    handoff: &Path,
+    count: &mut usize,
+) -> Result<()> {
+    for name in LEGACY_INBOX_FILES {
+        let path = source_root.join(name);
+        if !path.exists() {
+            continue;
+        }
+        let bytes = read_bounded_bytes(&path, MAX_HANDOFF_FILE_BYTES, "legacy notification inbox")?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| invalid("legacy notification inbox is not UTF-8"))?;
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let record: SpoolRecord = serde_json::from_str(line)
+                .map_err(|_| invalid("legacy notification inbox is invalid"))?;
+            stage_handoff_record(handoff, false, &record, count)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_overflow_handoff(source_root: &Path, handoff: &Path, count: &mut usize) -> Result<()> {
+    let directory = source_root.join("notif-overflow");
+    if directory.exists() {
+        ensure_directory(&directory, "active notification overflow directory")?;
+        let mut entries = std::fs::read_dir(&directory)
+            .map_err(|error| storage("active notification overflow directory", error))?
+            .collect::<std::io::Result<Vec<_>>>()
+            .map_err(|error| storage("active notification overflow directory", error))?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            if path.extension().is_none_or(|extension| extension != "mark") {
+                continue;
+            }
+            let metadata = std::fs::symlink_metadata(&path)
+                .map_err(|error| storage("active notification overflow marker", error))?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err(invalid("active notification overflow marker is invalid"));
+            }
+            stage_handoff_marker(
+                handoff,
+                entry.file_name().to_string_lossy().as_bytes(),
+                count,
+            )?;
+        }
+    }
+    for name in LEGACY_OVERFLOW_FILES {
+        let path = source_root.join(name);
+        if !path.exists() {
+            continue;
+        }
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|error| storage("legacy notification overflow", error))?;
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() > MAX_HANDOFF_ITEMS as u64
+        {
+            return Err(invalid(
+                "legacy notification overflow is invalid or too large",
+            ));
+        }
+        for index in 0..metadata.len() {
+            stage_handoff_marker(handoff, format!("{name}#{index}").as_bytes(), count)?;
+        }
+    }
+    Ok(())
+}
+
+fn stage_handoff_record(
+    handoff: &Path,
+    failed: bool,
+    record: &SpoolRecord,
+    count: &mut usize,
+) -> Result<()> {
+    reserve_handoff_item(count)?;
+    let mut encoded = serde_json::to_vec(record)?;
+    encoded.push(b'\n');
+    let mut identity = Vec::with_capacity(encoded.len() + 1);
+    identity.push(u8::from(failed));
+    identity.extend_from_slice(&encoded);
+    let name = format!("late-{}.json", lower_hex(&Sha256::digest(&identity)));
+    let mut target = handoff.join(NOTIFICATION_SPOOL_DIR);
+    if failed {
+        target.push(FAILED_NOTIFICATION_DIR);
+    }
+    write_idempotent(&target.join(name), &encoded, "restore notification handoff")
+}
+
+fn stage_handoff_marker(handoff: &Path, identity: &[u8], count: &mut usize) -> Result<()> {
+    reserve_handoff_item(count)?;
+    let name = format!("late-{}.mark", lower_hex(&Sha256::digest(identity)));
+    write_idempotent(
+        &handoff.join("notif-overflow").join(name),
+        &[],
+        "restore overflow handoff",
+    )
+}
+
+fn reserve_handoff_item(count: &mut usize) -> Result<()> {
+    *count = count
+        .checked_add(1)
+        .ok_or_else(|| invalid("restore handoff item count overflow"))?;
+    if *count > MAX_HANDOFF_ITEMS {
+        return Err(invalid("restore handoff exceeds its item-count limit"));
+    }
+    Ok(())
+}
+
+fn merge_restore_handoff(
+    profile_root: &Path,
+    generation: &str,
+    active_root: &Path,
+) -> Result<usize> {
+    let handoff = restore_handoff_path(profile_root, generation)?;
+    if !handoff.exists() {
+        return Ok(0);
+    }
+    ensure_directory(&handoff, "restore handoff directory")?;
+    let mut count = 0usize;
+    merge_handoff_spool(&handoff, active_root, false, &mut count)?;
+    merge_handoff_spool(&handoff, active_root, true, &mut count)?;
+    merge_handoff_markers(&handoff, active_root, &mut count)?;
+    sync_tree_directories(active_root)?;
+    let expected = profile_root.join(RESTORE_HANDOFF_DIR).join(generation);
+    if handoff != expected {
+        return Err(invalid("restore handoff cleanup target is invalid"));
+    }
+    std::fs::remove_dir_all(&handoff)
+        .map_err(|error| storage("completed restore handoff", error))?;
+    crate::fsatomic::sync_directory(&profile_root.join(RESTORE_HANDOFF_DIR))?;
+    Ok(count)
+}
+
+fn merge_handoff_spool(
+    handoff: &Path,
+    active_root: &Path,
+    failed: bool,
+    count: &mut usize,
+) -> Result<()> {
+    let mut source = handoff.join(NOTIFICATION_SPOOL_DIR);
+    let mut target = active_root.join(NOTIFICATION_SPOOL_DIR);
+    if failed {
+        source.push(FAILED_NOTIFICATION_DIR);
+        target.push(FAILED_NOTIFICATION_DIR);
+    }
+    if !source.exists() {
+        return Ok(());
+    }
+    ensure_directory(&source, "restore notification handoff directory")?;
+    let mut entries = std::fs::read_dir(&source)
+        .map_err(|error| storage("restore notification handoff directory", error))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(|error| storage("restore notification handoff directory", error))?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        if !failed && entry.file_name() == FAILED_NOTIFICATION_DIR {
+            continue;
+        }
+        let path = entry.path();
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| invalid("restore notification handoff name is not UTF-8"))?;
+        if !name.starts_with("late-") || !name.ends_with(".json") {
+            return Err(invalid(
+                "restore notification handoff contains an invalid entry",
+            ));
+        }
+        let bytes = read_bounded_bytes(
+            &path,
+            MAX_HANDOFF_FILE_BYTES,
+            "restore notification handoff",
+        )?;
+        serde_json::from_slice::<SpoolRecord>(&bytes)
+            .map_err(|_| invalid("restore notification handoff payload is invalid"))?;
+        reserve_handoff_item(count)?;
+        write_idempotent(&target.join(name), &bytes, "active notification spool")?;
+    }
+    Ok(())
+}
+
+fn merge_handoff_markers(handoff: &Path, active_root: &Path, count: &mut usize) -> Result<()> {
+    let source = handoff.join("notif-overflow");
+    if !source.exists() {
+        return Ok(());
+    }
+    ensure_directory(&source, "restore overflow handoff directory")?;
+    let mut entries = std::fs::read_dir(&source)
+        .map_err(|error| storage("restore overflow handoff directory", error))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(|error| storage("restore overflow handoff directory", error))?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| invalid("restore overflow handoff name is not UTF-8"))?;
+        if !name.starts_with("late-") || !name.ends_with(".mark") {
+            return Err(invalid(
+                "restore overflow handoff contains an invalid entry",
+            ));
+        }
+        let bytes = read_bounded_bytes(&path, 0, "restore overflow handoff marker")?;
+        reserve_handoff_item(count)?;
+        write_idempotent(
+            &active_root.join("notif-overflow").join(name),
+            &bytes,
+            "active notification overflow marker",
+        )?;
+    }
+    Ok(())
+}
+
+fn restore_handoff_path(profile_root: &Path, generation: &str) -> Result<PathBuf> {
+    if generation.len() != 32
+        || !generation
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(invalid("restore handoff generation id is invalid"));
+    }
+    Ok(profile_root.join(RESTORE_HANDOFF_DIR).join(generation))
+}
+
+fn read_bounded_bytes(path: &Path, limit: u64, label: &str) -> Result<Vec<u8>> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| storage(label, error))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > limit {
+        return Err(invalid(format!("{label} is invalid or too large")));
+    }
+    let bytes = std::fs::read(path).map_err(|error| storage(label, error))?;
+    if bytes.len() as u64 > limit {
+        return Err(invalid(format!("{label} exceeds its size limit")));
+    }
+    Ok(bytes)
+}
+
+fn write_idempotent(path: &Path, bytes: &[u8], label: &str) -> Result<()> {
+    if path.exists() {
+        let existing = read_bounded_bytes(path, bytes.len() as u64, label)?;
+        if existing != bytes {
+            return Err(invalid(format!("{label} conflicts with an existing file")));
+        }
+        return Ok(());
+    }
+    write_new(path, bytes, label)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -930,6 +1295,158 @@ mod tests {
             .generation_id()
             .is_none());
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn publication_preserves_late_spool_and_overflow_before_switching_pointer() {
+        let root = test_root("publish-handoff");
+        let legacy = Store::open(root.join(SQLITE_FILE).to_str().unwrap()).unwrap();
+        drop(legacy);
+        let (document, attachments) = fixture();
+        let sealed = stage_portable_generation(
+            &root,
+            prepare_portable_restore(document, attachments).unwrap(),
+            dt(23, 12),
+        )
+        .unwrap();
+        write_late_spool(&root, false, "late-live", "Live late body");
+        write_late_spool(&root, true, "late-failed", "Failed late body");
+        let overflow = root.join("notif-overflow");
+        std::fs::create_dir_all(&overflow).unwrap();
+        std::fs::write(overflow.join("late-input.mark"), []).unwrap();
+
+        let outcome = publish_portable_generation(&root, sealed.generation_id()).unwrap();
+        assert_eq!(outcome.generation, sealed.generation_id());
+        assert_eq!(outcome.late_items, 3);
+        assert!(!outcome.handoff_pending);
+        let active = resolve_active_data_dir(&root).unwrap();
+        assert_eq!(active.generation_id(), Some(sealed.generation_id()));
+        assert_eq!(
+            json_file_count(&active.path().join(NOTIFICATION_SPOOL_DIR)),
+            2
+        );
+        assert_eq!(
+            json_file_count(
+                &active
+                    .path()
+                    .join(NOTIFICATION_SPOOL_DIR)
+                    .join(FAILED_NOTIFICATION_DIR)
+            ),
+            2
+        );
+        assert_eq!(
+            std::fs::read_dir(active.path().join("notif-overflow"))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert!(!root
+            .join(RESTORE_HANDOFF_DIR)
+            .join(sealed.generation_id())
+            .exists());
+        // Publication never deletes the old generation's intake. The pointer
+        // makes it inert; keeping it is the safe side of a crash boundary.
+        assert!(root
+            .join(NOTIFICATION_SPOOL_DIR)
+            .join("late-live.json")
+            .exists());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn malformed_late_spool_fails_before_pointer_publication() {
+        let root = test_root("publish-invalid-handoff");
+        let legacy = Store::open(root.join(SQLITE_FILE).to_str().unwrap()).unwrap();
+        drop(legacy);
+        let (document, attachments) = fixture();
+        let sealed = stage_portable_generation(
+            &root,
+            prepare_portable_restore(document, attachments).unwrap(),
+            dt(23, 12),
+        )
+        .unwrap();
+        let spool = root.join(NOTIFICATION_SPOOL_DIR);
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("bad.json"),
+            br#"{"ts":1,"pkg":"com.example","title":"x","text":"y","extra":true}"#,
+        )
+        .unwrap();
+
+        assert!(publish_portable_generation(&root, sealed.generation_id()).is_err());
+        assert!(!root.join(POINTER_FILE).exists());
+        assert!(root.join(STAGING_DIR).join(sealed.generation_id()).is_dir());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn startup_resumes_a_pointer_committed_handoff_idempotently() {
+        let root = test_root("publish-resume-handoff");
+        let legacy = Store::open(root.join(SQLITE_FILE).to_str().unwrap()).unwrap();
+        drop(legacy);
+        let (document, attachments) = fixture();
+        let sealed = stage_portable_generation(
+            &root,
+            prepare_portable_restore(document, attachments).unwrap(),
+            dt(23, 12),
+        )
+        .unwrap();
+        write_late_spool(&root, false, "late-resume", "Resume body");
+        assert_eq!(
+            prepare_restore_handoff(&root, sealed.generation_id(), &root).unwrap(),
+            1
+        );
+        let active = publish_profile_generation(sealed.generation()).unwrap();
+        assert!(root
+            .join(RESTORE_HANDOFF_DIR)
+            .join(sealed.generation_id())
+            .is_dir());
+
+        assert_eq!(
+            resume_portable_handoff(&root, sealed.generation_id()).unwrap(),
+            1
+        );
+        assert_eq!(
+            json_file_count(&active.path().join(NOTIFICATION_SPOOL_DIR)),
+            2
+        );
+        assert_eq!(
+            resume_portable_handoff(&root, sealed.generation_id()).unwrap(),
+            0
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    fn write_late_spool(root: &Path, failed: bool, stem: &str, body: &str) {
+        let mut directory = root.join(NOTIFICATION_SPOOL_DIR);
+        if failed {
+            directory.push(FAILED_NOTIFICATION_DIR);
+        }
+        std::fs::create_dir_all(&directory).unwrap();
+        let record = SpoolRecord {
+            ts: 1_777_777_777_000,
+            pkg: "com.example.late".into(),
+            title: "Synthetic late".into(),
+            text: body.into(),
+        };
+        std::fs::write(
+            directory.join(format!("{stem}.json")),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn json_file_count(directory: &Path) -> usize {
+        std::fs::read_dir(directory)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+            .count()
     }
 
     fn walk_names(root: &Path) -> String {

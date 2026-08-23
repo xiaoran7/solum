@@ -29,3 +29,4 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 tiny_http = { workspace = true }
 url = { workspace = true }
+getrandom = { workspace = true }

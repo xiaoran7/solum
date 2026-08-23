@@ -3127,7 +3127,15 @@ function flushUiState() {
     .filter(([id, text]) => id && typeof text === "string" && text.length)
     .slice(-12);
   uiState.chatDrafts = Object.fromEntries(drafts);
-  safeLocalSet(UI_STATE_KEY, JSON.stringify({ ...uiState, updatedAt: new Date().toISOString() }));
+  const logical = JSON.stringify(uiState);
+  try {
+    const existing = JSON.parse(safeLocalGet(UI_STATE_KEY) || "null");
+    if (existing && typeof existing === "object") {
+      delete existing.updatedAt;
+      if (JSON.stringify(existing) === logical) return true;
+    }
+  } catch (_) { /* replace malformed state below */ }
+  return safeLocalSet(UI_STATE_KEY, JSON.stringify({ ...uiState, updatedAt: new Date().toISOString() }));
 }
 function saveUiState(immediate) {
   clearTimeout(uiStateSaveTimer);
@@ -5088,6 +5096,69 @@ async function hydratePortableGenerationWebView(generationId) {
   });
   if (!status.ready || status.generation !== generationId) throw new Error("WebView hydrate 未获得 ready ack");
   return status;
+}
+
+async function snapshotLiveWebViewSummary() {
+  if (!globalThis.crypto?.subtle) throw new Error("当前 WebView 不支持恢复发布摘要");
+  const profileId = localProfileId;
+  saveCurrentChatDraft(true);
+  if (!flushChatSessions()) throw new Error("无法固化当前会话，恢复发布已取消");
+  const chatJson = safeLocalGet(CHAT_SESSIONS_KEY);
+  const uiStateJson = safeLocalGet(UI_STATE_KEY);
+  if (chatJson === null || uiStateJson === null) throw new Error("无法回读当前 WebView 状态");
+  const chat = JSON.parse(chatJson);
+  const ui = JSON.parse(uiStateJson);
+  const rows = await listDocuments();
+  if (rows.length > DOCUMENT_MAX_COUNT) throw new Error("本地资料数量超过恢复发布上限");
+  const documents = [];
+  for (const row of rows) {
+    if (!(row?.blob instanceof Blob) || !Number.isSafeInteger(row.size) || row.size !== row.blob.size ||
+        row.blob.size > DOCUMENT_MAX_BYTES) {
+      throw new Error("本地资料无法纳入恢复发布摘要");
+    }
+    documents.push({
+      id: String(row.id || ""),
+      name: String(row.name || ""),
+      type: String(row.type || row.blob.type || ""),
+      size: row.blob.size,
+      added_at: String(row.addedAt || ""),
+      sha256: await sha256Hex(await row.blob.arrayBuffer()),
+    });
+  }
+  documents.sort((left, right) => left.id.localeCompare(right.id));
+  if (profileId !== localProfileId) throw new Error("账号在恢复发布摘要期间发生变化");
+  const fingerprintInput = JSON.stringify({
+    profile_id: profileId,
+    chat_json: chatJson,
+    ui_state_json: uiStateJson,
+    documents,
+  });
+  const fingerprint = await sha256Hex(new TextEncoder().encode(fingerprintInput));
+  const sessions = Array.isArray(chat?.sessions) ? chat.sessions : [];
+  const chatMessages = sessions.reduce((count, session) =>
+    count + (Array.isArray(session?.messages) ? session.messages.length : 0), 0);
+  const drafts = ui?.chatDrafts && typeof ui.chatDrafts === "object"
+    ? Object.values(ui.chatDrafts).filter((value) => typeof value === "string" && value.length).length
+    : 0;
+  return {
+    profile_id: profileId,
+    chat_sessions: sessions.length,
+    chat_messages: chatMessages,
+    drafts,
+    documents: documents.length,
+    fingerprint,
+  };
+}
+
+// Internal seam for the future recovery UI: preview is mandatory and its
+// opaque token can be spent once only against a fresh snapshot of both stores.
+async function prepareRestorePublication(generationId) {
+  const webview = await snapshotLiveWebViewSummary();
+  return invoke("restore_publish_preview", { generationId, webview });
+}
+async function confirmRestorePublication(generationId, token) {
+  const webview = await snapshotLiveWebViewSummary();
+  return invoke("restore_publish_confirm", { generationId, token, webview });
 }
 async function getDocument(id) {
   return withDocuments("readonly", (store, set) => {
