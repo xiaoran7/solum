@@ -98,6 +98,16 @@ test('PostgreSQL roles retain exact least-privilege attributes and membership',
         { grantee: 'solum_api', table_schema: 'sync', table_name: 'devices', privilege_type: 'INSERT' },
         { grantee: 'solum_api', table_schema: 'sync', table_name: 'devices', privilege_type: 'SELECT' },
         { grantee: 'solum_api', table_schema: 'sync', table_name: 'devices', privilege_type: 'UPDATE' },
+        { grantee: 'solum_api', table_schema: 'vault', table_name: 'backup_objects', privilege_type: 'INSERT' },
+        { grantee: 'solum_api', table_schema: 'vault', table_name: 'backup_objects', privilege_type: 'SELECT' },
+        { grantee: 'solum_api', table_schema: 'vault', table_name: 'backup_objects', privilege_type: 'UPDATE' },
+        { grantee: 'solum_api', table_schema: 'vault', table_name: 'backup_state', privilege_type: 'INSERT' },
+        { grantee: 'solum_api', table_schema: 'vault', table_name: 'backup_state', privilege_type: 'SELECT' },
+        { grantee: 'solum_api', table_schema: 'vault', table_name: 'backup_state', privilege_type: 'UPDATE' },
+        { grantee: 'solum_api', table_schema: 'vault', table_name: 'backups', privilege_type: 'DELETE' },
+        { grantee: 'solum_api', table_schema: 'vault', table_name: 'backups', privilege_type: 'INSERT' },
+        { grantee: 'solum_api', table_schema: 'vault', table_name: 'backups', privilege_type: 'SELECT' },
+        { grantee: 'solum_api', table_schema: 'vault', table_name: 'backups', privilege_type: 'UPDATE' },
         { grantee: 'solum_api', table_schema: 'vault', table_name: 'key_envelopes', privilege_type: 'INSERT' },
         { grantee: 'solum_api', table_schema: 'vault', table_name: 'key_envelopes', privilege_type: 'SELECT' },
       ]);
@@ -362,6 +372,7 @@ test('PostgreSQL runtime enforces auth, RLS, quotas and JSON contracts',
       tenantMaxBlobBytes: 10,
       tenantMaxBlobs: 2,
       tenantMaxDevices: 1,
+      backupMaxVersions: 2,
       buildRevision: 'abcdef0',
     });
     assert.equal(app.server.headersTimeout, 15_000);
@@ -518,6 +529,125 @@ test('PostgreSQL runtime enforces auth, RLS, quotas and JSON contracts',
       headers: { 'CF-Connecting-IP': '203.0.113.11' },
     });
     assert.equal(paddedBob.response.status, 401);
+
+    const backupPayload = Buffer.from('opaque-backup-ciphertext');
+    const backupDigest = crypto.createHash('sha256').update(backupPayload).digest('hex');
+    const makePlan = (suffix, createdAt = '2026-01-02T03:04:05.000Z') => ({
+      backup_id: `10000000-0000-4000-8000-${suffix.padStart(12, '0')}`,
+      generation: 1,
+      created_at: createdAt,
+      protocol_version: 1,
+      objects: [{
+        object_id: `20000000-0000-4000-8000-${suffix.padStart(12, '0')}`,
+        kind: 'main', bytes: backupPayload.length, sha256: backupDigest,
+      }],
+    });
+    const putBackup = (token, plan, payload = backupPayload) => fetch(
+      `${base}/v1/backups/${plan.backup_id}/objects/${plan.objects[0].object_id}`,
+      { method: 'PUT', headers: { Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/octet-stream' }, body: payload }
+    );
+    const commitBackup = (token, plan) => fetch(
+      `${base}/v1/backups/${plan.backup_id}/commit`,
+      { method: 'POST', headers: { Authorization: `Bearer ${token}` } }
+    );
+
+    const generation = await jsonRequest(base, '/v1/backups/generation', {
+      token: rotated.data.access_token,
+    });
+    assert.equal(generation.response.status, 200);
+    assert.equal(generation.data.active_generation, 1);
+    const firstPlan = makePlan('1');
+    const createdBackup = await jsonRequest(base, '/v1/backups', {
+      method: 'POST', token: rotated.data.access_token, body: firstPlan,
+    });
+    assert.equal(createdBackup.response.status, 201);
+    assert.equal((await commitBackup(rotated.data.access_token, firstPlan)).status, 409,
+      'a partial upload must never become visible');
+    assert.equal((await putBackup(rotated.data.access_token, firstPlan,
+      Buffer.alloc(backupPayload.length, 7))).status, 409);
+    assert.equal((await putBackup(rotated.data.access_token, firstPlan)).status, 201);
+    assert.equal((await putBackup(rotated.data.access_token, firstPlan)).status, 200,
+      'an identical object retry is idempotent');
+    const committedBackup = await commitBackup(rotated.data.access_token, firstPlan);
+    assert.equal(committedBackup.status, 200);
+    assert.equal((await commitBackup(rotated.data.access_token, firstPlan)).status, 200,
+      'commit retry is idempotent while the version is retained');
+
+    const aliceBackups = await jsonRequest(base, '/v1/backups', {
+      token: rotated.data.access_token,
+    });
+    assert.equal(aliceBackups.data.backups.length, 1);
+    assert.equal(aliceBackups.data.backups[0].backup_id, firstPlan.backup_id);
+    assert.equal(aliceBackups.data.backups[0].objects[0].sha256, backupDigest);
+    const bobBackups = await jsonRequest(base, '/v1/backups', {
+      token: bobRegistration.data.access_token,
+    });
+    assert.deepEqual(bobBackups.data.backups, [], 'RLS must hide another tenant backup');
+    const downloaded = await fetch(
+      `${base}/v1/backups/${firstPlan.backup_id}/objects/${firstPlan.objects[0].object_id}`,
+      { headers: { Authorization: `Bearer ${rotated.data.access_token}` } }
+    );
+    assert.equal(downloaded.status, 200);
+    assert.equal(downloaded.headers.get('content-type'), 'application/octet-stream');
+    assert.equal(downloaded.headers.get('etag'), `"${backupDigest}"`);
+    assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), backupPayload);
+    const crossTenantDownload = await fetch(
+      `${base}/v1/backups/${firstPlan.backup_id}/objects/${firstPlan.objects[0].object_id}`,
+      { headers: { Authorization: `Bearer ${bobRegistration.data.access_token}` } }
+    );
+    assert.equal(crossTenantDownload.status, 404);
+
+    const conflictingPlan = { ...firstPlan, created_at: '2026-01-02T03:04:06.000Z' };
+    assert.equal((await jsonRequest(base, '/v1/backups', {
+      method: 'POST', token: rotated.data.access_token, body: conflictingPlan,
+    })).response.status, 409);
+    assert.equal((await fetch(`${base}/v1/backups/${firstPlan.backup_id}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${rotated.data.access_token}` },
+    })).status, 428);
+    assert.equal((await fetch(`${base}/v1/backups/${firstPlan.backup_id}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${rotated.data.access_token}`,
+        'If-Match': `"${'00'.repeat(32)}"` },
+    })).status, 412);
+
+    for (let index = 2; index <= 3; index += 1) {
+      const plan = makePlan(String(index), `2026-01-02T03:04:0${index}.000Z`);
+      assert.equal((await jsonRequest(base, '/v1/backups', {
+        method: 'POST', token: rotated.data.access_token, body: plan,
+      })).response.status, 201);
+      assert.equal((await putBackup(rotated.data.access_token, plan)).status, 201);
+      assert.equal((await commitBackup(rotated.data.access_token, plan)).status, 200);
+    }
+    const retained = await jsonRequest(base, '/v1/backups?limit=100', {
+      token: rotated.data.access_token,
+    });
+    assert.equal(retained.data.backups.length, 2);
+    assert.equal(retained.data.backups.some((item) => item.backup_id === firstPlan.backup_id), false);
+    const deletedPlan = makePlan('3');
+    const retainedRow = retained.data.backups.find((item) => item.backup_id === deletedPlan.backup_id);
+    const deleted = await jsonRequest(base, `/v1/backups/${deletedPlan.backup_id}`, {
+      method: 'DELETE', token: rotated.data.access_token,
+      headers: { 'If-Match': `"${retainedRow.plan_etag}"` },
+    });
+    assert.equal(deleted.response.status, 200);
+
+    const takeover = {
+      expected_generation: 1,
+      takeover_id: '30000000-0000-4000-8000-000000000001',
+    };
+    const advanced = await jsonRequest(base, '/v1/backups/generation', {
+      method: 'POST', token: rotated.data.access_token, body: takeover,
+    });
+    assert.equal(advanced.data.active_generation, 2);
+    const retriedAdvance = await jsonRequest(base, '/v1/backups/generation', {
+      method: 'POST', token: rotated.data.access_token, body: takeover,
+    });
+    assert.equal(retriedAdvance.data.active_generation, 2);
+    assert.equal(retriedAdvance.data.replay, true);
+    assert.equal((await jsonRequest(base, '/v1/backups', {
+      method: 'POST', token: rotated.data.access_token, body: makePlan('4'),
+    })).response.status, 409, 'the old generation cannot create another upload');
+
     const legacyDevice = await pool.connect();
     try {
       await legacyDevice.query('begin');

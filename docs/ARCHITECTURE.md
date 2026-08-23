@@ -598,6 +598,86 @@ overflow 与 SQLite 此后按既有运行时规则可变，不重新冒充 seale
 跨平台互通。未来 UI 负责把 preview 计数和不可撤销替换后果呈现为有重量的确认，但不得绕开这里的一次性
 token、重读校验与进程重启边界。
 
+#### `solum-cloud` opaque backup API v1（2026-08-23）
+
+这一层只负责把已经由端侧 `solum-backup` / `solum-attachment` 加密的对象按完整版本保存；服务端既不取得
+32 字节主密钥，也不解析容器头、AAD、内层 export、资料名称或正文。唯一租户身份是已验证 access token 的
+不可变 UUID `sub`，请求路径、query 和 JSON 都没有 `tenant_id` / `user_id` 字段。所有 SQL 都在
+`withTenant` 事务及强制 RLS 下执行；运行角色不是 owner、superuser 或 `BYPASSRLS`。TLS 仍是传输要求，
+但 TLS、账号 token 与 RLS 只能限制谁能取得密文，不能替代端到端加密。
+
+**对象与上传状态**：一个完整版本由恰好一个 `main` 对象和 0 至 63 个 `attachment` 对象组成。`main` 是
+完整 `solum-backup` v1 字节，attachment 是 manifest 所列的独立加密容器；随机 UUID `object_id` 不得复用
+attachment id、文件名或内容摘要以外的业务标识。服务端只公开版本时间、generation、对象数量、种类、
+密文字节数和密文 SHA-256；这些是有意泄漏的流量 metadata，密文摘要不是明文摘要。
+
+创建上传使用 `POST /v1/backups`，`Content-Type: application/json`，body 必须只有以下字段：
+
+```json
+{"backup_id":"11111111-1111-4111-8111-111111111111","generation":1,"created_at":"2026-01-02T03:04:05.000Z","protocol_version":1,"objects":[{"object_id":"22222222-2222-4222-8222-222222222222","kind":"main","bytes":123,"sha256":"0000000000000000000000000000000000000000000000000000000000000000"}]}
+```
+
+UUID 必须是小写带连字符形式且不是 nil；`generation` 是 1..2^53-1；时间必须是可往返的 UTC RFC 3339
+毫秒格式 `YYYY-MM-DDTHH:mm:ss.sssZ`；版本固定为 1；对象 id 互异、尺寸为正安全整数、摘要为 64 位小写
+hex，并且恰有一个 main。未知/缺失字段一律 400。服务端把对象按 `object_id` 字节序排序，再以示例相同的
+键序、紧凑 UTF-8 JSON 编码整个已验证 plan，并取 SHA-256 作为 `plan_etag`；因此同一组对象的数组顺序
+不影响幂等性。上方示例本身的 canonical SHA-256 是
+`3ae4b633307d12c2f82fac4ddb36539f5ed8d6c5a18e5e9a09a68d2b96979528`。相同租户、`backup_id` 和完全相同 canonical plan 返回既有 pending/complete 版本；同 id
+不同 plan 返回 409，不能覆盖已提交版本。
+
+对象上传使用 `PUT /v1/backups/{backup_id}/objects/{object_id}`，只接受
+`application/octet-stream`。读取前先按声明尺寸与服务端单对象上限约束 `Content-Length`，流读取仍独立
+执行硬上限；实际长度和服务端计算的 SHA-256 必须与 plan 完全相等。第一次上传 create-or-verify，重试
+逐字节相同的对象成功，不同字节返回 409。API 不接受 base64/JSON 密文，也不在错误或日志中回显 body、
+摘要之外的攻击者内容。上传任一 mutation 时，plan generation 必须等于租户当前 active generation。
+
+完成上传使用 `POST /v1/backups/{backup_id}/commit`，只接受零长度 body。在同一数据库事务和租户 advisory
+lock 内重验 generation、plan、每个对象已到齐及字节数/摘要，然后把 pending 原子改为 complete。缺件返回
+409，pending 永不出现在列表/下载中，也绝不能替换 latest；重复提交相同 complete 版本幂等成功。提交成功
+后在同一事务内按 `committed_at DESC, backup_id DESC` 保留最新 N 个完整版本并删除更老版本；响应明确给出
+`pruned_versions`，不能静默让客户端以为所有历史仍在。清理失败则整个 commit 回滚。
+
+读取与删除接口如下：
+
+- `GET /v1/backups?limit=1..100` 仅列本租户 complete 版本，默认 20，顺序同保留排序；每项返回
+  `backup_id/generation/created_at/committed_at/protocol_version/total_bytes/object_count/plan_etag/objects`，
+  object 只含 `object_id/kind/bytes/sha256`。响应同时返回当前 `active_generation`。
+- `GET /v1/backups/{backup_id}/objects/{object_id}` 只读取 complete 版本，返回原始
+  `application/octet-stream`、精确 `Content-Length`、`Cache-Control: no-store` 与带引号的密文摘要 ETag。
+- `DELETE /v1/backups/{backup_id}` 硬删除一个 complete 或 pending 版本及其对象。必须携带
+  `If-Match: "{plan_etag}"`；缺失为 428、陈旧/不符为 412，成功返回被删 id。用户可以删除最后一个版本；
+  未来 UI 必须对此给强确认，但服务端不能假装用户没有删除权。
+
+**单写者 generation**：`GET /v1/backups/generation` 返回当前值（新租户惰性初始化为 1）。换机确认接管后，
+客户端用 `POST /v1/backups/generation` 提交严格 JSON
+`{"expected_generation":1,"takeover_id":"non-nil lowercase UUID"}`。服务端在 tenant advisory lock 下执行
+compare-and-increment：expected 不等于当前值返回 409；首次成功只加一并记录 takeover id；同 takeover id
+的丢响应重试返回同一新 generation，其他重放不能再次推进。推进时删除旧 generation 的 pending 上传，
+保留已 complete 历史；旧设备此后的 create/仍存在的 commit 以 409 失败，已随接管删除的 pending object
+路径按不存在返回 404。这防的是正常旧客户端误写，
+不是把仍持有有效账号 token 的恶意设备变成不可信方；真正撤销仍需撤销账号会话/设备授权。
+
+**默认硬上限与配置下界**：单对象 68 MiB（覆盖 core 的 64 MiB backup 容器上限及 framing）、单版本
+700 MiB（覆盖当前 600 MiB attachment 明文预算和主容器）、每版本 64 对象、每租户同时 4 个 pending、
+每租户已存 ciphertext 共 2 GiB、保留 10 个 complete 版本（生产不得配置低于 2）。pending 同样占配额，
+超过 24 小时由逐租户清理任务删除；创建、对象上传和 commit 都在 advisory lock 内重算数据库实际用量，
+不能信任客户端计数。超限统一 413 或 429，不靠降低 core 上限、截断或静默淘汰做绿。PostgreSQL `bytea`
+只是本阶段有界后端；公开对象 API 故意与存储实现分离，生产规模的大附件迁入对象存储仍是后续门槛，
+本节不宣称 600 MiB 真机上传与灾备已经验收。
+
+错误只返回稳定 code：`invalid_backup_plan` / `unsupported_backup_version`（400）、
+`backup_not_found` / `backup_object_not_found`（404）、`backup_plan_conflict` /
+`backup_object_mismatch` / `backup_incomplete` / `backup_generation_stale`（409）、
+`backup_object_too_large` / `backup_package_too_large` / `backup_quota_exceeded`（413）、
+`backup_pending_limit`（429）、`precondition_required`（428）、`precondition_failed`（412）；对象上传缺少精确
+`Content-Length` 返回 `content_length_required`（411）。恢复端必须先完整下载
+main、由端侧 backup codec 验证认证标签/AAD/export plan，再按已认证 manifest 下载并验证 attachment，最后
+才进入前述 sealed generation 与 publication；列表 metadata 和服务端 SHA-256 只用于传输完整性与重试，
+不能代替 AEAD、manifest 或写库前校验。
+
+本节交付的是唯一中心服务的不可读密文存储协议与 PostgreSQL 隔离地基，不包含 Android 上传/下载 UI、
+恢复码/恢复信封、对象存储、生产灾备演练、跨平台实机互通或旧 `/v1/push|pull` 的安全退役。
+
 #### 历史多设备同步实现（迁移期，只读理解）
 
 - 定位：同步数据面只做**加密数据中转**，不解密、不推理、不保存同步明文；服务端数据库泄露不能直接解开同步正文。这不等于统一中心看不到账号元数据、结构化告警或正在代理的 AI 请求，三者按各自边界单独约束。

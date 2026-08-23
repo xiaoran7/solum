@@ -290,6 +290,56 @@ create table if not exists vault.key_envelopes (
 create index if not exists key_envelopes_tenant_device_idx
   on vault.key_envelopes (tenant_id, recipient_device_id, key_version desc);
 
+create table if not exists vault.backup_state (
+  tenant_id uuid primary key references auth.users(id) on delete cascade,
+  active_generation bigint not null default 1 check (active_generation between 1 and 9007199254740991),
+  last_takeover_id uuid,
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists vault.backups (
+  tenant_id uuid not null references auth.users(id) on delete cascade,
+  backup_id uuid not null,
+  generation bigint not null check (generation between 1 and 9007199254740991),
+  protocol_version smallint not null check (protocol_version = 1),
+  client_created_at timestamptz not null,
+  status text not null default 'pending' check (status in ('pending', 'complete')),
+  plan_sha256 bytea not null check (octet_length(plan_sha256) = 32),
+  total_bytes bigint not null check (total_bytes between 1 and 2147483648),
+  object_count smallint not null check (object_count between 1 and 64),
+  created_at timestamptz not null default now(),
+  committed_at timestamptz,
+  primary key (tenant_id, backup_id),
+  check ((status = 'pending' and committed_at is null) or
+         (status = 'complete' and committed_at is not null))
+);
+
+create table if not exists vault.backup_objects (
+  tenant_id uuid not null,
+  backup_id uuid not null,
+  object_id uuid not null,
+  kind text not null check (kind in ('main', 'attachment')),
+  declared_bytes bigint not null check (declared_bytes between 1 and 1073741824),
+  declared_sha256 bytea not null check (octet_length(declared_sha256) = 32),
+  ciphertext bytea,
+  uploaded_at timestamptz,
+  primary key (tenant_id, backup_id, object_id),
+  foreign key (tenant_id, backup_id) references vault.backups(tenant_id, backup_id)
+    on delete cascade,
+  check ((ciphertext is null and uploaded_at is null) or
+         (ciphertext is not null and uploaded_at is not null and
+          octet_length(ciphertext) = declared_bytes))
+);
+
+create index if not exists backups_tenant_complete_idx
+  on vault.backups (tenant_id, committed_at desc, backup_id desc)
+  where status = 'complete';
+create index if not exists backups_tenant_pending_idx
+  on vault.backups (tenant_id, created_at)
+  where status = 'pending';
+create index if not exists backup_objects_tenant_backup_idx
+  on vault.backup_objects (tenant_id, backup_id, object_id);
+
 alter table sync.devices enable row level security;
 alter table sync.devices force row level security;
 alter table sync.blobs enable row level security;
@@ -300,6 +350,12 @@ alter table sync.alerts enable row level security;
 alter table sync.alerts force row level security;
 alter table vault.key_envelopes enable row level security;
 alter table vault.key_envelopes force row level security;
+alter table vault.backup_state enable row level security;
+alter table vault.backup_state force row level security;
+alter table vault.backups enable row level security;
+alter table vault.backups force row level security;
+alter table vault.backup_objects enable row level security;
+alter table vault.backup_objects force row level security;
 alter table ai.entitlements enable row level security;
 alter table ai.entitlements force row level security;
 alter table ai.usage_monthly enable row level security;
@@ -329,6 +385,21 @@ create policy alerts_tenant_policy on sync.alerts
   with check (tenant_id = (select sync.current_tenant_id()));
 drop policy if exists key_envelopes_tenant_policy on vault.key_envelopes;
 create policy key_envelopes_tenant_policy on vault.key_envelopes
+  for all to solum_api
+  using (tenant_id = (select sync.current_tenant_id()))
+  with check (tenant_id = (select sync.current_tenant_id()));
+drop policy if exists backup_state_tenant_policy on vault.backup_state;
+create policy backup_state_tenant_policy on vault.backup_state
+  for all to solum_api
+  using (tenant_id = (select sync.current_tenant_id()))
+  with check (tenant_id = (select sync.current_tenant_id()));
+drop policy if exists backups_tenant_policy on vault.backups;
+create policy backups_tenant_policy on vault.backups
+  for all to solum_api
+  using (tenant_id = (select sync.current_tenant_id()))
+  with check (tenant_id = (select sync.current_tenant_id()));
+drop policy if exists backup_objects_tenant_policy on vault.backup_objects;
+create policy backup_objects_tenant_policy on vault.backup_objects
   for all to solum_api
   using (tenant_id = (select sync.current_tenant_id()))
   with check (tenant_id = (select sync.current_tenant_id()));
@@ -366,6 +437,9 @@ grant select, insert, update on sync.devices to solum_api;
 grant select, insert on sync.blobs to solum_api;
 grant select, insert, delete on sync.alerts to solum_api;
 grant select, insert on vault.key_envelopes to solum_api;
+grant select, insert, update on vault.backup_state to solum_api;
+grant select, insert, update, delete on vault.backups to solum_api;
+grant select, insert, update on vault.backup_objects to solum_api;
 grant select, insert on ai.entitlements to solum_api;
 grant select, insert, update on ai.usage_monthly to solum_api;
 grant select, insert, update on ai.usage_events to solum_api;

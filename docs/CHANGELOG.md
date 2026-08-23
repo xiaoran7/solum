@@ -8,7 +8,12 @@
 
 > **版本速查索引**（2026-08-21 加；正文为新→旧平铺，按版本号检索定位。全史切版需逐条定版本归属，已立为 TODO 专项）：
 > Solum Android：0.2.8（1018 文案/时间解析/发布输入修复）· 0.2.7（1017 图标校正）· 0.2.6（1016 启动图标）· 0.2.5（1015 登录闪退修复）· 0.2.4（1014 后端复审收口）· 0.2.3（1013 默认模型/配额）· 0.2.2（1012 账户外壳/UI 重构）· 0.2.1（1011 中心化账号入口）· 0.2.0（1010 登录即恢复密钥）· 0.1.9（1009 UUID 隔离）· 0.1.8（1008 同步按账号隔离）· 0.1.7（1007 福利监控）· 0.1.5（1005 安全默认值收口）· 0.1.4（1004 排版/缓存）· 0.1.3（1003 导航重构）· 0.1.2（1002 UI 重构）· 0.1.1（1001 隐私门文案）· 0.1.0（1000 首个 release）
-> solum-cloud：0.6.4（密码语义/限流收口）· 0.6.3（刷新令牌权限）· 0.6.2（迁移与清理修复）· 0.6.1（AI 代理加固）· 0.6.0（模型目录/额度）· 0.5.1（中心化入口）· 0.5.0（恢复信封）· 0.4.0（PostgreSQL 中心库）
+> solum-cloud：0.7.0（opaque backup API v1）· 0.6.4（密码语义/限流收口）· 0.6.3（刷新令牌权限）· 0.6.2（迁移与清理修复）· 0.6.1（AI 代理加固）· 0.6.0（模型目录/额度）· 0.5.1（中心化入口）· 0.5.0（恢复信封）· 0.4.0（PostgreSQL 中心库）
+
+- **solum-cloud 0.7.0 / F17 opaque backup API v1（2026-08-23，服务端地基，未接 Android UI）**：同一 PostgreSQL 中心新增严格 plan、原始 octet-stream 密文对象、complete-only 列表/下载、原子 commit 和 `If-Match` 整版删除；服务端只以 access token 的不可变 UUID `sub` 选租户，backup state/version/object 三表全部启用并强制 RLS，运行角色按真实 SQL 路径获得最小权限。服务端不解析 `solum-backup` / attachment 容器，也不持有主密钥或明文。
+  - 上传 plan 以固定键序和 object-id 字节序 canonicalize 后取 SHA-256，plan、对象和 commit 都支持安全重试；对象实测长度/SHA-256 不符、缺件、未来协议或陈旧 generation 均在 complete 前失败。commit 在 tenant advisory lock 内重算对象摘要并与历史裁剪同事务，pending 永不成为 latest，裁剪 id 显式返回。
+  - active generation 以 expected generation + takeover UUID 做幂等 compare-and-increment；推进后清理旧 pending、拒绝旧代新建/提交，但保留 complete 历史。默认上限为 68 MiB/对象、700 MiB/版本、64 对象、4 pending、2 GiB/租户、10 complete 和 24 小时 pending TTL；容量下限校验防止部署误配破坏 core 协议预算。
+  - PostgreSQL `bytea` 只是有界 v1 存储后端，对象 API 已与后端解耦；生产大附件对象存储、Android 上传/下载与恢复 UI、恢复码、三端真机互通和灾备演练仍未完成，旧 `/v1/push|pull` 未删除。新增固定 plan digest 合同测试及真实 PostgreSQL 条件集成流程；本机缺少 Docker/PostgreSQL，因此真实库组保留给配置了 disposable database 的 CI 执行，未伪装成本机已跑。
 
 - **F17 Android restore publication coordinator（2026-08-23，内部 seam，未接云端/UI）**：core 在同一 profile 锁内重验 sealed generation、收集旧 active profile 的 normal/failed/legacy notification spool 与 overflow，写入按内容寻址的 durable handoff 后才提交 active pointer；旧文件不删除。pointer 后合并失败被记为 pending 而不是伪装回滚，新进程会在打开 SQLite/ticker 前幂等续传，损坏或超限 handoff fail closed。
   - App 要求 inactive WebView 已 ready，并生成一次性 32-byte 随机 replacement token，绑定当前 SQLite 全部 portable 逻辑域的确定性 SHA-256 与 WebView chat/UI 原串、IndexedDB metadata/blob 摘要；确认时两边都重读，token 错误、复用、切号或任一字节变化均在 pointer 前拒绝。提交时按 Orchestrator → sync Store → profile lock 冻结，pointer 后旧进程保持永久 transition 状态、拒绝命令/ticker/sync 写入并走 Android Activity 整进程重启。

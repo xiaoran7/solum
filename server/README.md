@@ -11,6 +11,7 @@ Solum 的统一中心后端。产品只做移动端：Android 是当前主开发
 - `POST|GET /v1/alerts`（固定形状的状态告警）
 - `GET /v1/devices`（当前账号实际参与同步的设备状态）
 - `GET|PUT /v1/keys/recovery`（账号固定范围、create-only 的登录恢复信封）
+- `GET|POST|PUT|DELETE /v1/backups/*`（端到端加密版本的分对象上传、原子提交、读取与删除）
 - `GET /v1/health|meta`（健康、版本、构建提交和能力发现）
 
 账号、AI 代理和同步使用同一个 origin。同步接口只存储客户端产生的 XChaCha20-Poly1305 密文，服务端不持有解密主密钥。
@@ -22,7 +23,7 @@ Solum 的统一中心后端。产品只做移动端：Android 是当前主开发
    - 至少 32 字符的随机 `SOLUM_AUTH_SECRET`；
    - 两个不同的数据库强密码 `SOLUM_DB_OWNER_PASSWORD` / `SOLUM_DB_APP_PASSWORD`；
    - 初始管理员账号与至少 12 字符的强密码。
-3. 将 MiMo Token Plan 密钥填入 `MIMO_API_KEY`。用 `SOLUM_DEFAULT_MODEL` 指定所有登录用户可直接使用且始终保留的默认模型，用逗号分隔的 `SOLUM_ALLOWED_MODELS` 指定其他可选模型；默认模型即使未写进列表也会自动加入。`SOLUM_STANDARD_MONTHLY_REQUEST_LIMIT` 是新账号默认月度请求额度。`SOLUM_AI_MAX_RESPONSE_BYTES` 限制非流式上游响应体（默认 8 MiB），`SOLUM_AI_PENDING_TIMEOUT_SECONDS` 决定进程异常退出后待处理调用多久按中断结算（默认 600 秒）。`SOLUM_TENANT_MAX_BLOB_BYTES` / `SOLUM_TENANT_MAX_BLOBS` / `SOLUM_TENANT_MAX_DEVICES` 分别限制单租户的密文总字节、blob 条数和设备数。
+3. 将 MiMo Token Plan 密钥填入 `MIMO_API_KEY`。用 `SOLUM_DEFAULT_MODEL` 指定所有登录用户可直接使用且始终保留的默认模型，用逗号分隔的 `SOLUM_ALLOWED_MODELS` 指定其他可选模型；默认模型即使未写进列表也会自动加入。`SOLUM_STANDARD_MONTHLY_REQUEST_LIMIT` 是新账号默认月度请求额度。`SOLUM_AI_MAX_RESPONSE_BYTES` 限制非流式上游响应体（默认 8 MiB），`SOLUM_AI_PENDING_TIMEOUT_SECONDS` 决定进程异常退出后待处理调用多久按中断结算（默认 600 秒）。`SOLUM_TENANT_MAX_BLOB_BYTES` / `SOLUM_TENANT_MAX_BLOBS` / `SOLUM_TENANT_MAX_DEVICES` 分别限制迁移期同步的单租户密文总字节、blob 条数和设备数。备份另用 `SOLUM_BACKUP_*`：默认单对象 68 MiB、单版本 700 MiB、租户密文 2 GiB、64 对象、4 个 pending、10 个完整历史版本和 24 小时 pending TTL；对象/版本容量不得配置低于跨平台协议预算，完整历史不得低于 2。
 4. 启动：
 
 ```sh
@@ -69,12 +70,28 @@ SOLUM_REGISTRATION_MODE=open
 - `sync.devices`：由首次 push/pull 自动登记的设备标识、最后在线时间和管理员撤销状态；撤销后该设备的 push/pull 返回 403，不能靠再次上线自我恢复。当前没有面向客户端的设备公钥注册或撤销 API。
 - `sync.preferences`：未来账号级设置的加密文档；现有规则、主动性和画像指针仍随加密 oplog 同步。
 - `vault.key_envelopes`：当前只通过固定恢复接口保存账号密码派生密钥包装后的主密钥。
+- `vault.backup_state`：账号当前 active generation 和最后一次幂等 takeover id；不包含端侧密钥。
+- `vault.backups` / `vault.backup_objects`：严格上传 plan、必要流量 metadata 与客户端产生的原始密文；服务端不解析 backup/attachment 容器，不取得 AAD 内身份、明文摘要或资料名称。
 
 登录恢复使用固定 recipient `account-recovery-v1`、key version 1 和
 `recovery-xchacha20poly1305`。`PUT` 只在记录不存在时创建并始终返回当前权威信封，
 不会覆盖既有主密钥。客户端用账号密码与不可变 user UUID 在本地导出包装密钥，中心服务只看到
 随机密文，拿到数据库或 access token 都不能解密同步内容。
-- 大图片、文档和语音以后放对象存储，PostgreSQL 只留密文索引。
+- 本阶段把有界密文对象保存为 PostgreSQL `bytea`，对象 API 与存储实现解耦。生产规模的大图片、文档和语音仍需迁到对象存储，PostgreSQL 最终只留密文索引；当前实现不等于 600 MiB 真机链路或灾备已验收。
+
+## 加密备份 API v1
+
+客户端先 `POST /v1/backups` 提交严格 plan，再以 `PUT /v1/backups/{backup_id}/objects/{object_id}`
+逐件上传原始 `application/octet-stream`，全部完成后调用
+`POST /v1/backups/{backup_id}/commit`。只有 complete 版本会出现在 `GET /v1/backups` 并允许下载；
+对象字节数和服务端 SHA-256 任一不符、缺件或 generation 陈旧都会在 commit 前失败。同 id/同 plan、
+同对象字节和 complete commit 都可安全重试，同 id 不同 plan 返回冲突。删除整版必须带列表返回的
+`If-Match: "{plan_etag}"`，避免陈旧界面误删。
+
+`GET|POST /v1/backups/generation` 提供 compare-and-increment 接管；成功提升后旧 generation 不能创建或
+提交备份，旧 pending 会被删除，已完成历史保留。列表 metadata/密文摘要只用于传输和重试，恢复端仍须
+用端侧主密钥验证 `solum-backup` AEAD、manifest 与附件后才可写入临时 Store。完整字段、canonical plan
+字节、错误码、容量和保留顺序见 `docs/ARCHITECTURE.md` 的 opaque backup API v1 小节。
 
 `sync.blobs` 是增量操作历史，不是可独立丢弃的缓存：在没有快照/压缩协议前，按天删除
 会让长期离线或新设备永久漏数据。因此生产服务不对 blob 做时间清理；容量由单租户字节、

@@ -11,6 +11,7 @@ const {
   verifyAccessToken, withTenant, parseModelCatalog, usageProjection,
   validateCompletionOptions, readBodyLimited, recoverTenantStaleAiRequests,
   optionalBoundedNumber, optionalHttpUrl, requiredOpaqueString, safeDatabaseInteger,
+  parseBackupPlan, parseTakeover, parseIfMatch, buildConfig,
 } = require('../src/postgres-server');
 const {
   createRefreshToken,
@@ -27,7 +28,8 @@ const root = path.join(__dirname, '..');
 test('PostgreSQL schema forces RLS on every tenant-owned table', () => {
   const sql = fs.readFileSync(path.join(root, 'db', 'init', '01-schema.sql'), 'utf8');
   for (const table of ['sync.devices', 'sync.blobs', 'sync.preferences', 'sync.alerts',
-    'vault.key_envelopes', 'ai.entitlements', 'ai.usage_monthly', 'ai.usage_events']) {
+    'vault.key_envelopes', 'vault.backup_state', 'vault.backups', 'vault.backup_objects',
+    'ai.entitlements', 'ai.usage_monthly', 'ai.usage_events']) {
     assert.match(sql, new RegExp(`alter table ${table.replace('.', '\\.')}` +
       ' enable row level security;', 'i'));
     assert.match(sql, new RegExp(`alter table ${table.replace('.', '\\.')}` +
@@ -41,6 +43,9 @@ test('PostgreSQL schema forces RLS on every tenant-owned table', () => {
   assert.match(sql, /grant select, insert on sync\.blobs to solum_api;/i);
   assert.match(sql, /grant select, insert, delete on sync\.alerts to solum_api;/i);
   assert.match(sql, /grant select, insert on vault\.key_envelopes to solum_api;/i);
+  assert.match(sql, /grant select, insert, update on vault\.backup_state to solum_api;/i);
+  assert.match(sql, /grant select, insert, update, delete on vault\.backups to solum_api;/i);
+  assert.match(sql, /grant select, insert, update on vault\.backup_objects to solum_api;/i);
   assert.match(sql, /grant select, insert, update, delete on auth\.refresh_tokens to solum_api;/i);
   assert.doesNotMatch(sql, /grant[^;]*delete[^;]*on sync\.blobs/i);
   assert.doesNotMatch(sql, /grant[^;]*update[^;]*on (?:auth\.users|vault\.key_envelopes)/i);
@@ -53,7 +58,103 @@ test('PostgreSQL schema forces RLS on every tenant-owned table', () => {
   assert.match(sql, /validate constraint alerts_availability_7d_range/i);
   assert.match(sql, /validate constraint alerts_detail_url_scheme/i);
   assert.match(sql, /alerts_tenant_received_at_idx\s+on sync\.alerts \(tenant_id, received_at\)/i);
+  assert.match(sql, /backups_tenant_complete_idx\s+on vault\.backups \(tenant_id, committed_at desc, backup_id desc\)/i);
+  assert.match(sql, /foreign key \(tenant_id, backup_id\) references vault\.backups\(tenant_id, backup_id\)\s+on delete cascade/i);
+  for (const policy of ['backup_state_tenant_policy', 'backups_tenant_policy',
+    'backup_objects_tenant_policy']) assert.match(sql, new RegExp(policy, 'i'));
   assert.doesNotMatch(sql, /grant all/i);
+});
+
+test('backup upload plans have a strict cross-platform canonical digest', () => {
+  const config = buildConfig({
+    authSecret: 'x'.repeat(32), adminUsername: 'admin', adminPassword: '',
+  });
+  const main = {
+    object_id: '22222222-2222-4222-8222-222222222222', kind: 'main', bytes: 123,
+    sha256: '00'.repeat(32),
+  };
+  const attachment = {
+    object_id: '33333333-3333-4333-8333-333333333333', kind: 'attachment', bytes: 456,
+    sha256: '11'.repeat(32),
+  };
+  const body = {
+    backup_id: '11111111-1111-4111-8111-111111111111',
+    generation: 7,
+    created_at: '2026-01-02T03:04:05.000Z',
+    protocol_version: 1,
+    objects: [attachment, main],
+  };
+  const parsed = parseBackupPlan(body, config);
+  assert.deepEqual(parsed.objects, [main, attachment]);
+  assert.equal(parsed.totalBytes, 579);
+  assert.equal(parsed.planSha256.toString('hex'),
+    'ace8fa6bbf286d860abacaa16ce605a92da9cf67a9816cc9e8a37d7ee344338c');
+  assert.equal(parseBackupPlan({ ...body, objects: [main, attachment] }, config)
+    .planSha256.equals(parsed.planSha256), true);
+  assert.equal(parseBackupPlan({ ...body, generation: 1, objects: [main] }, config)
+    .planSha256.toString('hex'),
+    '3ae4b633307d12c2f82fac4ddb36539f5ed8d6c5a18e5e9a09a68d2b96979528');
+
+  for (const invalid of [
+    { ...body, extra: true },
+    { ...body, protocol_version: 2 },
+    { ...body, created_at: '2026-01-02T03:04:05Z' },
+    { ...body, created_at: '0000-01-02T03:04:05.000Z' },
+    { ...body, objects: [main, main] },
+    { ...body, objects: [attachment] },
+    { ...body, generation: Number.MAX_SAFE_INTEGER + 1 },
+    { ...body, backup_id: '00000000-0000-0000-0000-000000000000' },
+    { ...body, objects: [{ ...main, sha256: 'AA'.repeat(32) }] },
+  ]) assert.throws(() => parseBackupPlan(invalid, config));
+  assert.throws(() => parseBackupPlan({ ...body,
+    objects: [{ ...main, bytes: config.backupMaxObjectBytes + 1 }] }, config),
+  /backup_object_too_large/);
+});
+
+test('backup takeover and delete preconditions reject ambiguous inputs', () => {
+  assert.deepEqual(parseTakeover({
+    expected_generation: 3,
+    takeover_id: '44444444-4444-4444-8444-444444444444',
+  }), {
+    expectedGeneration: 3,
+    takeoverId: '44444444-4444-4444-8444-444444444444',
+  });
+  assert.throws(() => parseTakeover({ expected_generation: 3,
+    takeover_id: '44444444-4444-4444-8444-444444444444', tenant_id: 'leak' }));
+  assert.equal(parseIfMatch(`"${'ab'.repeat(32)}"`).toString('hex'), 'ab'.repeat(32));
+  assert.throws(() => parseIfMatch(undefined), /precondition_required/);
+  assert.throws(() => parseIfMatch('ab'.repeat(32)), /precondition_failed/);
+});
+
+test('backup limits retain protocol capacity floors', () => {
+  const base = { authSecret: 'x'.repeat(32), adminUsername: 'admin', adminPassword: '' };
+  const config = buildConfig(base);
+  assert.equal(config.backupMaxObjectBytes, 68 * 1024 * 1024);
+  assert.equal(config.backupMaxPackageBytes, 700 * 1024 * 1024);
+  assert.equal(config.backupTenantMaxBytes, 2 * 1024 * 1024 * 1024);
+  assert.equal(config.backupMaxVersions, 10);
+  assert.throws(() => buildConfig({ ...base, backupMaxObjectBytes: 64 * 1024 * 1024 }));
+  assert.throws(() => buildConfig({ ...base, backupMaxObjects: 65 }));
+  assert.throws(() => buildConfig({ ...base, backupMaxVersions: 1 }));
+  assert.throws(() => buildConfig({ ...base, backupTenantMaxBytes: 1024 * 1024 * 1024 }));
+});
+
+test('backup routes keep ciphertext opaque and commit before retention pruning', () => {
+  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const start = source.indexOf("url.pathname === '/v1/backups/generation'");
+  const end = source.indexOf("url.pathname === '/v1/push'", start);
+  assert.ok(start > 0 && end > start);
+  const routes = source.slice(start, end);
+  assert.doesNotMatch(routes, /toString\('base64'\)|JSON\.parse\(ciphertext|tenant_id\s*:\s*body/);
+  assert.match(routes, /createHash\('sha256'\)\.update\(ciphertext\)\.digest\(\)/);
+  assert.match(routes, /status='complete',committed_at=now\(\)/);
+  assert.ok(routes.indexOf("status='complete',committed_at=now()") <
+    routes.indexOf('order by committed_at desc,backup_id desc offset $2'));
+  assert.match(routes, /If-Match|if-match/);
+  assert.match(source, /Content-Type, Authorization, X-Device, If-Match/);
+  assert.match(source, /GET, POST, PUT, DELETE, OPTIONS/);
+  assert.match(source, /delete from vault\.backups where tenant_id=\$1 and status='pending'/);
+  assert.doesNotMatch(source, /console\.error\(error\)|console\.error\('request failed', error\)/);
 });
 
 test('deployment shell scripts are normalized to LF for Alpine sh', () => {

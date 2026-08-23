@@ -34,6 +34,15 @@ const MAX_REFRESH_SESSIONS_PER_USER = 32;
 const REFRESH_REPLAY_GRACE_MS = 5_000;
 const MAX_AI_TOKENS_PER_REQUEST = 10 * 1000 * 1000;
 const MAX_ALERT_LATENCY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_BACKUP_MAX_OBJECT_BYTES = 68 * 1024 * 1024;
+const DEFAULT_BACKUP_MAX_PACKAGE_BYTES = 700 * 1024 * 1024;
+const DEFAULT_BACKUP_TENANT_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+const DEFAULT_BACKUP_MAX_OBJECTS = 64;
+const DEFAULT_BACKUP_MAX_PENDING = 4;
+const DEFAULT_BACKUP_MAX_VERSIONS = 10;
+const DEFAULT_BACKUP_PENDING_TTL_HOURS = 24;
+const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const DASHBOARD = fs.readFileSync(path.join(__dirname, 'dashboard.html'));
 const SERVICE_VERSION = require('../package.json').version;
 
@@ -43,6 +52,14 @@ class HttpError extends Error {
     this.status = status;
     this.code = code;
   }
+}
+
+function safeErrorLog(error) {
+  const name = error && typeof error.name === 'string' &&
+    /^[A-Za-z0-9_-]{1,64}$/.test(error.name) ? error.name : 'Error';
+  const code = error && typeof error.code === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(error.code) ?
+    error.code : 'unknown';
+  return { name, code };
 }
 
 function nowSeconds() {
@@ -80,6 +97,18 @@ async function readBytes(req, limit) {
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
+}
+
+async function readExactBytes(req, expected) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > expected) throw new HttpError(409, 'backup_object_mismatch');
+    chunks.push(chunk);
+  }
+  if (size !== expected) throw new HttpError(409, 'backup_object_mismatch');
+  return Buffer.concat(chunks, size);
 }
 
 async function readJson(req) {
@@ -164,6 +193,130 @@ function parseNonNegativeInt(value, fallback, max = Number.MAX_SAFE_INTEGER) {
     throw new HttpError(400, 'invalid_query');
   }
   return parsed;
+}
+
+function requireExactKeys(value, expected, code) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new HttpError(400, code);
+  }
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
+    throw new HttpError(400, code);
+  }
+}
+
+function backupUuid(value) {
+  if (typeof value !== 'string' || !UUID_PATTERN.test(value) ||
+      value === '00000000-0000-0000-0000-000000000000') {
+    throw new HttpError(400, 'invalid_backup_plan');
+  }
+  return value;
+}
+
+function backupGeneration(value) {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new HttpError(400, 'invalid_backup_plan');
+  }
+  return value;
+}
+
+function parseBackupPlan(body, config) {
+  requireExactKeys(body,
+    ['backup_id', 'generation', 'created_at', 'protocol_version', 'objects'],
+    'invalid_backup_plan');
+  if (body.protocol_version !== 1) throw new HttpError(400, 'unsupported_backup_version');
+  if (typeof body.created_at !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(body.created_at) ||
+      body.created_at.startsWith('0000-')) {
+    throw new HttpError(400, 'invalid_backup_plan');
+  }
+  const parsedDate = new Date(body.created_at);
+  if (!Number.isFinite(parsedDate.getTime()) || parsedDate.toISOString() !== body.created_at) {
+    throw new HttpError(400, 'invalid_backup_plan');
+  }
+  if (!Array.isArray(body.objects) || body.objects.length < 1 ||
+      body.objects.length > config.backupMaxObjects) {
+    throw new HttpError(400, 'invalid_backup_plan');
+  }
+  const seen = new Set();
+  let mainCount = 0;
+  let totalBytes = 0;
+  const objects = body.objects.map((item) => {
+    requireExactKeys(item, ['object_id', 'kind', 'bytes', 'sha256'], 'invalid_backup_plan');
+    const objectId = backupUuid(item.object_id);
+    if (seen.has(objectId)) throw new HttpError(400, 'invalid_backup_plan');
+    seen.add(objectId);
+    if (!['main', 'attachment'].includes(item.kind)) {
+      throw new HttpError(400, 'invalid_backup_plan');
+    }
+    if (item.kind === 'main') mainCount += 1;
+    if (!Number.isSafeInteger(item.bytes) || item.bytes < 1) {
+      throw new HttpError(400, 'invalid_backup_plan');
+    }
+    if (item.bytes > config.backupMaxObjectBytes) {
+      throw new HttpError(413, 'backup_object_too_large');
+    }
+    if (typeof item.sha256 !== 'string' || !SHA256_PATTERN.test(item.sha256)) {
+      throw new HttpError(400, 'invalid_backup_plan');
+    }
+    totalBytes += item.bytes;
+    if (!Number.isSafeInteger(totalBytes) || totalBytes > config.backupMaxPackageBytes) {
+      throw new HttpError(413, 'backup_package_too_large');
+    }
+    return { object_id: objectId, kind: item.kind, bytes: item.bytes, sha256: item.sha256 };
+  }).sort((left, right) => left.object_id < right.object_id ? -1 :
+    (left.object_id > right.object_id ? 1 : 0));
+  if (mainCount !== 1) throw new HttpError(400, 'invalid_backup_plan');
+  const plan = {
+    backup_id: backupUuid(body.backup_id),
+    generation: backupGeneration(body.generation),
+    created_at: body.created_at,
+    protocol_version: 1,
+    objects,
+  };
+  const canonical = Buffer.from(JSON.stringify(plan), 'utf8');
+  return {
+    ...plan,
+    totalBytes,
+    planSha256: crypto.createHash('sha256').update(canonical).digest(),
+  };
+}
+
+function parseTakeover(body) {
+  requireExactKeys(body, ['expected_generation', 'takeover_id'], 'invalid_backup_plan');
+  return {
+    expectedGeneration: backupGeneration(body.expected_generation),
+    takeoverId: backupUuid(body.takeover_id),
+  };
+}
+
+function quotedDigest(buffer) {
+  return `"${buffer.toString('hex')}"`;
+}
+
+function parseIfMatch(value) {
+  if (typeof value !== 'string') throw new HttpError(428, 'precondition_required');
+  const match = /^"([0-9a-f]{64})"$/.exec(value);
+  if (!match) throw new HttpError(412, 'precondition_failed');
+  return Buffer.from(match[1], 'hex');
+}
+
+function isoTimestamp(value) {
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(parsed.getTime())) throw new Error('invalid database timestamp');
+  return parsed.toISOString();
+}
+
+function binary(res, body, digest) {
+  res.writeHead(200, {
+    'Content-Type': 'application/octet-stream',
+    'Content-Length': body.length,
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+    ETag: quotedDigest(digest),
+  });
+  res.end(body);
 }
 
 function secureEqualBuffer(left, right) {
@@ -300,6 +453,17 @@ function buildConfig(overrides = {}) {
     tenantMaxBlobBytes: Number(process.env.SOLUM_TENANT_MAX_BLOB_BYTES || 1073741824),
     tenantMaxBlobs: Number(process.env.SOLUM_TENANT_MAX_BLOBS || 100000),
     tenantMaxDevices: Number(process.env.SOLUM_TENANT_MAX_DEVICES || 32),
+    backupMaxObjectBytes: Number(process.env.SOLUM_BACKUP_MAX_OBJECT_BYTES ||
+      DEFAULT_BACKUP_MAX_OBJECT_BYTES),
+    backupMaxPackageBytes: Number(process.env.SOLUM_BACKUP_MAX_PACKAGE_BYTES ||
+      DEFAULT_BACKUP_MAX_PACKAGE_BYTES),
+    backupTenantMaxBytes: Number(process.env.SOLUM_BACKUP_TENANT_MAX_BYTES ||
+      DEFAULT_BACKUP_TENANT_MAX_BYTES),
+    backupMaxObjects: Number(process.env.SOLUM_BACKUP_MAX_OBJECTS || DEFAULT_BACKUP_MAX_OBJECTS),
+    backupMaxPending: Number(process.env.SOLUM_BACKUP_MAX_PENDING || DEFAULT_BACKUP_MAX_PENDING),
+    backupMaxVersions: Number(process.env.SOLUM_BACKUP_MAX_VERSIONS || DEFAULT_BACKUP_MAX_VERSIONS),
+    backupPendingTtlHours: Number(process.env.SOLUM_BACKUP_PENDING_TTL_HOURS ||
+      DEFAULT_BACKUP_PENDING_TTL_HOURS),
     buildRevision: process.env.SOLUM_BUILD_REVISION || 'unknown',
     ...overrides,
   };
@@ -328,6 +492,29 @@ function buildConfig(overrides = {}) {
     if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
       throw new Error(`${name} must be a positive safe integer no greater than ${maximum}`);
     }
+  }
+  for (const [name, value, minimum, maximum] of [
+    ['SOLUM_BACKUP_MAX_OBJECT_BYTES', config.backupMaxObjectBytes,
+      DEFAULT_BACKUP_MAX_OBJECT_BYTES, 1024 * 1024 * 1024],
+    ['SOLUM_BACKUP_MAX_PACKAGE_BYTES', config.backupMaxPackageBytes,
+      DEFAULT_BACKUP_MAX_PACKAGE_BYTES, 2 * 1024 * 1024 * 1024],
+    ['SOLUM_BACKUP_TENANT_MAX_BYTES', config.backupTenantMaxBytes,
+      DEFAULT_BACKUP_TENANT_MAX_BYTES, Number.MAX_SAFE_INTEGER],
+    ['SOLUM_BACKUP_MAX_OBJECTS', config.backupMaxObjects,
+      DEFAULT_BACKUP_MAX_OBJECTS, DEFAULT_BACKUP_MAX_OBJECTS],
+    ['SOLUM_BACKUP_MAX_PENDING', config.backupMaxPending, 1, 100],
+    ['SOLUM_BACKUP_MAX_VERSIONS', config.backupMaxVersions, 2, 100],
+    ['SOLUM_BACKUP_PENDING_TTL_HOURS', config.backupPendingTtlHours, 1, 24 * 30],
+  ]) {
+    if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+      throw new Error(`${name} must be a safe integer between ${minimum} and ${maximum}`);
+    }
+  }
+  if (config.backupMaxPackageBytes < config.backupMaxObjectBytes) {
+    throw new Error('SOLUM_BACKUP_MAX_PACKAGE_BYTES must cover one maximum-size object');
+  }
+  if (config.backupTenantMaxBytes < config.backupMaxPackageBytes * 2) {
+    throw new Error('SOLUM_BACKUP_TENANT_MAX_BYTES must cover at least two maximum-size backups');
   }
   if (config.buildRevision !== 'unknown' && !/^[0-9a-f]{7,40}$/.test(config.buildRevision)) {
     throw new Error('SOLUM_BUILD_REVISION must be unknown or a 7-40 character lowercase Git SHA');
@@ -439,6 +626,11 @@ async function cleanExpiredData(pool, config) {
         "delete from sync.alerts where tenant_id=$1 and received_at<now()-($2::text||' days')::interval",
         [user.id, config.alertRetentionDays]
       );
+      await client.query(
+        "delete from vault.backups where tenant_id=$1 and status='pending' " +
+          "and created_at<now()-($2::text||' hours')::interval",
+        [user.id, config.backupPendingTtlHours]
+      );
     });
   }
   await pool.query('delete from auth.refresh_tokens where expires_at<=now()');
@@ -446,6 +638,62 @@ async function cleanExpiredData(pool, config) {
 
 async function lockTenantMutation(client, tenantId) {
   await client.query('select pg_advisory_xact_lock(hashtextextended($1::text,0))', [tenantId]);
+}
+
+async function backupState(client, tenantId) {
+  await client.query(
+    `insert into vault.backup_state(tenant_id,active_generation)
+     values($1,1) on conflict(tenant_id) do nothing`, [tenantId]
+  );
+  const selected = await client.query(
+    `select active_generation,last_takeover_id,updated_at
+     from vault.backup_state where tenant_id=$1`, [tenantId]
+  );
+  if (selected.rowCount !== 1) throw new Error('backup state initialization failed');
+  return {
+    activeGeneration: safeDatabaseInteger(
+      selected.rows[0].active_generation, 'backup_active_generation'
+    ),
+    lastTakeoverId: selected.rows[0].last_takeover_id,
+    updatedAt: selected.rows[0].updated_at,
+  };
+}
+
+function backupObjectJson(row) {
+  return {
+    object_id: row.object_id,
+    kind: row.kind,
+    bytes: safeDatabaseInteger(row.declared_bytes, 'backup_object_bytes'),
+    sha256: row.declared_sha256.toString('hex'),
+  };
+}
+
+function backupJson(row, objects) {
+  return {
+    backup_id: row.backup_id,
+    generation: safeDatabaseInteger(row.generation, 'backup_generation'),
+    created_at: isoTimestamp(row.client_created_at),
+    committed_at: row.committed_at === null ? null : isoTimestamp(row.committed_at),
+    protocol_version: Number(row.protocol_version),
+    total_bytes: safeDatabaseInteger(row.total_bytes, 'backup_total_bytes'),
+    object_count: safeDatabaseInteger(row.object_count, 'backup_object_count'),
+    plan_etag: row.plan_sha256.toString('hex'),
+    objects,
+  };
+}
+
+async function tenantBackupBytes(client, tenantId) {
+  const usage = await client.query(
+    `select coalesce(sum(octet_length(ciphertext)),0) as total_bytes
+     from vault.backup_objects where tenant_id=$1 and ciphertext is not null`, [tenantId]
+  );
+  return safeDatabaseInteger(usage.rows[0].total_bytes, 'tenant_backup_bytes');
+}
+
+function isOctetStream(req) {
+  const value = req.headers['content-type'];
+  return typeof value === 'string' && value.split(';', 1)[0].trim().toLowerCase() ===
+    'application/octet-stream';
 }
 
 async function touchActiveDevice(client, tenantId, device, maxDevices) {
@@ -950,7 +1198,7 @@ async function createPostgresServer(overrides = {}) {
   const runRetention = () => {
     if (retentionInFlight) return retentionInFlight;
     retentionInFlight = cleanExpiredData(pool, config)
-      .catch((error) => console.error('retention cleanup failed', error))
+      .catch((error) => console.error('retention cleanup failed', safeErrorLog(error)))
       .finally(() => { retentionInFlight = null; });
     return retentionInFlight;
   };
@@ -993,12 +1241,13 @@ async function createPostgresServer(overrides = {}) {
     if (typeof origin === 'string') {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary', 'Origin');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Device');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers',
+        'Content-Type, Authorization, X-Device, If-Match');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
       res.setHeader('Access-Control-Expose-Headers',
         'X-Solum-Request-Id, X-Solum-Requested-Model, X-Solum-Effective-Model, ' +
         'X-Solum-Fallback, X-Solum-Fallback-Reason, X-Solum-Quota-Limit, ' +
-        'X-Solum-Quota-Used, X-Solum-Quota-Remaining, X-Solum-Quota-Reset');
+        'X-Solum-Quota-Used, X-Solum-Quota-Remaining, X-Solum-Quota-Reset, ETag');
     }
     if (req.method === 'OPTIONS') {
       if (typeof origin !== 'string') throw new HttpError(403, 'origin_not_allowed');
@@ -1018,7 +1267,7 @@ async function createPostgresServer(overrides = {}) {
         revision: config.buildRevision,
         api_base: '/',
         registration: config.registrationMode,
-        features: ['account', 'ai', 'ai_quota', 'sync', 'alerts', 'devices'],
+        features: ['account', 'ai', 'ai_quota', 'sync', 'alerts', 'devices', 'backups'],
       });
     }
 
@@ -1284,6 +1533,329 @@ async function createPostgresServer(overrides = {}) {
       return proxyCompletion(req, res, pool, tenantId, config);
     }
 
+    if (req.method === 'GET' && url.pathname === '/v1/backups/generation') {
+      const tenantId = await authenticate(req);
+      const state = await withTenant(pool, tenantId, async (client) => backupState(client, tenantId));
+      return json(res, 200, {
+        active_generation: state.activeGeneration,
+        updated_at: isoTimestamp(state.updatedAt),
+      });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1/backups/generation') {
+      const tenantId = await authenticate(req);
+      const takeover = parseTakeover(await readJson(req));
+      const advanced = await withTenant(pool, tenantId, async (client) => {
+        await lockTenantMutation(client, tenantId);
+        const state = await backupState(client, tenantId);
+        if (state.lastTakeoverId === takeover.takeoverId) {
+          return { activeGeneration: state.activeGeneration, prunedPending: 0, replay: true };
+        }
+        if (state.activeGeneration !== takeover.expectedGeneration ||
+            state.activeGeneration === Number.MAX_SAFE_INTEGER) {
+          throw new HttpError(409, 'backup_generation_stale');
+        }
+        const next = state.activeGeneration + 1;
+        await client.query(
+          `update vault.backup_state set active_generation=$2,last_takeover_id=$3,updated_at=now()
+           where tenant_id=$1`, [tenantId, next, takeover.takeoverId]
+        );
+        const removed = await client.query(
+          `delete from vault.backups
+           where tenant_id=$1 and status='pending' and generation<>$2 returning backup_id`,
+          [tenantId, next]
+        );
+        return { activeGeneration: next, prunedPending: removed.rowCount, replay: false };
+      });
+      return json(res, 200, {
+        active_generation: advanced.activeGeneration,
+        pruned_pending: advanced.prunedPending,
+        replay: advanced.replay,
+      });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1/backups') {
+      const tenantId = await authenticate(req);
+      const plan = parseBackupPlan(await readJson(req), config);
+      const created = await withTenant(pool, tenantId, async (client) => {
+        await lockTenantMutation(client, tenantId);
+        const state = await backupState(client, tenantId);
+        if (state.activeGeneration !== plan.generation) {
+          throw new HttpError(409, 'backup_generation_stale');
+        }
+        const existing = await client.query(
+          `select status,plan_sha256 from vault.backups
+           where tenant_id=$1 and backup_id=$2`, [tenantId, plan.backup_id]
+        );
+        if (existing.rowCount === 1) {
+          if (!secureEqualBuffer(existing.rows[0].plan_sha256, plan.planSha256)) {
+            throw new HttpError(409, 'backup_plan_conflict');
+          }
+          return { status: existing.rows[0].status, inserted: false };
+        }
+        const pending = await client.query(
+          `select count(*) as pending_count from vault.backups
+           where tenant_id=$1 and status='pending'`, [tenantId]
+        );
+        if (safeDatabaseInteger(pending.rows[0].pending_count, 'backup_pending_count') >=
+            config.backupMaxPending) {
+          throw new HttpError(429, 'backup_pending_limit');
+        }
+        await client.query(
+          `insert into vault.backups(
+             tenant_id,backup_id,generation,protocol_version,client_created_at,
+             plan_sha256,total_bytes,object_count
+           ) values($1,$2,$3,1,$4,$5,$6,$7)`,
+          [tenantId, plan.backup_id, plan.generation, plan.created_at,
+            plan.planSha256, plan.totalBytes, plan.objects.length]
+        );
+        for (const object of plan.objects) {
+          await client.query(
+            `insert into vault.backup_objects(
+               tenant_id,backup_id,object_id,kind,declared_bytes,declared_sha256
+             ) values($1,$2,$3,$4,$5,$6)`,
+            [tenantId, plan.backup_id, object.object_id, object.kind,
+              object.bytes, Buffer.from(object.sha256, 'hex')]
+          );
+        }
+        return { status: 'pending', inserted: true };
+      });
+      return json(res, created.inserted ? 201 : 200, {
+        backup_id: plan.backup_id,
+        generation: plan.generation,
+        status: created.status,
+        plan_etag: plan.planSha256.toString('hex'),
+        total_bytes: plan.totalBytes,
+        object_count: plan.objects.length,
+      });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/v1/backups') {
+      const tenantId = await authenticate(req);
+      const limit = parseNonNegativeInt(url.searchParams.get('limit'), 20, 100);
+      if (limit < 1) throw new HttpError(400, 'invalid_query');
+      const result = await withTenant(pool, tenantId, async (client) => {
+        const state = await backupState(client, tenantId);
+        const selected = await client.query(
+          `select backup_id,generation,protocol_version,client_created_at,committed_at,
+                  plan_sha256,total_bytes,object_count
+           from vault.backups where tenant_id=$1 and status='complete'
+           order by committed_at desc,backup_id desc limit $2`, [tenantId, limit]
+        );
+        const byBackup = new Map(selected.rows.map((row) => [row.backup_id, []]));
+        if (selected.rowCount > 0) {
+          const objects = await client.query(
+            `select backup_id,object_id,kind,declared_bytes,declared_sha256
+             from vault.backup_objects where tenant_id=$1 and backup_id=any($2::uuid[])
+             order by backup_id,object_id`, [tenantId, [...byBackup.keys()]]
+          );
+          for (const row of objects.rows) byBackup.get(row.backup_id).push(backupObjectJson(row));
+        }
+        return {
+          active_generation: state.activeGeneration,
+          backups: selected.rows.map((row) => backupJson(row, byBackup.get(row.backup_id))),
+        };
+      });
+      return json(res, 200, result);
+    }
+
+    const backupObjectMatch = url.pathname.match(
+      /^\/v1\/backups\/([0-9a-f-]{36})\/objects\/([0-9a-f-]{36})$/
+    );
+    if (backupObjectMatch && req.method === 'PUT') {
+      const tenantId = await authenticate(req);
+      const backupId = backupUuid(backupObjectMatch[1]);
+      const objectId = backupUuid(backupObjectMatch[2]);
+      if (!isOctetStream(req)) throw new HttpError(415, 'unsupported_media_type');
+      const declared = await withTenant(pool, tenantId, async (client) => {
+        const selected = await client.query(
+          `select b.status,b.generation,o.declared_bytes,o.declared_sha256,o.ciphertext
+           from vault.backups b join vault.backup_objects o
+             on o.tenant_id=b.tenant_id and o.backup_id=b.backup_id
+           where b.tenant_id=$1 and b.backup_id=$2 and o.object_id=$3`,
+          [tenantId, backupId, objectId]
+        );
+        if (selected.rowCount !== 1) throw new HttpError(404, 'backup_object_not_found');
+        return selected.rows[0];
+      });
+      const expectedBytes = safeDatabaseInteger(declared.declared_bytes, 'backup_object_bytes');
+      const contentLength = req.headers['content-length'];
+      if (typeof contentLength !== 'string' || !/^\d+$/.test(contentLength)) {
+        throw new HttpError(411, 'content_length_required');
+      }
+      if (Number(contentLength) !== expectedBytes) {
+        throw new HttpError(409, 'backup_object_mismatch');
+      }
+      const ciphertext = await readExactBytes(req, expectedBytes);
+      const digest = crypto.createHash('sha256').update(ciphertext).digest();
+      if (!secureEqualBuffer(digest, declared.declared_sha256)) {
+        throw new HttpError(409, 'backup_object_mismatch');
+      }
+      const uploaded = await withTenant(pool, tenantId, async (client) => {
+        await lockTenantMutation(client, tenantId);
+        const state = await backupState(client, tenantId);
+        const selected = await client.query(
+          `select b.status,b.generation,o.declared_bytes,o.declared_sha256,o.ciphertext
+           from vault.backups b join vault.backup_objects o
+             on o.tenant_id=b.tenant_id and o.backup_id=b.backup_id
+           where b.tenant_id=$1 and b.backup_id=$2 and o.object_id=$3`,
+          [tenantId, backupId, objectId]
+        );
+        if (selected.rowCount !== 1) throw new HttpError(404, 'backup_object_not_found');
+        const row = selected.rows[0];
+        if (safeDatabaseInteger(row.generation, 'backup_generation') !== state.activeGeneration) {
+          throw new HttpError(409, 'backup_generation_stale');
+        }
+        if (safeDatabaseInteger(row.declared_bytes, 'backup_object_bytes') !== ciphertext.length ||
+            !secureEqualBuffer(row.declared_sha256, digest)) {
+          throw new HttpError(409, 'backup_object_mismatch');
+        }
+        if (row.ciphertext !== null) {
+          if (!secureEqualBuffer(row.ciphertext, ciphertext)) {
+            throw new HttpError(409, 'backup_object_mismatch');
+          }
+          return false;
+        }
+        if (row.status !== 'pending') throw new HttpError(409, 'backup_plan_conflict');
+        const used = await tenantBackupBytes(client, tenantId);
+        if (used > config.backupTenantMaxBytes - ciphertext.length) {
+          throw new HttpError(413, 'backup_quota_exceeded');
+        }
+        await client.query(
+          `update vault.backup_objects set ciphertext=$4,uploaded_at=now()
+           where tenant_id=$1 and backup_id=$2 and object_id=$3 and ciphertext is null`,
+          [tenantId, backupId, objectId, ciphertext]
+        );
+        return true;
+      });
+      return json(res, uploaded ? 201 : 200, {
+        backup_id: backupId, object_id: objectId, sha256: digest.toString('hex'),
+      });
+    }
+
+    if (backupObjectMatch && req.method === 'GET') {
+      const tenantId = await authenticate(req);
+      const backupId = backupUuid(backupObjectMatch[1]);
+      const objectId = backupUuid(backupObjectMatch[2]);
+      const object = await withTenant(pool, tenantId, async (client) => {
+        const selected = await client.query(
+          `select o.ciphertext,o.declared_sha256
+           from vault.backups b join vault.backup_objects o
+             on o.tenant_id=b.tenant_id and o.backup_id=b.backup_id
+           where b.tenant_id=$1 and b.backup_id=$2 and b.status='complete'
+             and o.object_id=$3`, [tenantId, backupId, objectId]
+        );
+        if (selected.rowCount !== 1) throw new HttpError(404, 'backup_object_not_found');
+        if (!Buffer.isBuffer(selected.rows[0].ciphertext)) {
+          throw new Error('complete backup contains an absent object');
+        }
+        return selected.rows[0];
+      });
+      return binary(res, object.ciphertext, object.declared_sha256);
+    }
+
+    const backupCommitMatch = url.pathname.match(
+      /^\/v1\/backups\/([0-9a-f-]{36})\/commit$/
+    );
+    if (backupCommitMatch && req.method === 'POST') {
+      const tenantId = await authenticate(req);
+      const backupId = backupUuid(backupCommitMatch[1]);
+      await readExactBytes(req, 0);
+      const committed = await withTenant(pool, tenantId, async (client) => {
+        await lockTenantMutation(client, tenantId);
+        const state = await backupState(client, tenantId);
+        const selected = await client.query(
+          `select backup_id,generation,protocol_version,client_created_at,committed_at,
+                  plan_sha256,total_bytes,object_count,status
+           from vault.backups where tenant_id=$1 and backup_id=$2`, [tenantId, backupId]
+        );
+        if (selected.rowCount !== 1) throw new HttpError(404, 'backup_not_found');
+        const row = selected.rows[0];
+        if (safeDatabaseInteger(row.generation, 'backup_generation') !== state.activeGeneration) {
+          throw new HttpError(409, 'backup_generation_stale');
+        }
+        if (row.status === 'pending') {
+          const objectRows = await client.query(
+            `select object_id,declared_bytes,declared_sha256
+             from vault.backup_objects where tenant_id=$1 and backup_id=$2
+             order by object_id`,
+            [tenantId, backupId]
+          );
+          if (objectRows.rowCount !== safeDatabaseInteger(row.object_count, 'backup_object_count')) {
+            throw new HttpError(409, 'backup_incomplete');
+          }
+          let verifiedBytes = 0;
+          for (const objectRow of objectRows.rows) {
+            const stored = await client.query(
+              `select ciphertext from vault.backup_objects
+               where tenant_id=$1 and backup_id=$2 and object_id=$3`,
+              [tenantId, backupId, objectRow.object_id]
+            );
+            const ciphertext = stored.rows[0] && stored.rows[0].ciphertext;
+            const declaredBytes = safeDatabaseInteger(
+              objectRow.declared_bytes, 'backup_object_bytes'
+            );
+            if (!Buffer.isBuffer(ciphertext) || ciphertext.length !== declaredBytes ||
+                !secureEqualBuffer(
+                  crypto.createHash('sha256').update(ciphertext).digest(),
+                  objectRow.declared_sha256
+                )) {
+              throw new HttpError(409, 'backup_incomplete');
+            }
+            verifiedBytes += declaredBytes;
+          }
+          if (verifiedBytes !== safeDatabaseInteger(row.total_bytes, 'backup_total_bytes')) {
+            throw new HttpError(409, 'backup_incomplete');
+          }
+          const updated = await client.query(
+            `update vault.backups set status='complete',committed_at=now()
+             where tenant_id=$1 and backup_id=$2 and status='pending'
+             returning committed_at`, [tenantId, backupId]
+          );
+          row.status = 'complete';
+          row.committed_at = updated.rows[0].committed_at;
+        }
+        const pruned = await client.query(
+          `delete from vault.backups where tenant_id=$1 and backup_id in (
+             select backup_id from vault.backups
+             where tenant_id=$1 and status='complete'
+             order by committed_at desc,backup_id desc offset $2
+           ) returning backup_id`, [tenantId, config.backupMaxVersions]
+        );
+        return {
+          backup: backupJson(row, []),
+          pruned: pruned.rows.map((item) => item.backup_id),
+        };
+      });
+      return json(res, 200, {
+        ...committed.backup,
+        status: 'complete',
+        pruned_versions: committed.pruned,
+      });
+    }
+
+    const backupVersionMatch = url.pathname.match(/^\/v1\/backups\/([0-9a-f-]{36})$/);
+    if (backupVersionMatch && req.method === 'DELETE') {
+      const tenantId = await authenticate(req);
+      const backupId = backupUuid(backupVersionMatch[1]);
+      const expected = parseIfMatch(req.headers['if-match']);
+      await withTenant(pool, tenantId, async (client) => {
+        await lockTenantMutation(client, tenantId);
+        const selected = await client.query(
+          `select plan_sha256 from vault.backups where tenant_id=$1 and backup_id=$2`,
+          [tenantId, backupId]
+        );
+        if (selected.rowCount !== 1) throw new HttpError(404, 'backup_not_found');
+        if (!secureEqualBuffer(selected.rows[0].plan_sha256, expected)) {
+          throw new HttpError(412, 'precondition_failed');
+        }
+        await client.query(
+          `delete from vault.backups where tenant_id=$1 and backup_id=$2`, [tenantId, backupId]
+        );
+      });
+      return json(res, 200, { backup_id: backupId, deleted: true });
+    }
+
     if (req.method === 'POST' && url.pathname === '/v1/push') {
       const tenantId = await authenticate(req);
       const device = requiredString(req.headers['x-device'], 'invalid_device', 128);
@@ -1501,7 +2073,7 @@ async function createPostgresServer(overrides = {}) {
         return;
       }
       if (error instanceof HttpError) return json(res, error.status, { error: error.code });
-      console.error(error);
+      console.error('request failed', safeErrorLog(error));
       return json(res, 500, { error: 'internal_error' });
     });
   });
@@ -1536,7 +2108,7 @@ async function main() {
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error(error);
+    console.error('startup failed', safeErrorLog(error));
     process.exit(1);
   });
 }
@@ -1545,4 +2117,5 @@ module.exports = {
   createPostgresServer, verifyAccessToken, withTenant, parseModelCatalog, usageProjection,
   validateCompletionOptions, readBodyLimited, recoverTenantStaleAiRequests, proxyCompletion,
   optionalBoundedNumber, optionalHttpUrl, requiredOpaqueString, safeDatabaseInteger,
+  parseBackupPlan, parseTakeover, parseIfMatch, buildConfig,
 };
