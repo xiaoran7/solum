@@ -354,6 +354,86 @@ tag；④ 拆出加密体内的 32 字节摘要并核对压缩流长度；⑤ �
 夹具位于 `crates/solum-core/tests/fixtures/backup-v1/`，同时保留 v2 与 v3 的合成 payload、公开测试
 key/nonce 和精确容器字节，供 Android/iOS/HarmonyOS 实现做逐字节互通测试。
 
+#### `solum-attachment` protocol v1（F17 附件分块密文，2026-08-23）
+
+`solum-export` v3 主载荷只保存资料 manifest；每个资料 blob 单独编码成一个 `solum-attachment` 容器。
+读取端必须先解开并验证所属 `solum-backup` v1，取得 v3 manifest 与外层账号/代次/backup id，再把这些
+已认证值作为 binding 传给附件 codec。附件不压缩（任意媒体通常已压缩，且这里不引入解压炸弹面），也
+不把名称、media type、账号 UUID、backup id、attachment id 或 SHA-256 写入明文容器头。chunk framing
+与 ciphertext 长度会暴露精确字节长度（协议不伪装尺寸隐藏），但服务端不能从容器判断资料名称、内容
+摘要或把不同备份中的相同资料关联起来。
+
+**binding 与子密钥**：调用方仍传入 backup-v1 的 32 字节主密钥。binding 按下列字段顺序编码为无空白
+UTF-8 JSON；字符串使用 JSON 转义，整数是无符号十进制。`user_id` / `backup_id` 必须是小写 UUID，
+`device_generation > 0`，`attachment_id` 必须是 1..128 字节的 ASCII 字母、数字或 `-._:`，摘要必须
+是 64 个小写 hex，单件 `plaintext_size <= 20 MiB`。这些字节只在端侧内存中构造，不写入容器：
+
+```text
+{"user_id":...,"device_generation":...,"backup_id":...,"attachment_id":...,"plaintext_size":...,"plaintext_sha256":...}
+
+salt = UTF8("solum-attachment:hkdf-salt:v1")
+info = UTF8("solum-attachment:key:v1") || 0x00 || binding_bytes
+attachment_key = HKDF-SHA256(master_key, salt, info, output_length=32)
+```
+
+每件资料派生独立 XChaCha20-Poly1305 子密钥；这不是密码派生或恢复信封，只是主密钥的协议域隔离。
+摘要与尺寸必须来自已认证 v3 manifest，不能相信下载对象附带的服务端 metadata。`backup_id` 已由主容器
+绑定创建时间和 payload version，因此附件通过该 id 传递绑定整份备份，不另复制一套可漂移时间字段。
+
+**二进制 framing（所有整数均为 unsigned big-endian）**：
+
+| 偏移/重复记录 | 长度 | 内容 |
+|---|---:|---|
+| 0 | 8 | ASCII magic `SOLUMATT`（hex `53 4f 4c 55 4d 41 54 54`） |
+| 8 | 4 | `header_len`，范围 `1..=1024` |
+| 12 | `header_len` | 顶层 UTF-8 紧凑 JSON 头，v1 拒绝未知字段 |
+| 每个 chunk | 4 | `chunk_header_len`，范围 `1..=512` |
+| 其后 | 4 | `ciphertext_len` |
+| 其后 | `chunk_header_len` | chunk UTF-8 紧凑 JSON 头，v1 拒绝未知字段 |
+| 其后 | `ciphertext_len` | XChaCha20-Poly1305 ciphertext，末尾 16 字节为 tag |
+
+顶层写入字段顺序固定为 `format`、`protocol_version`、`kdf`、`encryption`、
+`chunk_plaintext_size`、`chunk_count`：格式/版本固定 `solum-attachment` / `1`，算法固定
+`hkdf-sha256` / `xchacha20-poly1305`。生产写入器固定 `chunk_plaintext_size=1048576`（1 MiB）；
+读取器接受 `1..=1048576`，以便固定夹具用小块覆盖多块互通，但 `chunk_count <= 4096` 且必须精确等于
+`max(1, ceil(binding.plaintext_size / chunk_plaintext_size))`。零字节资料仍有一个空明文 chunk，从而
+拥有认证 tag，不存在“无 tag 的合法容器”。
+
+每块头的写入字段顺序固定为 `index`、`plaintext_offset`、`plaintext_size`、`ciphertext_size`、
+`nonce`。`index` 从 0 连续递增；offset 必须等于此前明文字节累计；除末块外明文长度必须等于顶层块长，
+末块必须补齐 manifest 的精确总长；`ciphertext_size = plaintext_size + 16` 并等于 framing 中的实测值；
+`nonce` 是 24 字节的 48 个小写 hex。同一附件内 nonce 不得重复。生产写入器为每块调用 OS CSPRNG；
+只有公开测试夹具可注入固定 nonce 列表。
+
+**每块 AAD 精确规则**：
+
+```text
+AAD = UTF8("solum-attachment:aad:v1") || 0x00 ||
+      U32BE(len(binding_bytes)) || binding_bytes ||
+      U32BE(len(raw_header_bytes)) || raw_header_bytes ||
+      U32BE(len(raw_chunk_header_bytes)) || raw_chunk_header_bytes
+```
+
+因此每个 tag 同时认证账号、device generation、backup id、attachment id、manifest 明文尺寸/摘要、
+协议/算法/块长/块数，以及本块序号、offset、尺寸和 nonce。顶层/块头使用容器中的**原始 JSON 字节**，
+读取器不靠重序列化做认证；magic 和所有 framing 长度由结构校验覆盖。换 key、换 manifest binding、把
+附件挂到另一备份、交换/复制/删除块、篡改头/密文/tag 都必须在返回明文前失败。
+
+**上限与恢复顺序**：单件明文 20 MiB、最多 4096 块、顶层头 1 KiB、块头 512 B；容器硬上限按
+`20 MiB + 4096 * (8 B framing + 512 B chunk header + 16 B tag) + 12 B + 1 KiB`
+计算。读取器先限制实际容器总长，再校验 binding；随后解析顶层头并据 manifest 计算唯一合法块数，完整
+扫描所有记录，限制每段长度、拒绝截断/尾随字节/乱序/offset 缺口/重复 nonce；结构全部通过后才派生
+子密钥并逐块认证解密到私有有界缓冲，最后核对总字节数与 `SHA-256(plaintext)`。任一步失败都不返回
+部分明文，平台恢复层只能把成功结果写入临时存储；跨多个附件的协调器还必须沿用 v3 的最多 30 件、
+合计 600 MiB 上限，全部成功后才允许原子切换。
+
+错误分为 `truncated`、`invalid_container`、`size_limit`、`unsupported_version`、
+`unsupported_algorithm`、`authentication`、`digest_mismatch` 与 `random_source`；不得在错误或日志中
+包含 key、binding JSON、附件名、明文片段或完整摘要。仓库固定夹具位于
+`crates/solum-core/tests/fixtures/attachment-v1/`，使用公开标注的合成 bytes、测试 key 和固定 nonce，
+故意采用 16 字节块覆盖多块 framing；生产 API 不暴露固定 nonce 入口。本阶段仍不包含服务端 API、
+Android UI、临时库原子恢复、恢复码/信封或三端实机互通，顶层 F17 继续保持未完成。
+
 #### 历史多设备同步实现（迁移期，只读理解）
 
 - 定位：同步数据面只做**加密数据中转**，不解密、不推理、不保存同步明文；服务端数据库泄露不能直接解开同步正文。这不等于统一中心看不到账号元数据、结构化告警或正在代理的 AI 请求，三者按各自边界单独约束。
