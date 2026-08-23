@@ -275,9 +275,9 @@ v3 IPC 命令先作为备份协调器的内部 seam，不能在恢复事务完�
 
 本节只定义**平台无关容器和端侧 codec**，不是完整云备份闭环。protocol v1 可认证承载
 `solum-export` v2 或 v3：v2 是现有 Store-only 导出，v3 增加 `_portable` 逻辑载荷与纯恢复计划；固定
-v2 夹具继续逐字节兼容。Android 已有同 profile 的 WebView/IndexedDB/spool/非秘密配置主载荷适配，
-但没有附件分块密文与临时库原子恢复，因此不能据此声称“全量备份”或“换机恢复”已经完成。密码派生、恢复码、
-恢复信封、服务端上传 API、Android 临时库恢复事务和 generation 接管也都在后续阶段。
+v2 夹具继续逐字节兼容。本节自身不承诺附件、临时库或接管；它们已由下文后续切片分别补齐。整个产品仍不能
+声称“全量备份”或“换机恢复”已经完成：恢复码包装、受保护删除、600 MiB 真机压力、生产对象存储/灾备及
+Android↔iOS↔HarmonyOS 互通仍未验收。
 
 **算法与密钥边界**：调用方传入恰好 32 字节的随机主密钥。codec 先把内层 JSON 规范化为紧凑
 UTF-8 字节，再用 RFC 1950 zlib 容器内的 DEFLATE、固定 level 6 压缩；AEAD 明文为
@@ -684,10 +684,10 @@ Android 上传器复用账号恢复信封已经保护的 32 字节端侧主密�
 profile 根保存严格 `solum-backup-device.json`：
 `{"format":"solum-backup-device","version":1,"user_id":"lowercase UUID","device_generation":1}`。
 它是设备接管资格而非用户数据，不进入 portable generation 或云备份。文件缺失时只有服务器
-`active_generation == 1` 才允许原子建立为 1；服务器已大于 1 时必须等待未来换机 UI 做显式 takeover，
+`active_generation == 1` 才允许原子建立为 1；服务器已大于 1 时必须等待下文换机 UI 做显式 takeover，
 绝不能由旧安装、重装残留或丢状态的设备自动追平。每次备份先读取服务器 generation 并与本地文件精确
-相等，不一致在快照/上传前失败。未来接管流程只有在用户确认替换后才能调用 generation compare-and-
-increment，并把新值 durable 写入新设备；本节不提供该 UI。
+相等，不一致在快照/上传前失败。下文接管流程只有在用户确认替换后才能调用 generation compare-and-
+increment，并把新值 durable 写入新设备；上传 seam 本身不能执行接管。
 
 一次上传 session 固定绑定当前账号 UUID、profile、device generation、随机 backup UUID、UTC 毫秒创建时间、
 当前 access/refresh 会话和主密钥；任一期间切号、退出或 profile 改变都取消 session。WebView 先强制保存
@@ -743,12 +743,55 @@ backup id、created_at、protocol version 与所选列表及当前账号逐项�
 完成 `solum-attachment` AEAD、块序、明文尺寸和 SHA-256 校验；⑦ 全部对象验证成功后才调用现有 v3 prepare，
 并只向新建 inactive staging 组装、重读校验和 seal generation。任何一步失败都不得打开 live Store、写 active
 pointer、推进 generation 或修改现有 generation；成功返回的也只是 sealed generation id 与无敏感计数，
-仍需未来预览/确认协调器才能发布。
+必须交给下文预览/确认协调器才能发布。
 
 GET 使用相同账号 origin 与 bearer token；401 最多刷新并 durable 保存一次，瞬时传输失败最多重试一次。
 重试必须保持相同路径与所选版本，响应 body、token、主密钥、明文、attachment id/名称、完整摘要和本机路径
-不得进入错误或日志。该内部 seam 不增加可见恢复入口；已有本机数据的选择、generation takeover、WebView
-hydrate/确认、恢复码、崩溃后下载暂存清理与 600 MiB Android 真机内存/磁盘压力验收仍是后续产品门槛。
+不得进入错误或日志。可见入口、已有数据预览、WebView hydrate 与 generation takeover 由下节提供；恢复码、
+崩溃后下载暂存清理与 600 MiB Android 真机内存/磁盘压力验收仍是后续产品门槛。
+
+#### Android 备份与恢复中心 v1（2026-08-23，手动入口与接管事务）
+
+设置新增登录账号专属的“备份与恢复”二级页，不扩张四个根入口。页面只显示用户能判断的事实：最近成功
+时间、密文总量、版本数量、设备代次，以及 complete 历史的创建时间/大小；object id、plan etag、密文摘要、
+主密钥和内部 generation id 不进入可见文案。v1 只有用户主动点击“立即备份”，不做后台定时、充电/Wi-Fi
+策略或失败通知；上传仍完整复用前述冻结 → 分块 → 密文 staging → commit seam。历史空状态明确引导先创建
+备份，网络失败保持本机数据不变。
+
+选择历史版本后先执行 downloader 的完整验证并组装 sealed inactive generation，再 hydrate generation 隔离的
+WebView namespace；这两步都不是恢复提交。随后必须对当前 live SQLite 与 WebView 做精确 replacement preview，
+显示将被替换的本机行、会话/消息/草稿/资料计数，以及将恢复的版本时间、附件数和逻辑行数。普通预览使用
+中性面；只有最后一步使用红色模态，明确说明“本机当前内容将由所选备份替换、旧手机停止成为备份写入者、
+应用会重启”。按钮名称始终为“替换本机并接管”，不能用“继续/确定”弱化后果。预览 token 仍一次性绑定
+live SQLite/WebView 摘要，任何变化都要求重新预览。
+
+**generation takeover 的持久事务**：云端恢复不能直接调用裸 pointer publish。最终确认前先在 profile 私有根
+原子写严格 `solum-backup-takeover.json`，只含 format/version、账号 UUID、server origin SHA-256、所选
+backup UUID、sealed generation id、expected active generation、随机 takeover UUID、phase 与可选 target
+generation；不含 token、主密钥、明文、资料 id 或服务器响应 body。顺序固定为：
+
+1. 在不持有 Orchestrator/SQLite/profile 锁时先重读 live preview，仍精确匹配才建立 `planned` journal；
+2. 用 journal 中同一 takeover id 调用服务端 compare-and-increment；传输结果不明时保留 journal 并只允许原 id
+   重试，不能生成新 id。响应必须是 `expected + 1`；durable 记录 `remote_advanced` 后，才把本机严格
+   `solum-backup-device.json` 从缺失/expected 幂等推进到 target，再记录 `device_ready`；
+3. 重新取得 Orchestrator → sync Store → profile generation 锁，第二次重读并消费同一 preview token；仍一致才
+   发布 sealed generation pointer、完成 notification handoff。pointer durable 后删除 journal并 fsync profile 根，
+   再按既有规则整进程重启；
+4. 若远端已推进而最终 preview 因本机变化失效，不能回滚 generation，也不能发布陈旧 preview；页面要求重新
+   预览并以同一 journal 续作。进程重启后，`device_ready` journal 若目标 generation 尚未 active，则恢复中心
+   只允许继续该候选；若 pointer 已是目标则安全清理 journal。不同账号、origin、backup 或 generation 不能覆盖
+   既有 journal。
+
+服务端推进成功会使旧 generation 后续上传失败，但不会删除任何 complete 历史；它不是远程擦除旧手机。
+本轮仍不开放 complete 版本删除，因为删除属于另一项不可逆操作，必须另接 Guard + `If-Match` 预览，不能
+借恢复确认顺带授权。恢复码、后台备份、生产对象存储、600 MiB 真机压力和跨平台实机互通仍未完成。
+
+**隐私同意**：手动入口可把完整对话、日程/提醒、记忆/人格/行为/审计、健康、通知处理结果、组件、导入
+资料及非秘密设置/重新授权意图作为端侧加密密文保存到 Solum Center；账号会话、密码、主密钥、恢复码、
+LLM/邮箱/Soulous token、OS 权限和硬件密钥永不进入普通备份。服务端仍会看到账号归属、版本时间、对象数量
+和密文尺寸这些流量 metadata。由于这是新增外发场景，隐私政策版本必须递增，旧同意不得自动沿用；再次
+同意前上传/下载/接管命令与入口均不可用。通知是否允许作为 AI 明文上行仍由原“通知上云”开关独立控制，
+不能把端到端加密备份混写成 AI 授权。
 
 #### 历史多设备同步实现（迁移期，只读理解）
 

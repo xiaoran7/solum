@@ -2197,6 +2197,40 @@
   }
   .account-model-note .ic { margin-top: 2px; color: var(--accent); }
 
+  .backup-seal {
+    display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 16px;
+    align-items: center; padding: 20px 0; border-block: 1px solid var(--ink);
+  }
+  .backup-seal-mark {
+    width: 48px; height: 48px; display: grid; place-items: center; border: 1px solid var(--ink);
+    border-radius: 50%; color: var(--ink); position: relative;
+  }
+  .backup-seal-mark::after {
+    content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--accent-fill);
+    position: absolute; right: 1px; bottom: 5px;
+  }
+  .backup-seal-copy { display: grid; gap: 4px; min-width: 0; }
+  .backup-seal-copy strong { font-size: 1rem; }
+  .backup-seal-copy span { color: var(--muted); font-size: .8125rem; line-height: 1.55; }
+  .backup-timeline { display: grid; }
+  .backup-version {
+    display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 14px;
+    min-height: 72px; align-items: start; padding: 14px 0; border-bottom: 1px solid var(--line);
+  }
+  .backup-version:last-child { border-bottom: 0; }
+  .backup-pin { position: relative; width: 18px; height: 100%; }
+  .backup-pin::before { content: ""; position: absolute; left: 8px; top: 17px; bottom: -31px; width: 1px; background: var(--line); }
+  .backup-version:last-child .backup-pin::before { display: none; }
+  .backup-pin::after { content: ""; position: absolute; left: 4px; top: 6px; width: 9px; height: 9px; border: 1px solid var(--ink); border-radius: 50%; background: var(--paper); }
+  .backup-version:first-child .backup-pin::after { background: var(--accent-fill); border-color: var(--accent-fill); }
+  .backup-version-copy { display: grid; gap: 5px; min-width: 0; }
+  .backup-version-title { font-size: .875rem; font-weight: 600; }
+  .backup-version-meta { color: var(--muted); font-size: .75rem; line-height: 1.55; }
+  .backup-preview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 14px 0; background: var(--line); border: 1px solid var(--line); }
+  .backup-preview-cell { background: var(--paper); padding: 14px; display: grid; gap: 5px; }
+  .backup-preview-cell span { color: var(--muted); font-size: .75rem; }
+  .backup-preview-cell strong { font-size: 1.125rem; font-variant-numeric: tabular-nums; }
+
   @media (max-width: 899px) {
     #app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) auto; }
     #mHeader { padding: calc(12px + var(--sat)) 16px 11px; border-bottom: 1px solid var(--line); backdrop-filter: none; }
@@ -2226,6 +2260,11 @@
     .account-gate-context h1 br { display: none; }
     .account-privacy-note { display: none; }
     .account-gate-panel { padding: 28px 24px; }
+    .backup-seal { grid-template-columns: 42px minmax(0, 1fr); }
+    .backup-seal-mark { width: 42px; height: 42px; }
+    .backup-seal > .btn { grid-column: 1 / -1; width: 100%; justify-content: center; min-height: 46px; }
+    .backup-version { grid-template-columns: 18px minmax(0, 1fr); }
+    .backup-version > .btn { grid-column: 2; justify-self: start; min-height: 44px; }
   }
 </style>
 </head>
@@ -2693,6 +2732,32 @@
       </div>
     </div></section>
 
+    <!-- 加密备份与恢复（F17） -->
+    <section class="view" id="view-backup"><div class="vwrap">
+      <div class="vhead"><div class="vt">
+        <h2>备份与恢复 <button class="qmark" type="button" aria-expanded="false" aria-controls="descBackup" aria-label="说明"></button></h2>
+        <p class="desc" id="descBackup" hidden>手动创建端到端加密版本。压缩与加密都在这台设备完成，中心只保存不可读密文和必要版本元数据；恢复会先在隔离空间完整校验，再由你明确确认是否替换本机。</p>
+      </div></div>
+      <div class="backup-seal" aria-label="加密备份状态">
+        <span class="backup-seal-mark" id="backupSealIcon"></span>
+        <span class="backup-seal-copy"><strong id="backupSealTitle">读取封缄记录…</strong><span id="backupSealMeta">不会自动备份</span></span>
+        <button class="btn primary" type="button" id="backupCreateBtn">立即创建备份</button>
+      </div>
+      <div class="banner" style="margin:20px 0 28px;">
+        <span id="backupPrivacyIcon"></span>
+        <div class="grow">备份包含当前协议已覆盖的数据与本地资料，不包含邮箱凭据或邮件正文。云端删除入口仍在接入，请勿把这里当作唯一副本。</div>
+      </div>
+      <div class="block" id="backupPreview" hidden>
+        <h3>替换预览 <span class="bnote">尚未改动本机</span></h3>
+        <div id="backupPreviewBody"></div>
+        <div class="btnrow"><button class="btn danger" type="button" id="backupTakeoverBtn">检查后替换本机</button><button class="btn" type="button" id="backupPreviewCancelBtn">取消</button></div>
+      </div>
+      <div class="block">
+        <h3>封缄点 <span class="bnote" id="backupCount">读取中</span></h3>
+        <div class="backup-timeline" id="backupVersions"></div>
+      </div>
+    </div></section>
+
     <!-- 邮箱连接器（F21） -->
     <section class="view" id="view-email"><div class="vwrap">
       <div class="vhead"><div class="vt">
@@ -2926,7 +2991,7 @@
   </div>
   <div class="drawer-body">
     <div class="drawer-pane active" id="pane-documents">
-      <p class="hint" style="margin:0 0 16px;">PDF 与文档只保存在本机浏览器存储，不进同步、备份或云端；文本文件可主动加入对话输入。PDF 当前仅做本地归档，不会假装已解析其中内容。</p>
+      <p class="hint" style="margin:0 0 16px;">PDF 与文档日常只保存在本机浏览器存储，不进同步；只有你在“备份与恢复”中主动创建备份时，资料才会以端侧加密后的密文进入备份服务。文本文件可主动加入对话输入；PDF 当前仅做本地归档，不会假装已解析其中内容。</p>
       <div class="block">
         <h3>上传 PDF / 文档 <span class="bnote">仅本机</span></h3>
         <div class="doc-drop">
@@ -4989,11 +5054,11 @@ async function exportPortableDataV3(now) {
   return invoke("export_portable_data", { snapshot, now: now ?? null });
 }
 
-// Internal F17 seam: freeze the same v3 snapshot, then stream each manifest-
+// F17 manual backup path: freeze the same v3 snapshot, then stream each manifest-
 // bound Blob to Rust in bounded chunks. Rust performs all compression,
 // encryption, encrypted-only staging, generation checks, retries, and commit.
-// No visible control or background schedule calls this until product consent
-// and recovery UX are ready.
+// The backup center is the only visible caller; there is deliberately no timer
+// or background schedule.
 const BACKUP_UPLOAD_IPC_CHUNK_BYTES = 512 * 1024;
 function encodeCanonicalBase64(bytes) {
   let binary = "";
@@ -5072,8 +5137,8 @@ function portableUiStateStorage(chat) {
   const chatDrafts = Object.fromEntries((chat.drafts || []).map((draft) => [draft.session_id, draft.content]));
   return JSON.stringify({ version: UI_STATE_VERSION, lastView: "chat", navLastView: {}, scroll: {}, chatDrafts });
 }
-// Internal F17 seam. The future restore coordinator calls this before pointer
-// publication; it writes only the generation-specific inactive namespace.
+// The restore coordinator calls this before pointer publication; it writes
+// only the generation-specific inactive namespace.
 async function hydratePortableGenerationWebView(generationId) {
   if (!globalThis.crypto?.subtle) throw new Error("当前 WebView 不支持恢复完整性摘要");
   const plan = await invoke("restore_webview_begin", { generationId });
@@ -5205,16 +5270,168 @@ async function snapshotLiveWebViewSummary() {
   };
 }
 
-// Internal seam for the future recovery UI: preview is mandatory and its
-// opaque token can be spent once only against a fresh snapshot of both stores.
+// Preview is mandatory and its opaque token can be spent once only against a
+// fresh snapshot of both stores.
 async function prepareRestorePublication(generationId) {
   const webview = await snapshotLiveWebViewSummary();
   return invoke("restore_publish_preview", { generationId, webview });
 }
-async function confirmRestorePublication(generationId, token) {
-  const webview = await snapshotLiveWebViewSummary();
-  return invoke("restore_publish_confirm", { generationId, token, webview });
+let backupCenterBusy = false;
+let backupRestoreCandidate = null;
+function backupDate(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "时间未知" : new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  }).format(date);
 }
+function backupTakeoverPhaseLabel(value) {
+  return ({ planned: "等待安全推进", remote_advanced: "云端代次已接管", device_ready: "等待替换本机" })[value]
+    || "等待继续";
+}
+function backupSetBusy(busy, label) {
+  backupCenterBusy = busy;
+  const button = $("backupCreateBtn");
+  if (!button) return;
+  button.disabled = busy;
+  button.textContent = busy ? (label || "处理中…") : "立即创建备份";
+  $("backupVersions")?.querySelectorAll("button").forEach((item) => { item.disabled = busy; });
+}
+function backupLiveTotal(preview) {
+  const sqlite = Object.values(preview.sqlite_counts || {}).reduce((sum, count) => sum + Number(count || 0), 0);
+  const webview = preview.webview || {};
+  return sqlite + Number(webview.chat_sessions || 0) + Number(webview.chat_messages || 0) +
+    Number(webview.drafts || 0) + Number(webview.documents || 0);
+}
+function showBackupPreview(candidate) {
+  backupRestoreCandidate = candidate;
+  const preview = candidate.preview;
+  const incomingRows = candidate.staged?.restored_rows;
+  const incomingDocs = candidate.staged?.attachment_count;
+  const body = $("backupPreviewBody");
+  body.textContent = "";
+  body.appendChild(el("p", { class: "hint", text: "候选版本已在隔离空间完成下载、解密、认证与回读；下方只是预览，当前本机尚未改变。" }));
+  const grid = el("div", { class: "backup-preview-grid" }, [
+    el("div", { class: "backup-preview-cell" }, [el("span", { text: "候选数据行" }), el("strong", { text: incomingRows == null ? "已校验" : String(incomingRows) })]),
+    el("div", { class: "backup-preview-cell" }, [el("span", { text: "候选本地资料" }), el("strong", { text: incomingDocs == null ? "已校验" : String(incomingDocs) })]),
+    el("div", { class: "backup-preview-cell" }, [el("span", { text: "本机现有项目" }), el("strong", { text: String(backupLiveTotal(preview)) })]),
+    el("div", { class: "backup-preview-cell" }, [el("span", { text: "替换后设备代次" }), el("strong", { text: "+1" })]),
+  ]);
+  body.appendChild(grid);
+  body.appendChild(el("p", { class: "hint", text: preview.has_existing_data
+    ? "继续会替换当前本机数据，并让此设备接管新的云端代次；该操作不能在应用内一键撤销。"
+    : "当前本机为空；继续仍会接管新的云端代次，并在完成后重新打开应用。" }));
+  $("backupPreview").hidden = false;
+  $("backupPreview").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+async function prepareBackupRestore(backupId, stagedGeneration) {
+  if (backupCenterBusy) return;
+  backupSetBusy(true, stagedGeneration ? "恢复校验中…" : "下载校验中…");
+  try {
+    const staged = stagedGeneration ? null : await invoke("backup_restore_stage", { backupId });
+    const generationId = stagedGeneration || staged.generation_id;
+    await hydratePortableGenerationWebView(generationId);
+    const preview = await prepareRestorePublication(generationId);
+    showBackupPreview({ backupId, generationId, staged, preview });
+    toast("候选版本已校验，本机尚未改变", "ok");
+  } catch (error) {
+    toast(`恢复准备失败：${String(error)}`, "danger", 5200);
+  } finally { backupSetBusy(false); }
+}
+async function confirmBackupTakeover() {
+  const candidate = backupRestoreCandidate;
+  if (!candidate || backupCenterBusy) return;
+  const body = el("div", null, [
+    el("p", { text: "将用已校验的封缄点替换当前本机数据，并让此设备接管新的云端代次。" }),
+    el("p", { class: "hint", text: "应用会在指针安全落盘后重新打开。若网络结果不明确，同一接管事务会安全重试。" }),
+  ]);
+  openModal("替换本机并接管？", body, "替换本机并接管", async () => {
+    backupSetBusy(true, "正在安全接管…");
+    try {
+      const webview = await snapshotLiveWebViewSummary();
+      await invoke("backup_restore_takeover_publish", {
+        generationId: candidate.generationId,
+        token: candidate.preview.token,
+        webview,
+      });
+    } catch (error) {
+      backupSetBusy(false);
+      toast(`接管未完成：${String(error)}`, "danger", 6000);
+      await refreshBackupCenter();
+    }
+  }, { icon: "shield" });
+}
+async function refreshBackupCenter() {
+  const versions = $("backupVersions");
+  if (!versions || !accountLoggedIn) return;
+  versions.textContent = "";
+  versions.appendChild(emptyBox("refresh", "正在读取封缄点", "只读取版本元数据，不下载备份正文。"));
+  try {
+    const [catalog, pending] = await Promise.all([
+      invoke("backup_restore_catalog"),
+      invoke("backup_restore_pending"),
+    ]);
+    const backups = Array.isArray(catalog.backups) ? catalog.backups.slice() : [];
+    backups.sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)));
+    $("backupCount").textContent = `${backups.length} 个版本`;
+    const latest = backups[0];
+    $("backupSealTitle").textContent = latest ? `最近封缄于 ${backupDate(latest.created_at)}` : "还没有云端备份";
+    $("backupSealMeta").textContent = latest
+      ? `${readableDocumentSize(Number(latest.total_bytes || 0))} 密文 · 设备代次 ${latest.generation} · 不会自动备份`
+      : `当前云端代次 ${catalog.active_generation || 1} · 只在你点击时创建`;
+    versions.textContent = "";
+    if (pending) {
+      versions.appendChild(el("div", { class: "backup-version" }, [
+        el("span", { class: "backup-pin" }),
+        el("span", { class: "backup-version-copy" }, [
+          el("span", { class: "backup-version-title", text: "接管事务待继续" }),
+          el("span", { class: "backup-version-meta", text: `已保留安全进度 · ${backupTakeoverPhaseLabel(pending.phase)}` }),
+        ]),
+        el("button", { class: "btn sm", type: "button", text: "继续校验", onclick: () => prepareBackupRestore(pending.backup_id, pending.staged_generation) }),
+      ]));
+    }
+    if (!backups.length && !pending) {
+      versions.appendChild(emptyBox("cloud", "还没有封缄点", "点击“立即创建备份”，在本机加密后保存第一个版本。"));
+      return;
+    }
+    for (const version of backups) {
+      const isPending = pending && pending.backup_id === version.backup_id;
+      versions.appendChild(el("div", { class: "backup-version" }, [
+        el("span", { class: "backup-pin" }),
+        el("span", { class: "backup-version-copy" }, [
+          el("span", { class: "backup-version-title", text: backupDate(version.created_at) }),
+          el("span", { class: "backup-version-meta", text: `${readableDocumentSize(Number(version.total_bytes || 0))} 密文 · ${version.object_count || 0} 个密文对象 · 协议 v${version.protocol_version}` }),
+          el("span", { class: "backup-version-meta", text: `设备代次 ${version.generation}${isPending ? " · 接管待继续" : ""}` }),
+        ]),
+        el("button", { class: "btn sm", type: "button", text: isPending ? "继续校验" : "校验并准备恢复", onclick: () => prepareBackupRestore(version.backup_id, isPending ? pending.staged_generation : "") }),
+      ]));
+    }
+  } catch (error) {
+    $("backupCount").textContent = "读取失败";
+    $("backupSealTitle").textContent = "暂时无法读取备份";
+    $("backupSealMeta").textContent = "本机数据未受影响";
+    versions.textContent = "";
+    versions.appendChild(emptyBox("cloud", "封缄点读取失败", String(error)));
+  }
+}
+async function createBackupFromCenter() {
+  if (backupCenterBusy) return;
+  backupSetBusy(true, "正在封缄…");
+  try {
+    await createAndUploadPortableBackup();
+    toast("加密备份已封缄并提交", "ok");
+    await refreshBackupCenter();
+  } catch (error) {
+    toast(`备份未完成：${String(error)}`, "danger", 6000);
+  } finally { backupSetBusy(false); }
+}
+$("backupSealIcon").appendChild(icon("lock", 20));
+$("backupPrivacyIcon").appendChild(icon("shield", 18));
+$("backupCreateBtn").addEventListener("click", createBackupFromCenter);
+$("backupTakeoverBtn").addEventListener("click", confirmBackupTakeover);
+$("backupPreviewCancelBtn").addEventListener("click", () => {
+  backupRestoreCandidate = null;
+  $("backupPreview").hidden = true;
+});
 async function getDocument(id) {
   return withDocuments("readonly", (store, set) => {
     const request = store.get(id);
@@ -8038,6 +8255,7 @@ const SETTINGS_GROUP = {
       ["privacy",     "隐私",       "lock",   "通知上云开关、通知智能管线与完整隐私政策"],
       ["capture",     "数据入口",   "inbox",  "各采集通道的真实状态与待确认区"],
       ["sync",        "同步",       "refresh", "多设备账户与同步状态"],
+      ["backup",      "备份与恢复", "lock",   "手动加密封缄、版本历史与恢复接管"],
       ["cloud",       "云端接入",   "cloud",  "LLM 端点配置与 Soulous 互通"],
       ["rules",       "重要度规则", "rules",  "按事件类型设置提前提醒与通知渠道"],
       ["guard",       "高危护栏",   "shield", "可用工具、审计日志与确认流程演示"],
@@ -8352,6 +8570,7 @@ const VIEW_REFRESHERS = {
   privacy: [refreshPrivacy],
   capture: [refreshCapture],
   sync: [refreshSyncConfig, refreshSyncStatus],
+  backup: [refreshBackupCenter],
   email: [refreshEmail],
   cloud: [refreshCloud, refreshAccount, refreshSoulous],
   rules: [refreshRules],
@@ -8390,7 +8609,7 @@ async function refreshAll(options) {
     refreshAgenda, refreshNotifs, refreshJournal, refreshWearable, refreshSuggest,
     refreshLedger, refreshPersona, refreshRules, refreshProactivity, refreshPrivacy,
     refreshCapture, refreshGuard, refreshCloud, refreshAccount, refreshSoulous,
-    refreshSyncConfig, refreshEmail, refreshToday, refreshWidgets, refreshDocuments,
+    refreshSyncConfig, refreshBackupCenter, refreshEmail, refreshToday, refreshWidgets, refreshDocuments,
   ];
   const view = currentView || "chat";
   if (options && options.progress) beginRouteRefresh(view);

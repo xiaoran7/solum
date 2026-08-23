@@ -60,6 +60,8 @@ pub enum BackupDownloadError {
     CloudAuthentication,
     #[error("backup cloud request failed")]
     Transport,
+    #[error("backup cloud generation changed before takeover")]
+    CloudConflict,
     #[error("backup cloud rejected the request with status {0}")]
     ServerStatus(u16),
     #[error("backup cloud response is invalid")]
@@ -81,6 +83,7 @@ impl BackupDownloadError {
             Self::Staging => "staging",
             Self::CloudAuthentication => "cloud_authentication",
             Self::Transport => "transport",
+            Self::CloudConflict => "cloud_conflict",
             Self::ServerStatus(_) => "server_status",
             Self::InvalidResponse => "invalid_response",
         }
@@ -141,6 +144,22 @@ pub trait BackupCloudReader {
         backup_id: &str,
         object: &BackupObjectPlan,
     ) -> DownloadResult<Vec<u8>>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudTakeoverOutcome {
+    pub active_generation: u64,
+    pub pruned_pending: usize,
+    pub replay: bool,
+}
+
+pub trait BackupCloudTakeover {
+    fn advance_generation(
+        &self,
+        session: &mut AccountSession,
+        expected_generation: u64,
+        takeover_id: &str,
+    ) -> DownloadResult<CloudTakeoverOutcome>;
 }
 
 /// Fetch and strictly validate complete-only cloud metadata.
@@ -451,6 +470,7 @@ impl HttpBackupCloudReader {
                     return Err(BackupDownloadError::CloudAuthentication)
                 }
                 Err(HttpFailure::Status(404)) => return Err(BackupDownloadError::BackupNotFound),
+                Err(HttpFailure::Status(409)) => return Err(BackupDownloadError::CloudConflict),
                 Err(HttpFailure::Status(status)) => {
                     return Err(BackupDownloadError::ServerStatus(status))
                 }
@@ -460,6 +480,67 @@ impl HttpBackupCloudReader {
 
     fn url(session: &AccountSession, path: &str) -> String {
         format!("{}{}", session.server_url, path)
+    }
+}
+
+#[derive(Serialize)]
+struct TakeoverRequest<'a> {
+    expected_generation: u64,
+    takeover_id: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TakeoverResponse {
+    active_generation: u64,
+    pruned_pending: usize,
+    replay: bool,
+}
+
+impl BackupCloudTakeover for HttpBackupCloudReader {
+    fn advance_generation(
+        &self,
+        session: &mut AccountSession,
+        expected_generation: u64,
+        takeover_id: &str,
+    ) -> DownloadResult<CloudTakeoverOutcome> {
+        if expected_generation == 0
+            || expected_generation >= MAX_SAFE_INTEGER
+            || !valid_uuid(takeover_id)
+        {
+            return Err(BackupDownloadError::InvalidCatalog);
+        }
+        let request = TakeoverRequest {
+            expected_generation,
+            takeover_id,
+        };
+        let response = self.request(session, |current| {
+            self.agent
+                .post(&Self::url(current, "/v1/backups/generation"))
+                .set("Authorization", &format!("Bearer {}", current.access_token))
+                .send_json(&request)
+                .map_err(HttpFailure::from)
+        })?;
+        if response
+            .header("Content-Type")
+            .and_then(|value| value.split(';').next())
+            != Some("application/json")
+        {
+            return Err(BackupDownloadError::InvalidResponse);
+        }
+        let bytes = read_bounded(response.into_reader(), 16 * 1024)?;
+        let parsed: TakeoverResponse =
+            serde_json::from_slice(&bytes).map_err(|_| BackupDownloadError::InvalidResponse)?;
+        if parsed.active_generation != expected_generation + 1
+            || parsed.pruned_pending > MAX_CATALOG_BACKUPS
+        {
+            return Err(BackupDownloadError::InvalidResponse);
+        }
+        Ok(CloudTakeoverOutcome {
+            active_generation: parsed.active_generation,
+            pruned_pending: parsed.pruned_pending,
+            replay: parsed.replay,
+        })
     }
 }
 

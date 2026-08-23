@@ -20,10 +20,10 @@ use crate::error::Result;
 
 /// 政策正文发生**实质**变化（新增数据类型、新增权限、新增外发场景）时递增。
 /// 措辞润色不算——递增一次就等于把弹窗重新推给所有老用户一遍。
-pub const PRIVACY_POLICY_VERSION: u32 = 2;
+pub const PRIVACY_POLICY_VERSION: u32 = 3;
 
 pub const PRIVACY_POLICY_TITLE: &str = "Solum（息壤）隐私政策";
-pub const PRIVACY_POLICY_UPDATED_ON: &str = "2026-08-11";
+pub const PRIVACY_POLICY_UPDATED_ON: &str = "2026-08-23";
 
 const CONSENT_FILE_NAME: &str = "solum-privacy-consent.json";
 
@@ -90,7 +90,8 @@ pub const PRIVACY_GATE_TITLE: &str = "息壤 · 隐私与数据说明";
 pub const PRIVACY_GATE_BODY: &str = r#"## 开始前，请先知道
 
 - **大部分内容留在本机。** 你的对话、日程、提醒、记忆和使用记录，默认保存在这台设备上。
-- **只有你主动使用联网功能时，相关内容才会发出。** 例如你主动向 AI 提问、开启多设备同步，或使用邮箱功能。
+- **只有你主动使用联网功能时，相关内容才会发出。** 例如你主动向 AI 提问、开启多设备同步、创建加密云备份，或使用邮箱功能。
+- **云备份在本机加密。** 你主动创建备份时，当前备份覆盖的数据与资料会先在设备上压缩、加密；服务端只保存密文和版本所需元数据，不会收到主密钥。
 - **通知功能由你控制。** 你可以逐个选择允许读取通知的应用；“通知上云”默认关闭，只有你另行开启后才会把通知交给 AI 服务商。通知里可能包含联系人、银行或其他平台发来的内容，开启前请确认你了解这一点。
 - **重要操作一定会再次问你。** 删除、付款、发邮件等操作，不会在未经确认时直接执行。
 - **息壤不投放广告，也不加入第三方统计或跟踪。**
@@ -115,6 +116,7 @@ pub const PRIVACY_POLICY_FULL_BODY: &str = r#"# 息壤隐私政策
 
 - **向 AI 提问：** 你发送的消息，以及回答这条消息所需的少量近期对话和相关记忆，会发给你选择的 AI 服务商。
 - **多设备同步：** 需要同步的内容会先在你的设备上加密，再发送到你自己设置的同步服务。同步服务看不到原文。
+- **加密云备份：** 只有你在“备份与恢复”中主动创建备份时，备份当前覆盖的数据与资料才会在本机压缩、加密并上传。服务端保存密文，以及备份时间、密文大小、协议版本和设备 generation 等必要元数据；端到端主密钥不会上传。
 - **通知上云：** 开启后，你允许息壤读取的通知可能会发给 AI 服务商，帮助理解和整理内容。
 - **邮箱功能：** 只有你主动查看、搜索或发送邮件时，息壤才会连接邮箱服务。
 
@@ -126,7 +128,7 @@ pub const PRIVACY_POLICY_FULL_BODY: &str = r#"# 息壤隐私政策
 
 - 你导入的聊天记录原文
 - 本机保存的完整对话历史
-- 你导入的 PDF 或文本文档原件
+- 你导入的 PDF 或文本文档原件（除非你主动创建加密云备份；此时只以端侧加密后的密文进入备份服务）
 - 邮箱密码、授权信息、邮件正文和搜索结果
 - 完整的人格版本记录
 - 安全操作记录
@@ -146,7 +148,7 @@ pub const PRIVACY_POLICY_FULL_BODY: &str = r#"# 息壤隐私政策
 
 ## 5. 关于邮箱
 
-邮箱密码和授权信息只保存在本机。邮件内容不会进入记忆、设备同步或 AI 对话。
+邮箱密码和授权信息只保存在本机，也不会进入加密云备份。邮件内容不会进入记忆、设备同步、加密云备份或 AI 对话。
 
 息壤不会在后台自动读取邮箱。发送邮件前会显示完整内容，并要求你再次确认。
 
@@ -164,6 +166,8 @@ pub const PRIVACY_POLICY_FULL_BODY: &str = r#"# 息壤隐私政策
 - 删除本机对话和导入的资料
 - 退出账号或断开邮箱
 - 在系统设置中清除息壤的全部本机数据
+
+当前测试阶段的客户端尚未开放云端备份删除入口；正式发布备份功能前必须补齐受保护的删除能力，否则不得把备份创建入口作为正式功能开放。
 
 如果你使用了自己搭建的同步服务，还需要在该服务上单独删除已经同步的加密内容。
 
@@ -291,5 +295,16 @@ mod tests {
         // 反向确认：本仓确实把这两件事讲清楚了。
         assert!(PRIVACY_POLICY_FULL_BODY.contains("先在你的设备上加密"));
         assert!(PRIVACY_POLICY_FULL_BODY.contains("通知上云"));
+    }
+
+    #[test]
+    fn backup_policy_is_explicit_about_ciphertext_keys_and_exclusions() {
+        for text in [PRIVACY_GATE_BODY, PRIVACY_POLICY_FULL_BODY] {
+            assert!(text.contains("加密云备份") || text.contains("云备份"));
+            assert!(text.contains("主密钥"));
+        }
+        assert!(PRIVACY_POLICY_FULL_BODY.contains("密文大小"));
+        assert!(PRIVACY_POLICY_FULL_BODY.contains("邮箱密码和授权信息"));
+        assert!(!has_current_consent(Some(2)));
     }
 }

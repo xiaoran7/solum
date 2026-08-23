@@ -68,6 +68,10 @@ struct AppState {
     /// plus at most the attachment chunk currently being sealed; account or
     /// profile changes make every command discard it.
     backup_upload: Mutex<Option<BackupUploadAppSession>>,
+    /// Authenticated cloud version bound to the sealed generation prepared by
+    /// the restore downloader. It contains metadata only; a durable takeover
+    /// journal replaces it once the user confirms publication.
+    backup_restore: Mutex<Option<BackupRestoreAppSession>>,
     /// Masked provider summary when the cloud reasoner is configured.
     /// Mutable: the settings UI can save/apply a new endpoint at runtime.
     llm_summary: Mutex<Option<String>>,
@@ -122,6 +126,15 @@ struct BackupUploadAppSession {
     profile_id: String,
     account: solum_core::account::AccountSession,
     upload: solum_core::backup_upload::BackupUploadSession,
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+struct BackupRestoreAppSession {
+    profile_id: String,
+    account: solum_core::account::AccountSession,
+    backup_id: String,
+    cloud_generation: u64,
+    staged_generation: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -644,26 +657,50 @@ fn restore_publish_preview(
     })
 }
 
-#[tauri::command]
-fn restore_publish_confirm(
-    state: State<AppState>,
-    app: tauri::AppHandle,
-    generation_id: String,
-    token: String,
-    webview: LiveWebViewSummary,
-) -> CmdResult<String> {
-    restore_publish_confirm_platform(&state, &app, &generation_id, &token, &webview)
-}
-
 #[cfg(target_os = "android")]
-fn restore_publish_confirm_platform(
+fn validate_restore_preview_is_current(
     state: &AppState,
-    app: &tauri::AppHandle,
     generation_id: &str,
     token: &str,
     webview: &LiveWebViewSummary,
-) -> CmdResult<String> {
-    let transition = AccountTransitionGuard::acquire(&state.account_transition)?;
+) -> CmdResult<()> {
+    let profile_id = active_local_profile_id();
+    validate_live_webview_summary(webview, &profile_id)?;
+    let _orch_guard = state
+        .orch
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    let sync_store = state
+        .sync_store
+        .lock()
+        .map_err(|_| "sync store lock poisoned".to_string())?;
+    let sqlite = solum_core::export_v3::snapshot_portable_store(&sync_store).map_err(core_err)?;
+    let session_guard = state
+        .webview_restore
+        .lock()
+        .map_err(|_| "WebView restore session state is unavailable".to_string())?;
+    let session = session_guard
+        .as_ref()
+        .filter(|session| {
+            session.ready
+                && session.reader.bootstrap().generation == generation_id
+                && session.profile_id == profile_id
+        })
+        .ok_or_else(|| "WebView restore generation is not ready for publication".to_string())?;
+    let binding = session
+        .publication_preview
+        .as_ref()
+        .ok_or_else(|| "Replacement preview is missing or already consumed".to_string())?;
+    validate_publication_binding(binding, token, &sqlite.fingerprint, webview)
+}
+
+#[cfg(target_os = "android")]
+fn publish_restore_generation(
+    state: &AppState,
+    generation_id: &str,
+    token: &str,
+    webview: &LiveWebViewSummary,
+) -> CmdResult<solum_core::portable_generation::PortablePublishOutcome> {
     let profile_id = active_local_profile_id();
     validate_live_webview_summary(webview, &profile_id)?;
     let _orch_guard = state
@@ -694,27 +731,8 @@ fn restore_publish_confirm_platform(
             .ok_or_else(|| "Replacement preview is missing or already consumed".to_string())?
     };
     validate_publication_binding(&binding, token, &sqlite.fingerprint, webview)?;
-    let outcome = solum_core::portable_generation::publish_portable_generation(
-        &state.profile_root,
-        generation_id,
-    )
-    .map_err(core_err)?;
-    transition.hold_until_restart();
-    if outcome.handoff_pending {
-        eprintln!("restore pointer committed; startup must resume late notification handoff");
-    }
-    restart_account_app(app)
-}
-
-#[cfg(not(target_os = "android"))]
-fn restore_publish_confirm_platform(
-    _state: &AppState,
-    _app: &tauri::AppHandle,
-    _generation_id: &str,
-    _token: &str,
-    _webview: &LiveWebViewSummary,
-) -> CmdResult<String> {
-    Err("Restore publication is available only in the Android app".into())
+    solum_core::portable_generation::publish_portable_generation(&state.profile_root, generation_id)
+        .map_err(core_err)
 }
 
 fn llm_config_file() -> std::path::PathBuf {
@@ -1033,6 +1051,10 @@ async fn account_auth(
         .backup_upload
         .lock()
         .map_err(|_| "备份上传会话状态异常".to_string())? = None;
+    *state
+        .backup_restore
+        .lock()
+        .map_err(|_| "备份恢复会话状态异常".to_string())? = None;
     let session = tauri::async_runtime::spawn_blocking(move || {
         let session = if register {
             solum_core::account::register(&server_url, &username, &password, &model)
@@ -1131,6 +1153,10 @@ async fn account_logout(state: State<'_, AppState>, app: tauri::AppHandle) -> Cm
         .backup_upload
         .lock()
         .map_err(|_| "备份上传会话状态异常".to_string())? = None;
+    *state
+        .backup_restore
+        .lock()
+        .map_err(|_| "备份恢复会话状态异常".to_string())? = None;
     // Keep the selected profile stable until no sync round can still hold its
     // database, then atomically take the latest rotated token and clear local
     // identity. Remote revocation is bounded and happens only after local
@@ -2261,6 +2287,13 @@ fn current_backup_account(
     Ok(current)
 }
 
+fn require_current_privacy_consent() -> CmdResult<()> {
+    if solum_core::privacy::PrivacyConsent::needs_consent() {
+        return Err("请先阅读并同意当前隐私政策，再使用加密云备份".into());
+    }
+    Ok(())
+}
+
 fn backup_master_key(account: &solum_core::account::AccountSession) -> CmdResult<[u8; 32]> {
     let config = solum_core::sync::SyncConfig::load()
         .ok_or_else(|| "尚未配置端到端主密钥，无法创建加密备份".to_string())?;
@@ -2305,13 +2338,15 @@ fn restore_failed_backup_upload(state: &AppState, session: BackupUploadAppSessio
     }
 }
 
-/// Internal F17 seam. No visible control or scheduler invokes this yet.
+/// Manual F17 backup entry. The UI invokes it only from the backup center;
+/// there is deliberately no scheduler in this phase.
 #[tauri::command]
 async fn backup_upload_begin(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     snapshot: portable_snapshot::WebViewPortableSnapshot,
 ) -> CmdResult<solum_core::backup_upload::BackupUploadBegin> {
+    require_current_privacy_consent()?;
     if state.account_transition.load(Ordering::Acquire) {
         return Err("账号正在切换，已取消备份".into());
     }
@@ -2321,6 +2356,16 @@ async fn backup_upload_begin(
         .stable_user_id()
         .ok_or_else(|| "当前账号缺少不可变用户标识".to_string())?
         .to_string();
+    if solum_core::backup_takeover::load_pending_takeover(
+        &state.profile_root,
+        &profile_id,
+        &account.server_url,
+    )
+    .map_err(|error| error.to_string())?
+    .is_some()
+    {
+        return Err("已有备份接管事务待完成，请先继续恢复".into());
+    }
     portable_snapshot::validate_profile(&snapshot.profile_id, &profile_id)?;
     let master_key = backup_master_key(&account)?;
     let json = collect_portable_json(&state, &app, snapshot, Local::now().naive_local())?;
@@ -2438,6 +2483,10 @@ async fn backup_upload_commit(
     state: State<'_, AppState>,
     session_id: String,
 ) -> CmdResult<solum_core::backup_upload::BackupUploadOutcome> {
+    require_current_privacy_consent()?;
+    if state.account_transition.load(Ordering::Acquire) {
+        return Err("账号正在切换，已取消备份提交".into());
+    }
     let mut session = take_backup_upload(&state, &session_id)?;
     let (returned, result) = tauri::async_runtime::spawn_blocking(move || {
         let transport = solum_core::backup_upload::HttpBackupCloudTransport::new();
@@ -2473,12 +2522,13 @@ fn backup_upload_cancel(state: State<AppState>, session_id: String) -> CmdResult
     Ok(())
 }
 
-/// Internal F17 recovery seam. It returns complete-version metadata only and
+/// F17 recovery catalog. It returns complete-version metadata only and
 /// does not download, decrypt, stage, publish, or advance device generation.
 #[tauri::command]
 async fn backup_restore_catalog(
     state: State<'_, AppState>,
 ) -> CmdResult<solum_core::backup_download::BackupCatalog> {
+    require_current_privacy_consent()?;
     if state.account_transition.load(Ordering::Acquire) {
         return Err("账号正在切换，已取消读取备份列表".into());
     }
@@ -2512,6 +2562,7 @@ async fn backup_restore_stage(
     state: State<'_, AppState>,
     backup_id: String,
 ) -> CmdResult<solum_core::backup_download::StagedBackupOutcome> {
+    require_current_privacy_consent()?;
     if state.account_transition.load(Ordering::Acquire) {
         return Err("账号正在切换，已取消备份恢复准备".into());
     }
@@ -2524,39 +2575,205 @@ async fn backup_restore_stage(
     if active_local_profile_id() != profile_id {
         return Err("备份恢复已取消：账号或本地 profile 不一致".into());
     }
+    if solum_core::backup_takeover::load_pending_takeover(
+        &state.profile_root,
+        &profile_id,
+        &account.server_url,
+    )
+    .map_err(|error| error.to_string())?
+    .is_some()
+    {
+        return Err("已有备份接管事务待完成，请从待继续项恢复".into());
+    }
+    *state
+        .backup_restore
+        .lock()
+        .map_err(|_| "备份恢复会话状态异常".to_string())? = None;
     let mut master_key = backup_master_key(&account)?;
     let profile_root = state.profile_root.clone();
     let worker_profile_id = profile_id.clone();
     let mut cloud_account = account.clone();
-    let (cloud_account, outcome) = tauri::async_runtime::spawn_blocking(move || {
-        let transport = solum_core::backup_download::HttpBackupCloudReader::new();
-        let result = (|| {
-            let catalog = solum_core::backup_download::fetch_backup_catalog(
-                &transport,
-                &mut cloud_account,
-                100,
-            )?;
-            solum_core::backup_download::download_and_stage_backup(
-                solum_core::backup_download::BackupStageRequest {
-                    profile_root: &profile_root,
-                    catalog: &catalog,
+    let (cloud_account, active_generation, outcome) =
+        tauri::async_runtime::spawn_blocking(move || {
+            let transport = solum_core::backup_download::HttpBackupCloudReader::new();
+            let result = (|| {
+                let catalog = solum_core::backup_download::fetch_backup_catalog(
+                    &transport,
+                    &mut cloud_account,
+                    100,
+                )?;
+                let active_generation = catalog.active_generation;
+                let outcome = solum_core::backup_download::download_and_stage_backup(
+                    solum_core::backup_download::BackupStageRequest {
+                        profile_root: &profile_root,
+                        catalog: &catalog,
+                        backup_id: &backup_id,
+                        user_id: &worker_profile_id,
+                        master_key: &master_key,
+                        now: Local::now().naive_local(),
+                    },
+                    &transport,
+                    &mut cloud_account,
+                )?;
+                Ok::<_, solum_core::backup_download::BackupDownloadError>((
+                    active_generation,
+                    outcome,
+                ))
+            })()
+            .map_err(|error| error.to_string());
+            master_key.fill(0);
+            result.map(|(active_generation, outcome)| (cloud_account, active_generation, outcome))
+        })
+        .await
+        .map_err(|_| "备份下载与校验任务异常终止".to_string())??;
+    current_backup_account(&profile_id, &cloud_account)?;
+    *state
+        .backup_restore
+        .lock()
+        .map_err(|_| "备份恢复会话状态异常".to_string())? = Some(BackupRestoreAppSession {
+        profile_id,
+        account: cloud_account,
+        backup_id: outcome.backup_id.clone(),
+        cloud_generation: active_generation,
+        staged_generation: outcome.generation_id.clone(),
+    });
+    Ok(outcome)
+}
+
+/// A durable takeover may survive a response loss or process restart. The UI
+/// uses this metadata-only status to resume hydrate/preview without creating a
+/// second transaction or downloading a different candidate.
+#[tauri::command]
+fn backup_restore_pending(
+    state: State<AppState>,
+) -> CmdResult<Option<solum_core::backup_takeover::BackupTakeoverStatus>> {
+    require_current_privacy_consent()?;
+    let account = solum_core::account::AccountSession::load_full()
+        .ok_or_else(|| "登录后才能继续加密备份恢复".to_string())?;
+    let profile_id = account
+        .stable_user_id()
+        .ok_or_else(|| "当前账号缺少不可变用户标识".to_string())?;
+    if active_local_profile_id() != profile_id {
+        return Err("备份恢复已取消：账号或本地 profile 不一致".into());
+    }
+    solum_core::backup_takeover::load_pending_takeover(
+        &state.profile_root,
+        profile_id,
+        &account.server_url,
+    )
+    .map(|pending| pending.map(|pending| pending.status()))
+    .map_err(|error| error.to_string())
+}
+
+/// Advance cloud/device generation only after a fresh preview, then re-check
+/// both live stores under their locks before atomically publishing the pointer.
+/// A response-lost retry reuses the durable takeover UUID.
+#[tauri::command]
+async fn backup_restore_takeover_publish(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    generation_id: String,
+    token: String,
+    webview: LiveWebViewSummary,
+) -> CmdResult<String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (state, app, generation_id, token, webview);
+        Err("Backup takeover is available only in the Android app".into())
+    }
+    #[cfg(target_os = "android")]
+    {
+        require_current_privacy_consent()?;
+        let transition = AccountTransitionGuard::acquire(&state.account_transition)?;
+        let account = solum_core::account::AccountSession::load_full()
+            .ok_or_else(|| "登录后才能接管加密备份".to_string())?;
+        let profile_id = account
+            .stable_user_id()
+            .ok_or_else(|| "当前账号缺少不可变用户标识".to_string())?
+            .to_string();
+        if active_local_profile_id() != profile_id {
+            return Err("备份接管已取消：账号或本地 profile 不一致".into());
+        }
+
+        // This check deliberately leaves the token unspent. Network work must
+        // happen without the SQLite locks; publication performs the same check
+        // again and consumes the token only after the cloud generation is safe.
+        validate_restore_preview_is_current(&state, &generation_id, &token, &webview)?;
+
+        let pending_status = solum_core::backup_takeover::load_pending_takeover(
+            &state.profile_root,
+            &profile_id,
+            &account.server_url,
+        )
+        .map_err(|error| error.to_string())?
+        .map(|pending| pending.status());
+        let (backup_id, expected_generation) = if let Some(status) = pending_status {
+            if status.staged_generation != generation_id {
+                return Err("另一个备份接管事务仍在进行".into());
+            }
+            (status.backup_id, status.expected_generation)
+        } else {
+            let restore = state
+                .backup_restore
+                .lock()
+                .map_err(|_| "备份恢复会话状态异常".to_string())?;
+            let restore = restore
+                .as_ref()
+                .filter(|restore| {
+                    restore.profile_id == profile_id
+                        && restore.staged_generation == generation_id
+                        && current_backup_account(&restore.profile_id, &restore.account).is_ok()
+                })
+                .ok_or_else(|| "备份恢复候选已失效，请重新校验该版本".to_string())?;
+            (restore.backup_id.clone(), restore.cloud_generation)
+        };
+
+        let profile_root = state.profile_root.clone();
+        let worker_profile = profile_id.clone();
+        let worker_server = account.server_url.clone();
+        let worker_generation = generation_id.clone();
+        let mut cloud_account = account.clone();
+        let (cloud_account, pending) = tauri::async_runtime::spawn_blocking(move || {
+            let mut pending = solum_core::backup_takeover::begin_or_resume_takeover(
+                &profile_root,
+                solum_core::backup_takeover::BackupTakeoverBinding {
+                    user_id: &worker_profile,
+                    server_url: &worker_server,
                     backup_id: &backup_id,
-                    user_id: &worker_profile_id,
-                    master_key: &master_key,
-                    now: Local::now().naive_local(),
+                    staged_generation: &worker_generation,
+                    expected_generation,
                 },
+            )
+            .map_err(|error| error.to_string())?;
+            let transport = solum_core::backup_download::HttpBackupCloudReader::new();
+            solum_core::backup_takeover::advance_takeover(
+                &mut pending,
                 &transport,
                 &mut cloud_account,
             )
-        })()
-        .map_err(|error| error.to_string());
-        master_key.fill(0);
-        result.map(|outcome| (cloud_account, outcome))
-    })
-    .await
-    .map_err(|_| "备份下载与校验任务异常终止".to_string())??;
-    current_backup_account(&profile_id, &cloud_account)?;
-    Ok(outcome)
+            .map_err(|error| error.to_string())?;
+            Ok::<_, String>((cloud_account, pending))
+        })
+        .await
+        .map_err(|_| "备份接管任务异常终止".to_string())??;
+        current_backup_account(&profile_id, &cloud_account)?;
+
+        let outcome = publish_restore_generation(&state, &generation_id, &token, &webview)?;
+        if solum_core::backup_takeover::finish_published_takeover(pending, &generation_id).is_err()
+        {
+            // The pointer is already durable. Startup reconciliation owns this
+            // cleanup path; never pretend publication can now be rolled back.
+            eprintln!("backup takeover journal cleanup deferred to startup reconciliation");
+        }
+        if let Ok(mut restore) = state.backup_restore.lock() {
+            *restore = None;
+        }
+        transition.hold_until_restart();
+        if outcome.handoff_pending {
+            eprintln!("restore pointer committed; startup must resume late notification handoff");
+        }
+        restart_account_app(&app)
+    }
 }
 
 fn write_export_json(db_path: &str, json: &str, prefix: &str) -> CmdResult<String> {
@@ -4600,6 +4817,21 @@ fn resolve_profile_paths(
         if let Some(generation) = active_generation.as_deref() {
             solum_core::portable_generation::resume_portable_handoff(&profile_root, generation)?;
         }
+        if let Some(session) = solum_core::account::AccountSession::load_full() {
+            if let Some(user_id) = session.stable_user_id() {
+                solum_core::backup_takeover::reconcile_published_takeover(
+                    &profile_root,
+                    user_id,
+                    &session.server_url,
+                    active_generation.as_deref(),
+                )
+                .map_err(|_| {
+                    solum_core::CoreError::Invalid(
+                        "backup takeover journal failed startup reconciliation".into(),
+                    )
+                })?;
+            }
+        }
         return Ok(ResolvedProfilePaths {
             db_path: active
                 .path()
@@ -4766,6 +4998,7 @@ pub fn run() {
                 active_generation,
                 webview_restore: Mutex::new(None),
                 backup_upload: Mutex::new(None),
+                backup_restore: Mutex::new(None),
                 llm_summary: Mutex::new(llm_summary),
                 // First poll looks back 6h so a freshly-granted permission
                 // doesn't have to wait for new data to show anything.
@@ -4934,12 +5167,13 @@ pub fn run() {
             backup_upload_cancel,
             backup_restore_catalog,
             backup_restore_stage,
+            backup_restore_pending,
+            backup_restore_takeover_publish,
             restore_webview_begin,
             restore_webview_document_chunk,
             restore_webview_finish,
             restore_webview_status,
             restore_publish_preview,
-            restore_publish_confirm,
             event_reschedule,
         ])
         .run(tauri::generate_context!())
@@ -5529,7 +5763,8 @@ mod tests {
         assert!(html.contains("ui_state_json: uiStateJson"));
         assert!(html.contains("await sha256Hex(await row.blob.arrayBuffer())"));
         assert!(html.contains("restore_publish_preview"));
-        assert!(html.contains("restore_publish_confirm"));
+        assert!(html.contains("backup_restore_takeover_publish"));
+        assert!(!html.contains("restore_publish_confirm"));
         assert!(html.contains("const webview = await snapshotLiveWebViewSummary();"));
     }
 
@@ -5549,12 +5784,24 @@ mod tests {
     }
 
     #[test]
-    fn frontend_backup_seam_has_no_visible_or_scheduled_binding() {
+    fn frontend_backup_center_is_manual_and_recovery_requires_preview_takeover() {
         let html = include_str!("../dist/index.html");
-        assert_eq!(html.matches("createAndUploadPortableBackup()").count(), 1);
-        assert!(!html.contains("onclick=\"createAndUploadPortableBackup"));
+        assert!(html.contains("id=\"view-backup\""));
+        assert!(html.contains("id=\"backupCreateBtn\""));
+        assert!(html.contains("createAndUploadPortableBackup()"));
         assert!(!html.contains("setInterval(createAndUploadPortableBackup"));
-        assert!(!html.contains("backup_restore_catalog"));
-        assert!(!html.contains("backup_restore_stage"));
+        let stage = html.find("backup_restore_stage").unwrap();
+        let hydrate = html[stage..]
+            .find("hydratePortableGenerationWebView")
+            .unwrap()
+            + stage;
+        let preview = html[hydrate..].find("prepareRestorePublication").unwrap() + hydrate;
+        let takeover = html[preview..]
+            .find("backup_restore_takeover_publish")
+            .unwrap()
+            + preview;
+        assert!(stage < hydrate && hydrate < preview && preview < takeover);
+        assert!(html.contains("替换本机并接管"));
+        assert!(html.contains("尚未改动本机"));
     }
 }

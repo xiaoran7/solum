@@ -236,6 +236,58 @@ pub fn load_or_initialize_device_generation(
     }
 }
 
+/// Persist the generation returned by an authenticated, journaled takeover.
+/// A new phone may have no local state; an existing authority may still carry
+/// the expected generation. Any unrelated value fails closed.
+pub fn persist_taken_over_device_generation(
+    profile_root: &Path,
+    user_id: &str,
+    expected_generation: u64,
+    target_generation: u64,
+) -> UploadResult<()> {
+    if !valid_uuid(user_id)
+        || user_id != user_id.to_ascii_lowercase()
+        || expected_generation == 0
+        || expected_generation.checked_add(1) != Some(target_generation)
+    {
+        return Err(BackupUploadError::InvalidDeviceState);
+    }
+    let path = profile_root.join(DEVICE_STATE_FILE);
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(raw) => Some(
+            serde_json::from_str::<BackupDeviceState>(&raw)
+                .map_err(|_| BackupUploadError::InvalidDeviceState)?,
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err(BackupUploadError::InvalidDeviceState),
+    };
+    if let Some(state) = existing.as_ref() {
+        if state.format != DEVICE_STATE_FORMAT
+            || state.version != DEVICE_STATE_VERSION
+            || state.user_id != user_id
+            || !matches!(
+                state.device_generation,
+                value if value == expected_generation || value == target_generation
+            )
+        {
+            return Err(BackupUploadError::InvalidDeviceState);
+        }
+        if state.device_generation == target_generation {
+            return Ok(());
+        }
+    }
+    let state = BackupDeviceState {
+        format: DEVICE_STATE_FORMAT.to_string(),
+        version: DEVICE_STATE_VERSION,
+        user_id: user_id.to_string(),
+        device_generation: target_generation,
+    };
+    let encoded =
+        serde_json::to_string(&state).map_err(|_| BackupUploadError::InvalidDeviceState)?;
+    crate::fsatomic::write_atomic_durable(&path, &encoded)
+        .map_err(|_| BackupUploadError::InvalidDeviceState)
+}
+
 impl BackupUploadSession {
     pub fn begin(
         profile_root: &Path,
@@ -1062,6 +1114,52 @@ mod tests {
             BackupUploadError::InvalidDeviceState
         );
         assert!(transport.calls.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn takeover_persists_missing_or_expected_generation_idempotently() {
+        for initial in [None, Some(4)] {
+            let root = temp_dir("takeover-generation");
+            if let Some(device_generation) = initial {
+                let state = BackupDeviceState {
+                    format: DEVICE_STATE_FORMAT.into(),
+                    version: DEVICE_STATE_VERSION,
+                    user_id: USER_ID.into(),
+                    device_generation,
+                };
+                std::fs::write(
+                    root.join(DEVICE_STATE_FILE),
+                    serde_json::to_string(&state).unwrap(),
+                )
+                .unwrap();
+            }
+            persist_taken_over_device_generation(&root, USER_ID, 4, 5).unwrap();
+            persist_taken_over_device_generation(&root, USER_ID, 4, 5).unwrap();
+            let state: BackupDeviceState = serde_json::from_str(
+                &std::fs::read_to_string(root.join(DEVICE_STATE_FILE)).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(state.device_generation, 5);
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        let root = temp_dir("takeover-stale");
+        let state = BackupDeviceState {
+            format: DEVICE_STATE_FORMAT.into(),
+            version: DEVICE_STATE_VERSION,
+            user_id: USER_ID.into(),
+            device_generation: 3,
+        };
+        std::fs::write(
+            root.join(DEVICE_STATE_FILE),
+            serde_json::to_string(&state).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            persist_taken_over_device_generation(&root, USER_ID, 4, 5).unwrap_err(),
+            BackupUploadError::InvalidDeviceState
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -10,6 +10,12 @@
 > Solum Android：0.2.8（1018 文案/时间解析/发布输入修复）· 0.2.7（1017 图标校正）· 0.2.6（1016 启动图标）· 0.2.5（1015 登录闪退修复）· 0.2.4（1014 后端复审收口）· 0.2.3（1013 默认模型/配额）· 0.2.2（1012 账户外壳/UI 重构）· 0.2.1（1011 中心化账号入口）· 0.2.0（1010 登录即恢复密钥）· 0.1.9（1009 UUID 隔离）· 0.1.8（1008 同步按账号隔离）· 0.1.7（1007 福利监控）· 0.1.5（1005 安全默认值收口）· 0.1.4（1004 排版/缓存）· 0.1.3（1003 导航重构）· 0.1.2（1002 UI 重构）· 0.1.1（1001 隐私门文案）· 0.1.0（1000 首个 release）
 > solum-cloud：0.7.0（opaque backup API v1）· 0.6.4（密码语义/限流收口）· 0.6.3（刷新令牌权限）· 0.6.2（迁移与清理修复）· 0.6.1（AI 代理加固）· 0.6.0（模型目录/额度）· 0.5.1（中心化入口）· 0.5.0（恢复信封）· 0.4.0（PostgreSQL 中心库）
 
+- **F17 Android 手动备份与恢复中心（2026-08-23，未发布）**：新增账号限定的设置二级页，支持手动创建端到端加密备份、查看 complete 历史安全元数据、下载并在 sealed inactive generation 中校验候选、展示当前本机替换预览，并以独立红色确认执行接管；不增加后台定时，不展示对象 ID/摘要/密钥，也不把尚未接入的云端删除写成已完成。
+  - core 新增严格 durable takeover journal，状态为 planned → remote_advanced → device_ready；云端 compare-and-increment 以同一 takeover UUID 幂等重试，设备 generation 持久化后才允许 pointer 发布。联网前与发布锁内各重验一次 SQLite/WebView 摘要，响应丢失和进程重启可续作，pointer 已提交则启动时清理日志；有待续事务时禁止用旧 active 数据创建新备份。
+  - 移除旧的裸 `restore_publish_confirm` IPC 注册及前端 helper，云端候选不存在绕过 generation takeover 直接发布 pointer 的命令路径；唯一可见发布路径必须消费 durable journal。
+  - 隐私政策升级 v3 并要求旧用户重新同意，明确资料只在用户主动备份时以端侧密文上传、服务端可见必要版本/尺寸元数据而不持有主密钥，邮箱凭据和邮件正文不入备份；Rust 备份命令入口同步强制校验当前同意。
+  - 浏览器以 390×844 真尺寸和 mock Tauri IPC 跑通手动上传及 stage → hydrate → preview → takeover，页面无横向溢出、最终确认前无接管调用；Android arm64-v8a `cargo ndk check` 通过。同签名 release APK 已在 Android 16 真机保留数据覆盖安装，确认旧 v2 同意被 v3 gate 正确拦截且新备份披露可读；未代替真实用户点击同意，故真机列表/上传/active pointer 均未执行。全仓 441 项测试 0 failed、0 ignored，Clippy `-D warnings`、fmt、JS 语法与 `git diff --check` 全绿。
+
 - **F17 Android encrypted backup downloader（2026-08-23，内部 seam，未开放 UI/接管）**：新增平台中立 complete-version 列表/下载协调器和 Android 内部命令。客户端严格拒绝列表未知字段、非法 UUID/UTC 毫秒时间/摘要、非唯一 main、乱序/重复、计数/总量不符及 68 MiB 单对象/700 MiB 整版超限；HTTP 对 JSON 和密文均有界读取，密文还要求 octet-stream、no-store、精确 Content-Length/ETag，并本地重算 SHA-256。
   - 下载固定 main-first：先用 backup-v1 AEAD/受限解压/`plan_import` 验证，再把认证头与当前账号和所选版本逐项交叉核对；随后从已认证 v3 manifest 派生附件对象 UUID，要求服务端 attachment 集合严格一一对应，再逐件完成 attachment AEAD/块序/尺寸/明文摘要校验。全部对象成功后才调用现有 prepare 并组装 sealed inactive generation；错误密钥、篡改、截断、未来版本、缺件/多件及 metadata 错配均在 live Store/pointer 前失败。
   - 为解决服务端按 object id 排序后无法把随机附件对象映射回加密 manifest 的协议缺口，附件 object id 改为主密钥、随机 backup id 与 attachment id 经域隔离 HKDF-SHA256 派生的 UUID v8；服务端无密钥不能反推 id，随机 backup id 阻断跨版本链接。精确字节规则和公开固定向量已写入架构/夹具。Android 只注册 catalog/stage 内部命令，无前端调用；没有历史选择/已有数据确认、generation takeover、active pointer 发布、恢复码或真机大包验收，不能称为换机闭环。
