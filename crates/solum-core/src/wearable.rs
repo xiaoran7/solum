@@ -9,8 +9,9 @@
 //! platform health store is the mobile shell's job (`solum-health-connect`
 //! plugin hands over already-parsed samples).
 
-use chrono::NaiveDateTime;
+use chrono::{Duration, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::error::CoreError;
 use crate::model::fmt_ts;
@@ -114,6 +115,127 @@ impl HealthSample {
     }
 }
 
+/// Privacy-preserving local aggregate shown instead of raw health rows.
+/// Values compare the latest seven complete calendar days with the seven days
+/// before them. No diagnosis or value judgement is attached to rising/falling data.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthTrendSummary {
+    pub kind: HealthMetric,
+    pub label: &'static str,
+    pub unit: &'static str,
+    pub current: f64,
+    pub previous: Option<f64>,
+    pub change_percent: Option<f64>,
+    pub direction: &'static str,
+    pub current_days: usize,
+    pub previous_days: usize,
+    pub window_days: usize,
+}
+
+const TREND_WINDOW_DAYS: i64 = 7;
+const TREND_MIN_COVERAGE_DAYS: usize = 3;
+
+fn daily_values(
+    samples: &[HealthSample],
+    metric: HealthMetric,
+    from: NaiveDate,
+    through: NaiveDate,
+) -> Vec<f64> {
+    let mut grouped: BTreeMap<NaiveDate, Vec<f64>> = BTreeMap::new();
+    for sample in samples {
+        let date = sample.start.date();
+        if sample.kind == metric
+            && date >= from
+            && date <= through
+            && sample.value.is_finite()
+            && sample.value >= 0.0
+        {
+            grouped.entry(date).or_default().push(sample.value);
+        }
+    }
+    grouped
+        .into_values()
+        .map(|values| match metric {
+            HealthMetric::HeartRate => values.into_iter().fold(f64::INFINITY, f64::min),
+            HealthMetric::Steps | HealthMetric::Sleep => values.into_iter().sum(),
+        })
+        .collect()
+}
+
+fn mean(values: &[f64]) -> Option<f64> {
+    (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
+}
+
+fn rounded(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+/// Build bounded, local-only 7-day trends. Metrics without at least one day
+/// in the current window are omitted; comparison needs three days of coverage
+/// in each window so a single reading is never presented as a trend.
+pub fn health_trend_summaries(
+    samples: &[HealthSample],
+    now: NaiveDateTime,
+) -> Vec<HealthTrendSummary> {
+    // Exclude today: partial step/sleep totals would otherwise look like a
+    // meaningful drop merely because the day is still in progress.
+    let current_through = now.date() - Duration::days(1);
+    let current_from = current_through - Duration::days(TREND_WINDOW_DAYS - 1);
+    let previous_through = current_from - Duration::days(1);
+    let previous_from = previous_through - Duration::days(TREND_WINDOW_DAYS - 1);
+    let mut summaries = Vec::new();
+
+    for metric in [
+        HealthMetric::HeartRate,
+        HealthMetric::Steps,
+        HealthMetric::Sleep,
+    ] {
+        let current_values = daily_values(samples, metric, current_from, current_through);
+        let previous_values = daily_values(samples, metric, previous_from, previous_through);
+        let Some(mut current) = mean(&current_values) else {
+            continue;
+        };
+        let mut previous = mean(&previous_values);
+        if metric == HealthMetric::Sleep {
+            current /= 60.0;
+            previous = previous.map(|value| value / 60.0);
+        }
+        let change_percent = if current_values.len() >= TREND_MIN_COVERAGE_DAYS
+            && previous_values.len() >= TREND_MIN_COVERAGE_DAYS
+        {
+            previous
+                .filter(|value| value.abs() > f64::EPSILON)
+                .map(|value| rounded((current - value) / value * 100.0))
+        } else {
+            None
+        };
+        let direction = match change_percent {
+            Some(value) if value >= 3.0 => "higher",
+            Some(value) if value <= -3.0 => "lower",
+            Some(_) => "stable",
+            None => "no_comparison",
+        };
+        summaries.push(HealthTrendSummary {
+            kind: metric,
+            label: metric.label(),
+            unit: match metric {
+                HealthMetric::HeartRate => "bpm",
+                HealthMetric::Steps => "步/日",
+                HealthMetric::Sleep => "小时/日",
+            },
+            current: rounded(current),
+            previous: previous.map(rounded),
+            change_percent,
+            direction,
+            current_days: current_values.len(),
+            previous_days: previous_values.len(),
+            window_days: TREND_WINDOW_DAYS as usize,
+        });
+    }
+    summaries
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +288,59 @@ mod tests {
             "health_connect",
         );
         assert_ne!(a.dedup_key(), c.dedup_key());
+    }
+
+    fn sample(kind: HealthMetric, day: u32, value: f64) -> HealthSample {
+        let at = NaiveDate::from_ymd_opt(2026, 8, day)
+            .unwrap()
+            .and_hms_opt(8, 0, 0)
+            .unwrap();
+        HealthSample::new(kind, at, at, value, "health_connect")
+    }
+
+    #[test]
+    fn local_trends_compare_daily_aggregates_without_exposing_rows() {
+        let mut samples = Vec::new();
+        for day in 11..=17 {
+            samples.push(sample(HealthMetric::Steps, day, 5_000.0));
+            samples.push(sample(HealthMetric::Sleep, day, 420.0));
+        }
+        for day in 18..=24 {
+            samples.push(sample(HealthMetric::Steps, day, 6_000.0));
+            samples.push(sample(HealthMetric::Sleep, day, 480.0));
+        }
+        samples.push(sample(HealthMetric::Steps, 25, 1.0));
+        let now = NaiveDate::from_ymd_opt(2026, 8, 25)
+            .unwrap()
+            .and_hms_opt(20, 0, 0)
+            .unwrap();
+        let trends = health_trend_summaries(&samples, now);
+        let steps = trends
+            .iter()
+            .find(|trend| trend.kind == HealthMetric::Steps)
+            .unwrap();
+        assert_eq!(steps.current, 6_000.0);
+        assert_eq!(steps.previous, Some(5_000.0));
+        assert_eq!(steps.change_percent, Some(20.0));
+        assert_eq!(steps.direction, "higher");
+        let sleep = trends
+            .iter()
+            .find(|trend| trend.kind == HealthMetric::Sleep)
+            .unwrap();
+        assert_eq!(sleep.current, 8.0);
+        assert_eq!(sleep.previous, Some(7.0));
+    }
+
+    #[test]
+    fn sparse_data_is_a_summary_but_not_a_claimed_trend() {
+        let now = NaiveDate::from_ymd_opt(2026, 8, 25)
+            .unwrap()
+            .and_hms_opt(20, 0, 0)
+            .unwrap();
+        let trends = health_trend_summaries(&[sample(HealthMetric::HeartRate, 24, 72.0)], now);
+        assert_eq!(trends.len(), 1);
+        assert_eq!(trends[0].current_days, 1);
+        assert_eq!(trends[0].change_percent, None);
+        assert_eq!(trends[0].direction, "no_comparison");
     }
 }

@@ -4362,6 +4362,18 @@ fn health_samples(state: State<AppState>) -> CmdResult<Vec<HealthSample>> {
     lock!(state).health_samples().map_err(core_err)
 }
 
+#[tauri::command]
+fn health_trends(
+    state: State<AppState>,
+) -> CmdResult<Vec<solum_core::wearable::HealthTrendSummary>> {
+    require_full_account()?;
+    let samples = lock!(state).health_samples().map_err(core_err)?;
+    Ok(solum_core::wearable::health_trend_summaries(
+        &samples,
+        Local::now().naive_local(),
+    ))
+}
+
 /// ISO-8601 instant (Health Connect's `Instant.toString()`, always UTC) to
 /// the local wall-clock `NaiveDateTime` the store expects.
 fn parse_instant_local(s: &str) -> Option<NaiveDateTime> {
@@ -5702,6 +5714,7 @@ pub fn run() {
             health_status,
             health_request,
             health_samples,
+            health_trends,
             llm_config_get,
             llm_config_save,
             llm_config_test,
