@@ -1491,8 +1491,22 @@ fn capture_inbox_discard(state: State<AppState>, id: String) -> CmdResult<bool> 
 #[cfg(target_os = "android")]
 #[derive(Deserialize)]
 struct AndroidShareItem {
+    source: String,
     title: String,
     text: String,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Deserialize)]
+struct AndroidShareDrain {
+    items: Vec<AndroidShareItem>,
+    notices: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct AndroidShareDrainView {
+    drafts: Vec<CaptureDraftView>,
+    notices: Vec<String>,
 }
 
 /// Drain Android's bounded, RAM-only ACTION_SEND queue into the ordinary
@@ -1502,12 +1516,15 @@ struct AndroidShareItem {
 async fn capture_android_share_drain(
     window: tauri::WebviewWindow,
     state: State<'_, AppState>,
-) -> CmdResult<Vec<CaptureDraftView>> {
+) -> CmdResult<AndroidShareDrainView> {
     #[cfg(not(target_os = "android"))]
     {
         let _ = window;
         let _ = state;
-        Ok(Vec::new())
+        Ok(AndroidShareDrainView {
+            drafts: Vec::new(),
+            notices: Vec::new(),
+        })
     }
     #[cfg(target_os = "android")]
     {
@@ -1541,25 +1558,54 @@ async fn capture_android_share_drain(
         })
         .await
         .map_err(|error| format!("读取系统分享失败：{error}"))??;
-        let items: Vec<AndroidShareItem> =
+        let drained: AndroidShareDrain =
             serde_json::from_str(&raw).map_err(|error| format!("系统分享内容格式无效：{error}"))?;
         let mut inbox = state
             .capture_inbox
             .lock()
             .map_err(|_| "采集队列状态异常（锁中毒）".to_string())?;
-        Ok(items
+        let drafts = drained
+            .items
             .into_iter()
             .filter(|item| !item.text.trim().is_empty())
             .map(|item| {
+                let source = solum_core::capture::CaptureSource::parse(&item.source)
+                    .unwrap_or(solum_core::capture::CaptureSource::Share);
                 draft_view(inbox.push(
-                    solum_core::capture::CaptureSource::Share,
+                    source,
                     &item.title,
                     &item.text,
                     Local::now().timestamp_millis(),
                 ))
             })
-            .collect())
+            .collect();
+        Ok(AndroidShareDrainView {
+            drafts,
+            notices: drained.notices,
+        })
     }
+}
+
+#[tauri::command]
+async fn capture_android_voice_start(window: tauri::WebviewWindow) -> CmdResult<bool> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = window;
+        Ok(false)
+    }
+    #[cfg(target_os = "android")]
+    android_activity_bool(window, "startVoiceCapture").await
+}
+
+#[tauri::command]
+async fn capture_android_ocr_pick(window: tauri::WebviewWindow) -> CmdResult<bool> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = window;
+        Ok(false)
+    }
+    #[cfg(target_os = "android")]
+    android_activity_bool(window, "startOcrPicker").await
 }
 
 #[cfg(target_os = "android")]
@@ -5734,6 +5780,8 @@ pub fn run() {
             capture_inbox_add,
             capture_inbox_discard,
             capture_android_share_drain,
+            capture_android_voice_start,
+            capture_android_ocr_pick,
             calendar_access_status,
             calendar_access_request,
             calendar_candidates_import,

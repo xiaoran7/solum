@@ -1,18 +1,31 @@
 package dev.solum.app
 
 import android.Manifest
+import android.app.Activity
 import android.content.ContentUris
 import android.os.Bundle
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.provider.CalendarContract
+import android.speech.RecognizerIntent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.content.ContextCompat
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 import org.json.JSONArray
 import org.json.JSONObject
 
 class MainActivity : TauriActivity() {
   private val shareInbox = ArrayDeque<JSONObject>()
+  private val captureNotices = ArrayDeque<String>()
+
+  companion object {
+    private const val VOICE_REQUEST = 2202
+    private const val OCR_PICK_REQUEST = 2203
+    private const val MAX_IMAGE_BYTES = 20L * 1024L * 1024L
+  }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
@@ -26,14 +39,16 @@ class MainActivity : TauriActivity() {
     captureShareIntent(intent)
   }
 
-  /**
-   * Accept only bounded text shares. The queue is deliberately in memory:
-   * receiving an Android intent is not user consent to persist its contents.
-   */
+  /** Receiving a share is not consent to persist it; only bounded text enters RAM. */
   @Synchronized
   private fun captureShareIntent(incoming: Intent?) {
     if (incoming?.action != Intent.ACTION_SEND) return
     val mime = incoming.type ?: return
+    if (mime.startsWith("image/")) {
+      val uri = sharedStreamUri(incoming)
+      if (uri == null) noteCapture("分享的图片无法读取，请改用“选择截图 OCR”。") else recognizeImage(uri)
+      return
+    }
     if (mime != "text/plain" && mime != "text/html") return
     val raw = incoming.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.trim().orEmpty()
     if (raw.isEmpty()) return
@@ -42,18 +57,111 @@ class MainActivity : TauriActivity() {
       incoming.getCharSequenceExtra(Intent.EXTRA_SUBJECT)?.toString()?.trim().orEmpty(),
       48,
     )
+    enqueueCapture("share", title, text)
+  }
+
+  @Synchronized
+  fun drainShareInboxJson(): String {
+    val items = JSONArray()
+    while (shareInbox.isNotEmpty()) items.put(shareInbox.removeFirst())
+    val notices = JSONArray()
+    while (captureNotices.isNotEmpty()) notices.put(captureNotices.removeFirst())
+    return JSONObject().put("items", items).put("notices", notices).toString()
+  }
+
+  @Synchronized
+  private fun enqueueCapture(source: String, title: String, text: String) {
+    val bounded = boundedCodePoints(text.trim(), 4000)
+    if (bounded.isEmpty()) return
     shareInbox.addLast(JSONObject().apply {
-      put("title", title)
-      put("text", text)
+      put("source", source)
+      put("title", boundedCodePoints(title.trim(), 48))
+      put("text", bounded)
     })
     while (shareInbox.size > 20) shareInbox.removeFirst()
   }
 
   @Synchronized
-  fun drainShareInboxJson(): String {
-    val array = JSONArray()
-    while (shareInbox.isNotEmpty()) array.put(shareInbox.removeFirst())
-    return array.toString()
+  private fun noteCapture(message: String) {
+    captureNotices.addLast(boundedCodePoints(message, 160))
+    while (captureNotices.size > 8) captureNotices.removeFirst()
+  }
+
+  @Suppress("DEPRECATION")
+  private fun sharedStreamUri(incoming: Intent): Uri? =
+    if (android.os.Build.VERSION.SDK_INT >= 33) {
+      incoming.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        ?: incoming.clipData?.getItemAt(0)?.uri
+    } else {
+      incoming.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+        ?: incoming.clipData?.getItemAt(0)?.uri
+    }
+
+  /** Opens the system speech UI. Solum itself never records or stores audio. */
+  fun startVoiceCapture(): Boolean {
+    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+      putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+      putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
+      putExtra(RecognizerIntent.EXTRA_PROMPT, "说出要交给 Solum 的内容")
+      putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+    }
+    if (intent.resolveActivity(packageManager) == null) return false
+    @Suppress("DEPRECATION")
+    startActivityForResult(intent, VOICE_REQUEST)
+    return true
+  }
+
+  /** User-initiated document picker; URI permission is temporary and sufficient for OCR. */
+  fun startOcrPicker(): Boolean {
+    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+      addCategory(Intent.CATEGORY_OPENABLE)
+      type = "image/*"
+    }
+    if (intent.resolveActivity(packageManager) == null) return false
+    @Suppress("DEPRECATION")
+    startActivityForResult(intent, OCR_PICK_REQUEST)
+    return true
+  }
+
+  @Deprecated("Activity result bridge is retained for the generated Tauri activity.")
+  override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    super.onActivityResult(requestCode, resultCode, data)
+    if (resultCode != Activity.RESULT_OK) return
+    when (requestCode) {
+      VOICE_REQUEST -> {
+        val text = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+          ?.firstOrNull()?.trim().orEmpty()
+        if (text.isEmpty()) noteCapture("系统语音识别没有返回文字。")
+        else enqueueCapture("manual", "语音输入", text)
+      }
+      OCR_PICK_REQUEST -> data?.data?.let { recognizeImage(it) }
+    }
+  }
+
+  /** Bundled ML Kit model: image and OCR output stay in this process. */
+  private fun recognizeImage(uri: Uri) {
+    val bytes = try {
+      contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
+    } catch (_: Exception) { null }
+    if (bytes != null && bytes > MAX_IMAGE_BYTES) {
+      noteCapture("图片超过 20 MiB，未执行 OCR。")
+      return
+    }
+    val image = try {
+      InputImage.fromFilePath(this, uri)
+    } catch (_: Exception) {
+      noteCapture("图片无法解码，未执行 OCR。")
+      return
+    }
+    val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+    recognizer.process(image)
+      .addOnSuccessListener { result ->
+        val text = result.text.trim()
+        if (text.isEmpty()) noteCapture("截图中没有识别到文字。")
+        else enqueueCapture("share", "截图 OCR", text)
+      }
+      .addOnFailureListener { noteCapture("截图 OCR 暂时失败，请稍后重试。") }
+      .addOnCompleteListener { recognizer.close() }
   }
 
   private fun boundedCodePoints(value: String, max: Int): String {

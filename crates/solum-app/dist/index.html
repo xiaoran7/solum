@@ -2717,6 +2717,14 @@
         </div>
         <div id="captureInbox"></div>
       </div>
+      <div class="block" id="activeCaptureBlock">
+        <h3>主动采集 <span class="bnote">结果仍先进待确认</span></h3>
+        <p class="hint">语音由系统识别服务转成文字，可能按系统设置联网处理；Solum 不录音。截图 OCR 使用随应用打包的本机模型，图片不上传，识别完成即释放。</p>
+        <div class="btnrow">
+          <button class="btn primary" type="button" id="voiceCaptureBtn">语音输入</button>
+          <button class="btn" type="button" id="ocrCaptureBtn">选择截图 OCR</button>
+        </div>
+      </div>
       <div class="block">
         <h3>入口清单</h3>
         <div id="captureConnectors"></div>
@@ -6981,10 +6989,11 @@ async function drainAndroidShares() {
   shareDrainRunning = true;
   try {
     const received = await invoke("capture_android_share_drain");
-    if (received.length) {
-      toast(`收到 ${received.length} 条分享，已放入待确认区`, "ok");
+    if (received.drafts.length) {
+      toast(`收到 ${received.drafts.length} 条采集结果，已放入待确认区`, "ok");
       refreshCaptureInbox();
     }
+    for (const notice of received.notices) toast(notice, "danger");
   } catch (error) {
     // Android lifecycle transitions can briefly detach the WebView. Keep the
     // native RAM queue intact and try again on the next focus.
@@ -6998,6 +7007,20 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") drainAndroidShares();
 });
 setTimeout(drainAndroidShares, 0);
+
+async function startAndroidActiveCapture(command, unavailableMessage) {
+  if (!IS_ANDROID) return toast("此入口需要在 Android 设备上使用", "danger");
+  try {
+    const opened = await invoke(command);
+    if (!opened) return toast(unavailableMessage, "danger");
+    setTimeout(drainAndroidShares, 800);
+    setTimeout(drainAndroidShares, 2500);
+  } catch (error) { toast(safeUserError(error, unavailableMessage), "danger"); }
+}
+$("voiceCaptureBtn").addEventListener("click", () =>
+  startAndroidActiveCapture("capture_android_voice_start", "系统没有可用的语音识别服务"));
+$("ocrCaptureBtn").addEventListener("click", () =>
+  startAndroidActiveCapture("capture_android_ocr_pick", "系统没有可用的图片选择器"));
 
 async function refreshCapture() {
   const box = $("captureConnectors");

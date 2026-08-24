@@ -25,13 +25,14 @@
                 <!-- AndroidTV support -->
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
-            <!-- F22: text-only system share target. Receipt is held in RAM
+            <!-- F22/F25: text and image system share target. Text/OCR output is held in RAM
                  until the user confirms it inside Solum. -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
                 <data android:mimeType="text/html" />
+                <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
 
