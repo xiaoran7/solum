@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use chrono::{Duration, NaiveDateTime};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 
 use crate::classify::{NotificationMatchKind, NotificationPriorityRule, RuleTable};
 use crate::error::{CoreError, Result};
@@ -2871,6 +2871,7 @@ fn builtin_tools() -> Vec<Box<dyn Tool>> {
         Box::new(LedgerPurgeTool),
         Box::new(WidgetDeleteTool),
         Box::new(DataImportTool),
+        Box::new(BackupDeleteTool),
         Box::new(SoulousPushEventTool),
         Box::new(EmailSendTool),
         Box::new(MemoryForgetTool),
@@ -3007,6 +3008,90 @@ impl DataImportTool {
             .get("document")
             .cloned()
             .ok_or_else(|| CoreError::Invalid("data_import 缺少 document".into()))
+    }
+}
+
+/// Permanently remove one complete opaque backup version. The exact catalog
+/// metadata the user saw is embedded in the Guard fingerprint; execution
+/// re-lists the catalog and the server atomically checks the plan ETag again.
+struct BackupDeleteTool;
+
+impl BackupDeleteTool {
+    fn request(args: &str) -> Result<crate::backup_download::BackupDeleteRequest> {
+        let request: crate::backup_download::BackupDeleteRequest = serde_json::from_str(args)
+            .map_err(|error| {
+                CoreError::Invalid(format!("backup_delete 参数不是严格 JSON：{error}"))
+            })?;
+        crate::backup_download::validate_backup_delete_request(&request)
+            .map_err(|error| CoreError::Invalid(error.to_string()))?;
+        Ok(request)
+    }
+
+    fn size_label(bytes: u64) -> String {
+        const MIB: f64 = 1024.0 * 1024.0;
+        if bytes >= 1024 * 1024 {
+            format!("{:.1} MiB", bytes as f64 / MIB)
+        } else {
+            format!("{:.1} KiB", bytes as f64 / 1024.0)
+        }
+    }
+
+    fn committed_label(value: &str) -> String {
+        DateTime::parse_from_rfc3339(value)
+            .map(|date| {
+                date.with_timezone(&Utc)
+                    .format("%Y-%m-%d %H:%M UTC")
+                    .to_string()
+            })
+            .unwrap_or_else(|_| value.to_string())
+    }
+}
+
+impl Tool for BackupDeleteTool {
+    fn name(&self) -> &str {
+        "backup_delete"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Dangerous
+    }
+
+    fn request_summary(&self, _args: &str) -> String {
+        "删除一个云端加密备份版本".into()
+    }
+
+    fn audit_summary(&self, _args: &str) -> String {
+        "删除一个云端加密备份版本（标识已脱敏）".into()
+    }
+
+    fn preview(&self, args: &str, _ctx: &ToolCtx) -> String {
+        match Self::request(args) {
+            Ok(request) => format!(
+                "将永久删除 {} 提交的云端加密备份（{}，{} 个密文对象）。删除后不能再用这个封缄点恢复；本机数据和其他备份版本不受影响。",
+                Self::committed_label(&request.committed_at),
+                Self::size_label(request.total_bytes),
+                request.object_count
+            ),
+            Err(error) => format!("备份版本信息无效，无法删除：{error}"),
+        }
+    }
+
+    fn execute(&self, args: &str, _grant: &Grant, _ctx: &ToolCtx) -> Result<String> {
+        if crate::privacy::PrivacyConsent::needs_consent() {
+            return Err(CoreError::Invalid(
+                "请先阅读并同意当前隐私政策，再管理加密云备份".into(),
+            ));
+        }
+        let request = Self::request(args)?;
+        let mut account = crate::account::AccountSession::load_full()
+            .ok_or_else(|| CoreError::Invalid("登录后才能删除加密云备份".into()))?;
+        if account.stable_user_id().is_none() {
+            return Err(CoreError::Invalid("当前账号缺少不可变用户标识".into()));
+        }
+        let transport = crate::backup_download::HttpBackupCloudReader::new();
+        crate::backup_download::delete_backup_version(&transport, &mut account, &request)
+            .map_err(|error| CoreError::Invalid(error.to_string()))?;
+        Ok("已永久删除所选云端加密备份版本。".into())
     }
 }
 
@@ -4277,8 +4362,25 @@ mod tests {
             .is_err());
         assert_eq!(o.all_events().unwrap().len(), 1);
 
+        let backup_args = serde_json::json!({
+            "backup_id": "11111111-1111-4111-8111-111111111111",
+            "plan_etag": "00".repeat(32),
+            "committed_at": "2026-01-02T03:05:06.000Z",
+            "total_bytes": 4096,
+            "object_count": 2,
+        })
+        .to_string();
+        let pending = o
+            .request_confirmation("backup_delete", &backup_args, now())
+            .unwrap();
+        assert!(pending.request.effect_preview.contains("2 个密文对象"));
+        assert!(pending.request.effect_preview.contains("不能"));
+        assert!(o
+            .run_tool("backup_delete", &backup_args, None, now())
+            .is_err());
+
         let audit = o.audit_log().unwrap();
-        assert_eq!(audit.len(), 4, "every refusal is audited");
+        assert_eq!(audit.len(), 5, "every refusal is audited");
         assert!(audit.iter().all(|e| e.decision == "refused"));
     }
 

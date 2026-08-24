@@ -2226,6 +2226,7 @@
   .backup-version-copy { display: grid; gap: 5px; min-width: 0; }
   .backup-version-title { font-size: .875rem; font-weight: 600; }
   .backup-version-meta { color: var(--muted); font-size: .75rem; line-height: 1.55; }
+  .backup-version-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
   .backup-preview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 14px 0; background: var(--line); border: 1px solid var(--line); }
   .backup-preview-cell { background: var(--paper); padding: 14px; display: grid; gap: 5px; }
   .backup-preview-cell span { color: var(--muted); font-size: .75rem; }
@@ -2264,7 +2265,8 @@
     .backup-seal-mark { width: 42px; height: 42px; }
     .backup-seal > .btn { grid-column: 1 / -1; width: 100%; justify-content: center; min-height: 46px; }
     .backup-version { grid-template-columns: 18px minmax(0, 1fr); }
-    .backup-version > .btn { grid-column: 2; justify-self: start; min-height: 44px; }
+    .backup-version-actions { grid-column: 2; justify-self: start; justify-content: flex-start; }
+    .backup-version-actions .btn { min-height: 44px; }
   }
 </style>
 </head>
@@ -4828,7 +4830,11 @@ async function guardedDestructive(opts) {
         toast(result.output, result.ok ? "ok" : "danger");
         if (opts.onDone) { await opts.onDone(result.ok); }
         refreshAudit();
-      } catch (error) { toast(String(error), "danger"); refreshAudit(); }
+      } catch (error) {
+        toast(String(error), "danger");
+        if (opts.onError) { await opts.onError(error); }
+        refreshAudit();
+      }
     }, { icon: "shield" });
   } catch (error) { toast(String(error), "danger"); }
 }
@@ -5382,6 +5388,24 @@ async function confirmBackupTakeover() {
     }
   }, { icon: "shield" });
 }
+async function requestBackupDelete(version) {
+  if (backupCenterBusy) return;
+  await guardedDestructive({
+    tool: "backup_delete",
+    args: {
+      backup_id: version.backup_id,
+      plan_etag: version.plan_etag,
+      committed_at: version.committed_at,
+      total_bytes: Number(version.total_bytes || 0),
+      object_count: Number(version.object_count || 0),
+    },
+    title: "人工确认：删除云端备份",
+    confirmLabel: "永久删除此版本",
+    note: "确认令牌同时绑定版本元数据与隐藏的 ETag；若列表已变化，服务端会拒绝删除。删除不会影响本机数据。",
+    onDone: async () => { await refreshBackupCenter(); },
+    onError: async () => { await refreshBackupCenter(); },
+  });
+}
 async function refreshBackupCenter() {
   const versions = $("backupVersions");
   if (!versions || !accountLoggedIn) return;
@@ -5419,6 +5443,13 @@ async function refreshBackupCenter() {
     }
     for (const version of backups) {
       const isPending = pending && pending.backup_id === version.backup_id;
+      const actions = el("span", { class: "backup-version-actions" }, [
+        el("button", { class: "btn sm", type: "button", text: isPending ? "继续校验" : "校验并准备恢复", onclick: () => prepareBackupRestore(version.backup_id, isPending ? pending.staged_generation : "") }),
+      ]);
+      if (!isPending) actions.appendChild(el("button", {
+        class: "btn sm danger", type: "button", text: "删除版本",
+        onclick: () => requestBackupDelete(version),
+      }));
       versions.appendChild(el("div", { class: "backup-version" }, [
         el("span", { class: "backup-pin" }),
         el("span", { class: "backup-version-copy" }, [
@@ -5426,7 +5457,7 @@ async function refreshBackupCenter() {
           el("span", { class: "backup-version-meta", text: `${readableDocumentSize(Number(version.total_bytes || 0))} 密文 · ${version.object_count || 0} 个密文对象 · 协议 v${version.protocol_version}` }),
           el("span", { class: "backup-version-meta", text: `设备代次 ${version.generation}${isPending ? " · 接管待继续" : ""}` }),
         ]),
-        el("button", { class: "btn sm", type: "button", text: isPending ? "继续校验" : "校验并准备恢复", onclick: () => prepareBackupRestore(version.backup_id, isPending ? pending.staged_generation : "") }),
+        actions,
       ]));
     }
   } catch (error) {

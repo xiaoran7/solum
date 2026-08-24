@@ -200,6 +200,7 @@ fn tool_requires_full_account(tool: &str) -> bool {
             | "widget_delete"
             | "widget_record_delete"
             | "persona_clear"
+            | "backup_delete"
     )
 }
 
@@ -2753,6 +2754,41 @@ fn backup_master_key(account: &solum_core::account::AccountSession) -> CmdResult
     config.e2ee_master_key().map_err(core_err)
 }
 
+fn require_backup_delete_is_not_in_restore(state: &AppState, args: &str) -> CmdResult<()> {
+    let request: solum_core::backup_download::BackupDeleteRequest =
+        serde_json::from_str(args).map_err(|_| "备份删除参数无效".to_string())?;
+    solum_core::backup_download::validate_backup_delete_request(&request)
+        .map_err(|_| "备份删除参数无效".to_string())?;
+    let account = solum_core::account::AccountSession::load_full()
+        .ok_or_else(|| "登录后才能删除加密云备份".to_string())?;
+    let profile_id = account
+        .stable_user_id()
+        .ok_or_else(|| "当前账号缺少不可变用户标识".to_string())?;
+    if active_local_profile_id() != profile_id {
+        return Err("备份删除已取消：账号或本地 profile 不一致".into());
+    }
+    if state
+        .backup_restore
+        .lock()
+        .map_err(|_| "备份恢复会话状态异常".to_string())?
+        .as_ref()
+        .is_some_and(|restore| restore.backup_id == request.backup_id)
+    {
+        return Err("这个封缄点正在用于恢复，请先取消或完成恢复".into());
+    }
+    if solum_core::backup_takeover::load_pending_takeover(
+        &state.profile_root,
+        profile_id,
+        &account.server_url,
+    )
+    .map_err(|error| error.to_string())?
+    .is_some_and(|pending| pending.status().backup_id == request.backup_id)
+    {
+        return Err("这个封缄点已有待继续的接管事务，不能删除".into());
+    }
+    Ok(())
+}
+
 fn take_backup_upload(state: &AppState, session_id: &str) -> CmdResult<BackupUploadAppSession> {
     let mut guard = state
         .backup_upload
@@ -3007,9 +3043,10 @@ async fn backup_restore_stage(
     backup_id: String,
 ) -> CmdResult<solum_core::backup_download::StagedBackupOutcome> {
     require_current_privacy_consent()?;
-    if state.account_transition.load(Ordering::Acquire) {
-        return Err("账号正在切换，已取消备份恢复准备".into());
-    }
+    // Staging and hard deletion must never cross: either operation can begin
+    // only after it owns the same profile-transition guard for its full
+    // network/filesystem lifetime.
+    let _transition = AccountTransitionGuard::acquire(&state.account_transition)?;
     let account = solum_core::account::AccountSession::load_full()
         .ok_or_else(|| "登录后才能准备加密备份恢复".to_string())?;
     let profile_id = account
@@ -3823,6 +3860,10 @@ fn guard_request(
     now: Option<String>,
 ) -> CmdResult<PendingDto> {
     require_tool_account(&tool)?;
+    if tool == "backup_delete" {
+        require_current_privacy_consent()?;
+        require_backup_delete_is_not_in_restore(&state, &args)?;
+    }
     let now = parse_now(now)?;
     let pending = lock!(state)
         .request_confirmation(&tool, &args, now)
@@ -3848,6 +3889,16 @@ async fn guard_confirm(
     now: Option<String>,
 ) -> CmdResult<GuardRunResp> {
     require_tool_account(&tool)?;
+    let backup_delete = tool == "backup_delete";
+    let _backup_transition = if backup_delete {
+        Some(AccountTransitionGuard::acquire(&state.account_transition)?)
+    } else {
+        None
+    };
+    if backup_delete {
+        require_current_privacy_consent()?;
+        require_backup_delete_is_not_in_restore(&state, &args)?;
+    }
     let now = parse_now(now)?;
     let orch = state.orch.clone();
     let transition = state.account_transition.clone();
@@ -3855,7 +3906,7 @@ async fn guard_confirm(
         let mut o = orch
             .lock()
             .map_err(|_| "内部状态异常（锁中毒）".to_string())?;
-        if transition.load(Ordering::Acquire) {
+        if !backup_delete && transition.load(Ordering::Acquire) {
             return Err("Solum profile is switching; reopen the app to continue".into());
         }
         let token = o.confirm(&pending_id, now).map_err(core_err)?;
@@ -6252,5 +6303,9 @@ mod tests {
         assert!(stage < hydrate && hydrate < preview && preview < takeover);
         assert!(html.contains("替换本机并接管"));
         assert!(html.contains("尚未改动本机"));
+        assert!(html.contains("tool: \"backup_delete\""));
+        assert!(html.contains("plan_etag: version.plan_etag"));
+        assert!(html.contains("永久删除此版本"));
+        assert!(html.contains("onError: async () => { await refreshBackupCenter(); }"));
     }
 }

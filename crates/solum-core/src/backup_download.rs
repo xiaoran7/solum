@@ -62,6 +62,8 @@ pub enum BackupDownloadError {
     Transport,
     #[error("backup cloud generation changed before takeover")]
     CloudConflict,
+    #[error("backup version changed before deletion")]
+    DeletePrecondition,
     #[error("backup cloud rejected the request with status {0}")]
     ServerStatus(u16),
     #[error("backup cloud response is invalid")]
@@ -84,6 +86,7 @@ impl BackupDownloadError {
             Self::CloudAuthentication => "cloud_authentication",
             Self::Transport => "transport",
             Self::CloudConflict => "cloud_conflict",
+            Self::DeletePrecondition => "delete_precondition",
             Self::ServerStatus(_) => "server_status",
             Self::InvalidResponse => "invalid_response",
         }
@@ -109,6 +112,19 @@ pub struct CloudBackupVersion {
     pub object_count: usize,
     pub plan_etag: String,
     pub objects: Vec<BackupObjectPlan>,
+}
+
+/// Exact complete-version metadata shown to the user before a destructive
+/// cloud deletion. The plan ETag is never rendered, but remains in the Guard
+/// fingerprint and the final HTTP precondition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupDeleteRequest {
+    pub backup_id: String,
+    pub plan_etag: String,
+    pub committed_at: String,
+    pub total_bytes: u64,
+    pub object_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -146,6 +162,17 @@ pub trait BackupCloudReader {
     ) -> DownloadResult<Vec<u8>>;
 }
 
+/// Narrow destructive seam kept separate from the read API so tests and
+/// future platform shells cannot accidentally grant deletion to a reader.
+pub trait BackupCloudDelete {
+    fn delete_backup(
+        &self,
+        session: &mut AccountSession,
+        backup_id: &str,
+        plan_etag: &str,
+    ) -> DownloadResult<()>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloudTakeoverOutcome {
     pub active_generation: u64,
@@ -175,6 +202,46 @@ pub fn fetch_backup_catalog(
     let catalog = transport.list_backups(session, limit)?;
     validate_catalog(&catalog, limit)?;
     Ok(catalog)
+}
+
+/// Re-read and validate the complete catalog immediately before deletion,
+/// then submit the exact plan ETag the human previewed. The server performs a
+/// second atomic comparison under the tenant mutation lock.
+pub fn delete_backup_version(
+    transport: &(impl BackupCloudReader + BackupCloudDelete),
+    session: &mut AccountSession,
+    request: &BackupDeleteRequest,
+) -> DownloadResult<()> {
+    validate_backup_delete_request(request)?;
+    let catalog = fetch_backup_catalog(transport, session, MAX_CATALOG_BACKUPS)?;
+    let selected = catalog
+        .backups
+        .iter()
+        .find(|version| version.backup_id == request.backup_id)
+        .ok_or(BackupDownloadError::BackupNotFound)?;
+    if selected.plan_etag != request.plan_etag
+        || selected.committed_at != request.committed_at
+        || selected.total_bytes != request.total_bytes
+        || selected.object_count != request.object_count
+    {
+        return Err(BackupDownloadError::DeletePrecondition);
+    }
+    transport.delete_backup(session, &request.backup_id, &request.plan_etag)
+}
+
+pub fn validate_backup_delete_request(request: &BackupDeleteRequest) -> DownloadResult<()> {
+    if !valid_uuid(&request.backup_id)
+        || request.backup_id != request.backup_id.to_ascii_lowercase()
+        || !valid_lower_hex(&request.plan_etag, 32)
+        || strict_timestamp(&request.committed_at).is_none()
+        || request.total_bytes == 0
+        || request.total_bytes > MAX_CLOUD_BACKUP_BYTES
+        || request.object_count == 0
+        || request.object_count > MAX_CLOUD_OBJECTS
+    {
+        return Err(BackupDownloadError::InvalidCatalog);
+    }
+    Ok(())
 }
 
 /// Download, authenticate and assemble one still-inactive sealed generation.
@@ -455,6 +522,30 @@ impl HttpBackupCloudReader {
     where
         F: Fn(&AccountSession) -> std::result::Result<ureq::Response, HttpFailure>,
     {
+        self.request_with_transport_policy(session, true, false, send)
+    }
+
+    fn request_without_transport_retry<F>(
+        &self,
+        session: &mut AccountSession,
+        send: F,
+    ) -> DownloadResult<ureq::Response>
+    where
+        F: Fn(&AccountSession) -> std::result::Result<ureq::Response, HttpFailure>,
+    {
+        self.request_with_transport_policy(session, false, true, send)
+    }
+
+    fn request_with_transport_policy<F>(
+        &self,
+        session: &mut AccountSession,
+        retry_transport: bool,
+        map_delete_precondition: bool,
+        send: F,
+    ) -> DownloadResult<ureq::Response>
+    where
+        F: Fn(&AccountSession) -> std::result::Result<ureq::Response, HttpFailure>,
+    {
         let mut refreshed = false;
         let mut retried_transport = false;
         loop {
@@ -465,13 +556,18 @@ impl HttpBackupCloudReader {
                         .map_err(|_| BackupDownloadError::CloudAuthentication)?;
                     refreshed = true;
                 }
-                Err(HttpFailure::Transport) if !retried_transport => retried_transport = true,
+                Err(HttpFailure::Transport) if retry_transport && !retried_transport => {
+                    retried_transport = true
+                }
                 Err(HttpFailure::Transport) => return Err(BackupDownloadError::Transport),
                 Err(HttpFailure::Status(401)) => {
                     return Err(BackupDownloadError::CloudAuthentication)
                 }
                 Err(HttpFailure::Status(404)) => return Err(BackupDownloadError::BackupNotFound),
                 Err(HttpFailure::Status(409)) => return Err(BackupDownloadError::CloudConflict),
+                Err(HttpFailure::Status(412 | 428)) if map_delete_precondition => {
+                    return Err(BackupDownloadError::DeletePrecondition)
+                }
                 Err(HttpFailure::Status(status)) => {
                     return Err(BackupDownloadError::ServerStatus(status))
                 }
@@ -633,6 +729,57 @@ impl BackupCloudReader for HttpBackupCloudReader {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteBackupResponse {
+    backup_id: String,
+    deleted: bool,
+}
+
+impl BackupCloudDelete for HttpBackupCloudReader {
+    fn delete_backup(
+        &self,
+        session: &mut AccountSession,
+        backup_id: &str,
+        plan_etag: &str,
+    ) -> DownloadResult<()> {
+        if !valid_uuid(backup_id)
+            || backup_id != backup_id.to_ascii_lowercase()
+            || !valid_lower_hex(plan_etag, 32)
+        {
+            return Err(BackupDownloadError::InvalidCatalog);
+        }
+        let path = format!("/v1/backups/{backup_id}");
+        let if_match = format!("\"{plan_etag}\"");
+        // A transport error can happen after the server committed the hard
+        // delete but before the response arrived. Retrying that DELETE would
+        // turn a success into a misleading 404, so only a proven 401 refresh
+        // is retried. The UI refreshes the catalog after an uncertain result.
+        let response = self.request_without_transport_retry(session, |current| {
+            self.agent
+                .delete(&Self::url(current, &path))
+                .set("Authorization", &format!("Bearer {}", current.access_token))
+                .set("If-Match", &if_match)
+                .call()
+                .map_err(HttpFailure::from)
+        })?;
+        if response
+            .header("Content-Type")
+            .and_then(|value| value.split(';').next())
+            != Some("application/json")
+        {
+            return Err(BackupDownloadError::InvalidResponse);
+        }
+        let bytes = read_bounded(response.into_reader(), 16 * 1024)?;
+        let parsed: DeleteBackupResponse =
+            serde_json::from_slice(&bytes).map_err(|_| BackupDownloadError::InvalidResponse)?;
+        if parsed.backup_id != backup_id || !parsed.deleted {
+            return Err(BackupDownloadError::InvalidResponse);
+        }
+        Ok(())
+    }
+}
+
 fn read_bounded(mut reader: impl Read, max: usize) -> DownloadResult<Vec<u8>> {
     let limit = u64::try_from(max)
         .ok()
@@ -652,6 +799,7 @@ fn read_bounded(mut reader: impl Read, max: usize) -> DownloadResult<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
@@ -702,6 +850,21 @@ mod tests {
                 .get(&object.object_id)
                 .cloned()
                 .ok_or(BackupDownloadError::BackupNotFound)
+        }
+    }
+
+    impl BackupCloudDelete for FakeReader {
+        fn delete_backup(
+            &self,
+            _session: &mut AccountSession,
+            backup_id: &str,
+            plan_etag: &str,
+        ) -> DownloadResult<()> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("delete:{backup_id}:{plan_etag}"));
+            Ok(())
         }
     }
 
@@ -830,6 +993,62 @@ mod tests {
             })
             .unwrap(),
         ));
+    }
+
+    fn delete_request(version: &CloudBackupVersion) -> BackupDeleteRequest {
+        BackupDeleteRequest {
+            backup_id: version.backup_id.clone(),
+            plan_etag: version.plan_etag.clone(),
+            committed_at: version.committed_at.clone(),
+            total_bytes: version.total_bytes,
+            object_count: version.object_count,
+        }
+    }
+
+    #[test]
+    fn delete_revalidates_preview_metadata_and_binds_the_plan_etag() {
+        let reader = fixture(&[("doc-alpha", b"public fixture alpha")]);
+        let request = delete_request(&reader.catalog.backups[0]);
+        delete_backup_version(&reader, &mut account(), &request).unwrap();
+        assert_eq!(reader.calls.lock().unwrap().len(), 2);
+        assert_eq!(reader.calls.lock().unwrap()[0], "list");
+        assert_eq!(
+            reader.calls.lock().unwrap()[1],
+            format!("delete:{BACKUP_ID}:{}", request.plan_etag)
+        );
+    }
+
+    #[test]
+    fn destructive_transport_failures_are_not_automatically_replayed() {
+        let reader = HttpBackupCloudReader::new();
+        let calls = Cell::new(0);
+        let result = reader.request_without_transport_retry(&mut account(), |_session| {
+            calls.set(calls.get() + 1);
+            Err(HttpFailure::Transport)
+        });
+        assert_eq!(result.unwrap_err(), BackupDownloadError::Transport);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn delete_refuses_stale_or_malformed_preview_before_mutation() {
+        let reader = fixture(&[]);
+        let mut stale = delete_request(&reader.catalog.backups[0]);
+        stale.total_bytes += 1;
+        assert_eq!(
+            delete_backup_version(&reader, &mut account(), &stale).unwrap_err(),
+            BackupDownloadError::DeletePrecondition
+        );
+        assert_eq!(*reader.calls.lock().unwrap(), vec!["list"]);
+
+        reader.calls.lock().unwrap().clear();
+        let mut malformed = delete_request(&reader.catalog.backups[0]);
+        malformed.plan_etag = "ABC".into();
+        assert_eq!(
+            delete_backup_version(&reader, &mut account(), &malformed).unwrap_err(),
+            BackupDownloadError::InvalidCatalog
+        );
+        assert!(reader.calls.lock().unwrap().is_empty());
     }
 
     #[test]
