@@ -2189,6 +2189,41 @@ async fn email_messages(
     .map_err(|e| format!("邮箱列表后台任务失败: {e}"))?
 }
 
+/// Scan only recent INBOX envelope metadata and enqueue reviewable high-value events.
+/// Message bodies and attachments are deliberately never fetched by this path.
+#[tauri::command]
+async fn email_high_value_scan(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> CmdResult<Vec<CaptureDraftView>> {
+    let account = email_account_from_config(&account_id)?;
+    let id_for_scan = account_id.clone();
+    let summaries = tauri::async_runtime::spawn_blocking(move || {
+        solum_core::email::list_messages(&account, "INBOX", 100).map_err(core_err)
+    })
+    .await
+    .map_err(|e| format!("邮箱事件扫描后台任务失败: {e}"))??;
+    let candidates =
+        solum_core::email_events::high_value_candidates(&id_for_scan, "INBOX", &summaries);
+    let now = Local::now().timestamp_millis();
+    let mut inbox = state
+        .capture_inbox
+        .lock()
+        .map_err(|_| "采集队列状态异常（锁中毒）".to_string())?;
+    Ok(candidates
+        .into_iter()
+        .map(|candidate| {
+            draft_view(inbox.push_with_external_id(
+                solum_core::capture::CaptureSource::Email,
+                &candidate.title,
+                &candidate.text,
+                Some(&candidate.external_id),
+                now,
+            ))
+        })
+        .collect())
+}
+
 #[tauri::command]
 async fn email_search(
     account_id: String,
@@ -5698,6 +5733,7 @@ pub fn run() {
             email_config_remove,
             email_folders,
             email_messages,
+            email_high_value_scan,
             email_search,
             email_message,
             email_oauth_begin,

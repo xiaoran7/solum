@@ -2782,12 +2782,21 @@
     <!-- 邮箱连接器（F21） -->
     <section class="view" id="view-email"><div class="vwrap">
       <div class="vhead"><div class="vt">
-        <h2>邮箱 <button class="qmark" type="button" aria-expanded="false" aria-controls="descEmail" aria-label="说明"></button></h2>
-        <p class="desc" id="descEmail" hidden>账户凭据只写入本机 <code>solum-email.json</code>；邮件内容不写入 SQLite、不同步、不导出、不提供给 AI。QQ 用授权码；Gmail 和 Microsoft 365 / Outlook 推荐 OAuth2。发送邮件每次都必须确认。</p>
+        <h2>邮箱事件 <button class="qmark" type="button" aria-expanded="false" aria-controls="descEmail" aria-label="说明"></button></h2>
+        <p class="desc" id="descEmail" hidden>Solum 只读取最近邮件的发件人、主题和日期，在本机筛选安全、行程、预约、截止、账单与物流事件；不读取正文和附件，不同步邮件内容，也不提供给 AI。命中结果先进入待确认信息箱。</p>
       </div></div>
       <div id="emailStatus" style="margin-bottom:18px;"></div>
       <div class="mail-layout">
-        <div class="block" id="emailReadBlock">
+        <div class="block" id="emailEventBlock">
+          <h3>高价值事件提取 <span class="bnote">只读邮件头</span></h3>
+          <p class="hint">仅检查最近 100 封邮件的发件人、主题和时间，筛出出行、预约、截止、账单、物流与安全提醒。不会读取正文或附件；结果先进入待确认区。</p>
+          <div class="fieldrow">
+            <div class="field"><label for="emailEventAccount">账户</label><select id="emailEventAccount"></select></div>
+            <div class="field" style="justify-content:flex-end;"><label>&nbsp;</label><button class="btn primary" id="emailEventScanBtn">扫描高价值事件</button></div>
+          </div>
+          <div id="emailEventOut"></div>
+        </div>
+        <div class="block" id="emailReadBlock" hidden>
           <h3>邮箱内容 <span class="bnote">仅当前界面内存</span></h3>
           <div class="fieldrow">
             <div class="field"><label for="emailReadAccount">账户</label><select id="emailReadAccount"></select></div>
@@ -2796,7 +2805,7 @@
           <div class="fieldrow"><div class="field" style="flex:1;"><label for="emailSearchQuery">服务端搜索（发件人或主题）</label><input id="emailSearchQuery" type="search" placeholder="输入关键词；留空查看最近邮件" autocomplete="off" /></div><div class="field" style="justify-content:flex-end;"><label>&nbsp;</label><div class="btnrow" style="margin:0;"><button class="btn" id="emailRefreshBtn">刷新</button><button class="btn" id="emailSearchBtn">搜索</button></div></div></div>
           <div id="emailMailboxOut"></div><div id="emailMessageList" class="mail-list"></div><div id="emailMessageOut" style="margin-top:16px;"></div>
         </div>
-        <details class="fold" id="emailComposeFold">
+        <details class="fold" id="emailComposeFold" hidden>
           <summary>撰写邮件 <span class="bnote">发送前会完整预览并确认</span></summary>
           <div class="fold-body">
           <div class="formcol">
@@ -8046,17 +8055,13 @@ function renderEmailStatus(settings) {
   if (!settings.configured) {
     box.appendChild(el("div", { class: "statusline", title: `首次保存会写入：${settings.path}` }, [
       el("span", { class: "sdot" }),
-      el("span", { class: "t", text: "尚未连接邮箱；邮件内容保持本地界面内存，不进入记忆或同步。" }),
+      el("span", { class: "t", text: "尚未连接邮箱；连接后只扫描邮件头中的高价值事件。" }),
     ]));
     return;
   }
   box.appendChild(el("div", { class: "statusline", title: `配置文件：${settings.path}（本地、gitignore、不进同步）` }, [
     el("span", { class: "sdot ok" }),
-    el("span", { class: "t", text: `已连接 ${settings.accounts.length} 个邮箱账户；读取按你的操作发起。` }),
-  ]));
-  box.appendChild(el("div", { class: "statusline" }, [
-    el("span", { class: "sdot amber" }),
-    el("span", { text: "发送属于敏感操作：会预览完整邮件，并要求一次人工确认。" }),
+    el("span", { class: "t", text: `已连接 ${settings.accounts.length} 个邮箱账户；扫描只在你点击后进行。` }),
   ]));
 }
 
@@ -8148,12 +8153,14 @@ async function refreshEmail(seedForm) {
   try { settings = await invoke("email_config_get"); } catch (_) { return; }
   const read = $("emailReadAccount").value;
   const compose = $("emailComposeAccount").value;
+  const eventAccount = $("emailEventAccount").value;
   emailSettings = settings;
   renderEmailStatus(settings);
   renderEmailAccounts(settings);
   setEmailSelect("emailReadAccount", settings.accounts, read);
   setEmailSelect("emailComposeAccount", settings.accounts, compose);
-  if (seedForm || !emailFormSeeded) emailSeedForm(settings.accounts.find((a) => a.id === read) || settings.accounts[0]);
+  setEmailSelect("emailEventAccount", settings.accounts, eventAccount);
+  if (seedForm || !emailFormSeeded) emailSeedForm(settings.accounts.find((a) => a.id === eventAccount || a.id === read) || settings.accounts[0]);
   // 账户配置默认收起，但没配过账户时必须自动展开——否则首次进来只有一个空收件箱，
   // 没有任何可见的连接入口（2026-07-20 自查：折叠低频表单不能把首次流程一起折掉）。
   if (!settings.configured) $("emailAccountFold").open = true;
@@ -8311,6 +8318,29 @@ $("emailSaveBtn").addEventListener("click", async () => {
   finally { $("emailSaveBtn").disabled = false; }
 });
 $("emailOauthBtn").addEventListener("click", beginEmailOAuth);
+$("emailEventScanBtn").addEventListener("click", async () => {
+  const accountId = $("emailEventAccount").value;
+  const button = $("emailEventScanBtn");
+  const out = $("emailEventOut");
+  if (!accountId) return toast("请先连接邮箱账户", "danger");
+  button.disabled = true;
+  out.textContent = "";
+  out.appendChild(el("div", { class: "hint", text: "正在本机扫描最近 100 封邮件的标题信息…" }));
+  try {
+    const drafts = await invoke("email_high_value_scan", { accountId });
+    const count = drafts.length;
+    out.textContent = "";
+    out.appendChild(el("div", { class: "statusline" }, [
+      el("span", { class: "sdot ok" }),
+      el("span", { class: "t", text: count ? `发现 ${count} 条高价值事件，已放入待确认信息箱（重复项会合并）。` : "未发现新的高价值事件。" }),
+    ]));
+    await refreshCaptureInbox();
+    await refreshCapture();
+  } catch (e) {
+    out.textContent = "";
+    out.appendChild(el("div", { class: "llm-test danger" }, [icon("alert", 15), el("span", { text: safeUserError(e, "邮箱事件暂时无法扫描，请稍后重试。") })]));
+  } finally { button.disabled = false; }
+});
 $("emailRemoveBtn").addEventListener("click", () => {
   const accountId = $("emailAccountId").value.trim();
   if (!accountId) return;
@@ -8467,7 +8497,7 @@ const SETTINGS_GROUP = {
     ],
 };
 const UTILITY_GROUPS = [
-  { id: "mail", label: "邮箱", icon: "mail", views: [["email", "邮箱"]] },
+  { id: "mail", label: "邮箱事件", icon: "mail", views: [["email", "邮箱事件"]] },
   SETTINGS_GROUP,
 ];
 const GROUPS = [...PRIMARY_GROUPS, ...UTILITY_GROUPS];
@@ -8510,7 +8540,7 @@ for (const g of PRIMARY_GROUPS) {
   ]));
 }
 const TOOL_ENTRIES = [
-  { label: "邮箱", icon: "mail", group: "mail", requiresAccount: true, action: () => showView("email") },
+  { label: "邮箱事件", icon: "mail", group: "mail", requiresAccount: true, action: () => showView("email") },
   { label: "设置", icon: "settings", group: "settings", action: () => showView("settings") },
   { label: "资料", icon: "doc", requiresAccount: true, action: () => accountLoggedIn ? openDrawer("documents") : requireAccount("登录后使用本地资料工作台") },
   { label: "组件", icon: "folder", requiresAccount: true, action: () => accountLoggedIn ? openDrawer("widgets") : requireAccount("登录后创建和管理个人组件") },

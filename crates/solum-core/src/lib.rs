@@ -14,6 +14,7 @@ pub mod brief;
 pub mod capture;
 pub mod classify;
 pub mod email;
+pub mod email_events;
 pub mod error;
 pub mod export;
 pub mod export_v3;
