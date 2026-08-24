@@ -82,6 +82,15 @@ android {
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
         applicationId = "dev.solum.app"
+        // Opt-in isolated package for emulator/device QA. The property is
+        // absent from normal debug and release builds, so their id is stable.
+        providers.gradleProperty("solumQaApplicationIdSuffix").orNull?.let { rawSuffix ->
+            val suffix = rawSuffix.trim().removePrefix(".")
+            require(Regex("^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$").matches(suffix)) {
+                "solumQaApplicationIdSuffix must be a lowercase Android id suffix"
+            }
+            applicationId = listOf("dev", "solum", "app", suffix).joinToString(".")
+        }
         // Bumped from 24 → 26 (2026-07-12): solum-health-connect requires API 26
         // (Health Connect client library minimum), and Gradle's manifest
         // merger requires the app's minSdk to be >= every library's.

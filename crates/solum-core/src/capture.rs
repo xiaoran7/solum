@@ -146,7 +146,9 @@ pub struct CapturePlatformMatrix {
 }
 
 fn platform_matrix(source: CaptureSource) -> CapturePlatformMatrix {
-    use PlatformSupport::{Available, ConfigurationRequired, PermissionRequired, Planned};
+    use PlatformSupport::{
+        Available, ConfigurationRequired, PermissionRequired, Planned, Unsupported,
+    };
     match source {
         CaptureSource::Manual => CapturePlatformMatrix {
             android: Available,
@@ -156,14 +158,19 @@ fn platform_matrix(source: CaptureSource) -> CapturePlatformMatrix {
         CaptureSource::Notification => CapturePlatformMatrix {
             android: PermissionRequired,
             ios: Planned,
-            harmonyos: Planned,
+            harmonyos: Unsupported,
         },
         CaptureSource::Share => CapturePlatformMatrix {
             android: Available,
             ios: Planned,
-            harmonyos: Planned,
+            harmonyos: Available,
         },
-        CaptureSource::Calendar | CaptureSource::Health => CapturePlatformMatrix {
+        CaptureSource::Calendar => CapturePlatformMatrix {
+            android: PermissionRequired,
+            ios: Planned,
+            harmonyos: PermissionRequired,
+        },
+        CaptureSource::Health => CapturePlatformMatrix {
             android: PermissionRequired,
             ios: Planned,
             harmonyos: Planned,
@@ -709,6 +716,26 @@ mod tests {
         assert_eq!(
             find(capture_connectors(false)).availability,
             CaptureAvailability::Unsupported
+        );
+    }
+
+    #[test]
+    fn platform_matrix_matches_the_harmony_shell() {
+        assert_eq!(
+            platform_matrix(CaptureSource::Notification).harmonyos,
+            PlatformSupport::Unsupported
+        );
+        assert_eq!(
+            platform_matrix(CaptureSource::Share).harmonyos,
+            PlatformSupport::Available
+        );
+        assert_eq!(
+            platform_matrix(CaptureSource::Calendar).harmonyos,
+            PlatformSupport::PermissionRequired
+        );
+        assert_eq!(
+            platform_matrix(CaptureSource::Health).harmonyos,
+            PlatformSupport::Planned
         );
     }
 

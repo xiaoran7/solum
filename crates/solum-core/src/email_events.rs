@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn stable_id_deduplicates_the_same_mail_without_exposing_account_or_folder() {
         let row = summary(42, "异地登录安全提醒");
-        let first = high_value_candidates("private-account", "INBOX", &[row.clone()]);
+        let first = high_value_candidates("private-account", "INBOX", std::slice::from_ref(&row));
         let second = high_value_candidates("private-account", "INBOX", &[row]);
         assert_eq!(first[0].external_id, second[0].external_id);
         assert!(!first[0].external_id.contains("private-account"));
@@ -270,10 +270,7 @@ mod tests {
             high_value_candidates("a", "INBOX", &rows).len(),
             MAX_CANDIDATES
         );
-        assert_eq!(classify_high_value_subject("账单优惠促销").is_none(), true);
-        assert_eq!(
-            classify_high_value_subject("ordinary hello").is_none(),
-            true
-        );
+        assert!(classify_high_value_subject("账单优惠促销").is_none());
+        assert!(classify_high_value_subject("ordinary hello").is_none());
     }
 }

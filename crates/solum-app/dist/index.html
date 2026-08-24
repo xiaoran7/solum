@@ -7103,10 +7103,15 @@ async function refreshCaptureInbox() {
     return;
   }
   for (const d of drafts) {
+    const previewChars = Array.from(String(d.text || "").replace(/\s+/g, " ").trim());
+    const preview = previewChars.length > 240
+      ? `${previewChars.slice(0, 240).join("")}…`
+      : previewChars.join("");
     box.appendChild(el("div", { class: "row" }, [
       tag(d.source_label, "accent"),
       el("div", { class: "grow" }, [
         el("div", { text: d.title }),
+        preview ? el("div", { class: "meta capture-preview", text: preview }) : null,
         el("div", { class: "meta", text: d.clue_summary }),
         el("div", { class: "meta", text: `置信度 ${Math.round((d.confidence || 0) / 10)}% · ${d.allow_ai ? "可用于 AI" : "不用于 AI"} · ${d.allow_backup ? "可备份" : "仅本机"}${d.expires_at ? ` · ${new Date(d.expires_at).toLocaleDateString("zh-CN")} 前确认` : ""}` }),
         d.note ? el("div", { class: "meta", text: d.note }) : null,
@@ -7608,7 +7613,7 @@ let accountFormSeeded = false; // 同 llm 表单：只首次 seed，refreshAll �
 let accountGateMode = "login";
 let accountAuthSubmitting = false;
 const GUEST_CHOICE_KEY = "solum.guest-choice.v1";
-const GUEST_ALLOWED_VIEWS = new Set(["chat", "agenda", "notifs", "ledger", "journal", "search", "settings", "privacy"]);
+const GUEST_ALLOWED_VIEWS = new Set(["chat", "agenda", "notifs", "ledger", "journal", "search", "settings", "privacy", "capture"]);
 const GUEST_ALLOWED_REFRESHERS = new Set([
   refreshAgenda, refreshNotifs, refreshJournal, refreshLedger, refreshPrivacy, refreshToday,
   refreshReminderDeliveryHealth,

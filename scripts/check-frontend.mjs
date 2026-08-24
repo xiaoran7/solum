@@ -94,11 +94,14 @@ const privacyView = html.slice(privacyViewStart, nextViewStart);
 if (!privacyView.includes('id="privacyAccountLock"') || !privacyView.includes('id="privacyAccountControls"')) {
   throw new Error("guest privacy account controls must stay inside #view-privacy");
 }
-if (!html.includes('const GUEST_ALLOWED_VIEWS = new Set(["chat", "agenda", "notifs", "ledger", "journal", "search", "settings", "privacy"])')) {
+if (!html.includes('const GUEST_ALLOWED_VIEWS = new Set(["chat", "agenda", "notifs", "ledger", "journal", "search", "settings", "privacy", "capture"])')) {
   throw new Error("guest view contract changed without updating the frontend gate");
 }
 if (!html.includes("if (!accountLoggedIn && !GUEST_ALLOWED_VIEWS.has(view))")) {
   throw new Error("showView must guard every account-only route");
+}
+if (!html.includes('class: "meta capture-preview", text: preview')) {
+  throw new Error("capture candidates must expose a bounded raw-text preview before adoption");
 }
 if (!/GUEST_ALLOWED_REFRESHERS[\s\S]*?refreshPrivacy[\s\S]*?refreshToday/.test(html)) {
   throw new Error("guest startup must refresh the privacy lock state");

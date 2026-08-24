@@ -6469,4 +6469,17 @@ mod tests {
         assert!(activity.contains("android.os.Process.killProcess"));
         assert!(!activity.contains("forceStopPackage"));
     }
+
+    #[test]
+    fn local_capture_stays_available_to_guests_and_dynamic_styles_survive_csp() {
+        let html = include_str!("../dist/index.html");
+        let config = include_str!("../tauri.conf.json");
+        assert!(html.contains(
+            "const GUEST_ALLOWED_VIEWS = new Set([\"chat\", \"agenda\", \"notifs\", \"ledger\", \"journal\", \"search\", \"settings\", \"privacy\", \"capture\"])"
+        ));
+        assert!(config.contains("\"dangerousDisableAssetCspModification\": [\"style-src\"]"));
+        assert!(config.contains("style-src 'self' 'unsafe-inline'"));
+        assert!(html.contains("meta capture-preview"));
+        assert!(html.contains("previewChars.slice(0, 240)"));
+    }
 }
