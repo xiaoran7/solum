@@ -1288,6 +1288,50 @@ fn notification_permission_request(app: tauri::AppHandle) -> CmdResult<bool> {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReminderDeliveryHealth {
+    platform_supported: bool,
+    receiver_registered: bool,
+    boot_receiver_registered: bool,
+    exact: bool,
+    notifications_enabled: bool,
+    debug_process_death_available: bool,
+}
+
+/// Surface the startup-time Android receiver tripwire in Settings. Desktop
+/// returns `platform_supported = false` and keeps the section hidden.
+#[tauri::command]
+fn reminder_delivery_health(app: tauri::AppHandle) -> CmdResult<ReminderDeliveryHealth> {
+    let health = app.alarm().health().map_err(|error| error.to_string())?;
+    Ok(ReminderDeliveryHealth {
+        platform_supported: health.platform_supported,
+        receiver_registered: health.receiver_registered,
+        boot_receiver_registered: health.boot_receiver_registered,
+        exact: health.exact,
+        notifications_enabled: health.notifications_enabled,
+        debug_process_death_available: cfg!(all(target_os = "android", debug_assertions)),
+    })
+}
+
+/// Fault injection for the exact scenario `force-stop` cannot test: the app
+/// process dies while AlarmManager retains an already armed PendingIntent.
+#[tauri::command]
+async fn debug_simulate_process_death(window: tauri::WebviewWindow) -> CmdResult<bool> {
+    if !cfg!(debug_assertions) {
+        return Err("进程回收模拟只在 Debug 构建中可用".into());
+    }
+    #[cfg(target_os = "android")]
+    {
+        android_activity_bool(window, "debugScheduleProcessDeath").await
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = window;
+        Err("进程回收模拟仅在 Android Debug 构建中可用".into())
+    }
+}
+
 // ---- 多入口采集（capture 领域层，自 Solum Harmony 回移）------------------------
 
 #[derive(Serialize)]
@@ -5635,6 +5679,8 @@ pub fn run() {
             privacy_consent_accept,
             privacy_consent_decline,
             notification_permission_request,
+            reminder_delivery_health,
+            debug_simulate_process_death,
             capture_entry_points,
             capture_inbox_list,
             capture_inbox_add,
@@ -6307,5 +6353,23 @@ mod tests {
         assert!(html.contains("plan_etag: version.plan_etag"));
         assert!(html.contains("永久删除此版本"));
         assert!(html.contains("onError: async () => { await refreshBackupCenter(); }"));
+    }
+
+    #[test]
+    fn android_reminder_delivery_has_a_startup_tripwire_and_debug_process_death_seam() {
+        let html = include_str!("../dist/index.html");
+        let plugin =
+            include_str!("../../solum-alarm/android/src/main/java/dev/solum/alarm/AlarmPlugin.kt");
+        let activity =
+            include_str!("../gen/android/app/src/main/java/dev/solum/app/MainActivity.kt");
+        assert!(plugin.contains("getReceiverInfo"));
+        assert!(plugin.contains("startupReceiverRegistered"));
+        assert!(plugin.contains("P1: AlarmReceiver is missing or disabled"));
+        assert!(html.contains("reminder_delivery_health"));
+        assert!(html.contains("当前安装包缺少后台提醒接收器"));
+        assert!(html.contains("debug_simulate_process_death"));
+        assert!(activity.contains("if (!BuildConfig.DEBUG) return false"));
+        assert!(activity.contains("android.os.Process.killProcess"));
+        assert!(!activity.contains("forceStopPackage"));
     }
 }

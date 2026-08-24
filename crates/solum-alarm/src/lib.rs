@@ -13,7 +13,7 @@
 //! OS notifications on Android — so there is exactly one delivery surface
 //! per platform and no double-fire.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{
     plugin::{Builder, TauriPlugin},
     Manager, Runtime,
@@ -44,6 +44,19 @@ pub struct AlarmSpec {
     pub at_ms: i64,
     pub title: String,
     pub body: String,
+}
+
+/// Runtime delivery capability reported by the Android plugin. Receiver
+/// registration is sampled when the plugin starts, so a packaging regression
+/// is visible even before the first reminder is scheduled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlarmHealth {
+    pub platform_supported: bool,
+    pub receiver_registered: bool,
+    pub boot_receiver_registered: bool,
+    pub exact: bool,
+    pub notifications_enabled: bool,
 }
 
 pub trait AlarmExt<R: Runtime> {

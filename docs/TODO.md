@@ -65,7 +65,7 @@
 
 - [ ] **拆分 `store.rs` / `orchestrator.rs` 两个超大模块。** 2026-08-22 复核分别为 6104 / 5747 行；数字会继续变化，不再把旧行数当稳定锚点。分节注释完整即天然拆分线；Rust 多 impl 块机制下零 API 破坏，测试耦合已验证极低。每步独立提交三绿再进下一步；拆到哪节补哪节测试（email/soulous/notification_intelligence/store-sync 段测试密度与风险不成比例）。
 - [x] **已被 2026-08-22“单服务器架构收口”取代：不再收敛双实现。** PostgreSQL `postgres-server.js` 保留为唯一服务实现；SQLite `server.js` 在迁移完成后直接退役，不再为两入口抽公共层或继续投入功能建设。
-- [ ] **发布核对脚本化**：`scripts/verify-android-release.mjs`（aapt badging / ZIP 条目 / apksigner / manifest 三组件断言，末尾输出 CHANGELOG 可粘贴证据块）+ 版本三元组一致性检查（tauri.conf.json version / versionCode / Cargo.toml workspace version）+ Android 启动时 AlarmReceiver 自检绊线（PackageManager.getReceiverInfo，缺失时设置页显式告警）。0.2.6 生产 P1 正是从手工核对网缝隙漏出的。
+- [x] **发布核对脚本化（2026-08-24）**：`scripts/verify-android-release.mjs` 对显式指定的 APK 执行 aapt badging、ZIP 中央目录、apksigner v2、manifest 三组件和 native ABI/so 断言，并核对 tauri.conf version/versionCode、Cargo workspace version 与 APK 实际值；成功后输出 CHANGELOG 可粘贴证据块，CI 至少持续做脚本语法门禁。Android alarm plugin 启动即以 `PackageManager.getReceiverInfo` 缓存检查 AlarmReceiver/BootReceiver，缺失时拒绝同步、写 P1 log，并在设置页显示红色告警；同时展示精确调度降级与系统通知关闭状态。
 - [x] **已被 2026-08-22“加密云备份取代多主同步”取消：不再设计 sync_oplog 压实。** oplog 在新备份/恢复闭环验收前仅维持现状以保护迁移；随后整体退役，不再为其增加长期维护机制。
 - [x] **已被 2026-08-22“退役独立中继”取代：不再扩建 Rust 中继清扫。** PostgreSQL 同步历史在快照/压缩协议出现前继续永久保留并以租户硬配额拒绝新写入；旧 Rust 中继只完成迁移和下线，不再增加定时清扫、统计或水位线能力。
 - [ ] **memory_ledger 分页**：全表加载无 LIMIT，作为 F12 日常界面在长寿命设备上内存与 JSON 载荷线性无界；加 (layer, limit, cursor) 按层懒加载，导出继续走 export.rs 独立路径。
@@ -81,7 +81,7 @@
 - [ ] push 装箱循环 O(n²) 重复加密改估算式装箱（每加一条 op 就整批重新序列化+ChaCha 加密；积压越大浪费越多，恰是离线回连场景，手机 CPU 上可感知）。
 - [ ] 根目录约 35MB 一次性产物（output/ 旧 APK、演示视频、playwright 日志）移仓库外归档目录。**注意：根目录 `solum.sqlite*` 是「桌面与 CLI 共库」的刻意设计（MISC 有记录），勿清。**
 - [ ] 通知渠道 ID `pa_notification_pipeline` 改名残留：与 2026-07-20 改名决议矛盾（同批改了 pa_reminders 渠道），改名（带 deleteChannel 迁移）或补进刻意保留清单，二选一显式拍板。
-- [ ] TODO 受阻项代码侧推进：debug-only 进程自杀入口（前台服务随进程死、alarm 由系统持有，正好复现「后台回收后 alarm 存活」场景，替代被禁用的 force-stop）；福利告警测试无需新代码——POST `/v1/alerts` status 含 "test" 即可触发客户端「福利监控测试」通知，把配方写死即可从受阻转待验证。
+- [x] **受阻项代码侧推进（2026-08-24）**：Android Debug 设置页提供双层拒绝 Release 的延迟进程死亡注入，只杀当前 PID，不改配置、不清数据、不取消 AlarmManager PendingIntent；`docs/ANDROID-RELEASE-QA.md` 固化提醒回收与 `/v1/alerts` `status=test` 福利告警配方，包含首次游标初始化、唯一 event id、幂等重放、短期令牌和 7 天自然清理边界。两项均从“缺测试入口”转为“待有设备验证”。
 - [ ] CHANGELOG 全史切版：大量粗体顶层条目仍堆在唯一 `[Unreleased]` 下，并存在千字级单行；条目数和最长行会随文档提交变化，不再用易过时数字描述。需逐条定版本归属，属专门批次；当前以头部版本速查索引缓解。
 
 ## 2026-08-20 验收回修
@@ -109,10 +109,10 @@
 - [ ] **待验证：生产 AI。** 验证模型目录、用量显示和至少一条最小化测试问答；记录模型/HTTP 结果但不记录账号秘密或私人对话。
 - [ ] **待验证：端到端加密同步。** 检查同步状态、设备标识和手动同步结果，确认账号数据与 guest profile 不混用；不删除或覆盖现有远端数据。
 - [ ] **待验证：本地事件与系统提醒。** 创建可识别的合成 QA 日程，检查本地入库、提前量与精确 `RTC_WAKEUP` alarm；测试后不删除用户既有事件。
-- [ ] **待验证：后台进程回收后的提醒。** 仅用 `am kill` 模拟系统回收，确认 alarm 保留并在到点时通知；不得用“强行停止”替代该测试，因为 Android 会主动取消/阻断 alarm。
+- [ ] **待验证：后台进程回收后的提醒。** 优先用 Debug 设置页“模拟后台回收”（或 `am kill`）只杀进程，确认 alarm 保留并在到点时通知；不得用“强行停止”替代，因为 Android 会主动取消/阻断 alarm。固定步骤见 `docs/ANDROID-RELEASE-QA.md`。
 - [ ] **待验证：通知监听权限与前台处理服务。** 检查系统授权、应用白名单、`dataSync` 前台服务和 OEM 后台限制；仅在现有授权允许时用另一应用发送可控测试通知。
 - [ ] **待验证：电池与自启动策略。** 检查电池优化白名单、后台高耗电、自启动/关联启动设置是否会中断 Solum；不擅自改变用户的 OEM 系统策略。
-- [ ] **待验证：生产福利告警。** 若生产环境存在安全、幂等、可清理的测试告警机制，验证 `/v1/alerts` 到 Android 通知；否则标记受阻并说明缺少测试入口。
+- [ ] **待验证：生产福利告警。** 已有安全、租户隔离、幂等且 7 天自然清理的 `status=test` 入口和固定 QA 配方；待在线 Android 设备用同一 QA 账号验证 `/v1/alerts` 到“福利监控测试”通知，不得使用真实用户令牌或敏感正文。
 - [ ] **待验证：Health Connect。** 检查系统可用性与当前授权状态；未经用户明确操作不新增健康权限，不读取或记录真实健康明细。
 - [ ] **待验证：退出登录隔离。** 确认退出后回到 guest profile，账号数据不出现在 guest；不以清数据方式验证。
 - [x] **已通过：同机生产 AI 最小问答。** 真机现有 `xiaorana` 会话读取到模型 `mimo-v2.5`、权益 `standard 1000`，发送 `OK` 后收到“收到！有什么我能帮你的吗？”。默认输入法临时切换到已安装 ADB 键盘仅用于注入，随后已恢复讯飞输入法。
@@ -128,7 +128,7 @@
 - [x] **已通过：真机安装状态。** vivo V2405A（Android 16 / API 36）当前安装 `dev.solum.app` `0.2.6 (1016)`，通知、网络、精确 alarm、开机恢复、前台 data sync 与 wake lock 权限已授予；应用数据保持原样。
 - [x] **已通过：干净 target 的 workspace 测试基线（2026-08-21 解决）。** 根因是整仓搬迁时把 23.8 GiB 旧 `target/` 原样拷来，3000 个文件引用旧绝对路径，tauri build script 读不存在的权限文件即挂；`cargo clean` 全删重建后基线 **353 项全绿**（截至 2026-08-24 现为 444 项，见 CHANGELOG 对应 F22 条目）。教训记入 PITFALLS 当日条目：target 永不随仓库迁移。
 - [x] **已通过：真机 QA 事件入库与 alarm 注册证据。** “今天晚上十点十分开会，QA真机提醒测试2” 写入事件 `2026-08-19 22:10`，生成 `21:40` 提前 30 分钟提醒；系统显示 exact `RTC_WAKEUP`、`exactAllowReason=policy_permission`。到点未产生通知，原因见上方生产 APK receiver 缺失。
-- [ ] **受阻：完整后台回收提醒。** `am kill dev.solum.app` 未终止进程，因为通知监听 `dataSync` 前台服务仍在运行；不能用 force-stop 代替（会由系统取消 alarm）。需后续提供不改用户配置的进程级故障注入/构建版测试入口。
+- [ ] **待验证：Debug 故障注入后的完整后台回收提醒。** 旧 `am kill dev.solum.app` 会被 `dataSync` 前台服务牵制；现已提供不改用户配置的 Debug 进程死亡入口，并继续禁止 force-stop。当前无在线 ADB 设备，尚无到点通知与重开收敛证据。
 
 ### 证据
 

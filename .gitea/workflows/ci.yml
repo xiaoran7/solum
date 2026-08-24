@@ -100,7 +100,9 @@ jobs:
             --host=postgres --username=postgres --dbname=solum_test \
             --file=server/db/init/01-schema.sql
       - name: Frontend static checks
-        run: node scripts/check-frontend.mjs
+        run: |
+          node --check scripts/verify-android-release.mjs
+          node scripts/check-frontend.mjs
       - name: Assert the integration environment is really wired up
         run: |
           test "$SOLUM_TEST_DATABASE_IS_DISPOSABLE" = "true"

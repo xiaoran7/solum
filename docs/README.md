@@ -1,5 +1,7 @@
 # Documentation index
 
+- [Android 发布与提醒 QA](ANDROID-RELEASE-QA.md)：Release APK 一键核对、后台进程回收提醒与福利告警固定配方。
+
 更新日期：2026-08-24
 
 ## 工作区与仓库边界

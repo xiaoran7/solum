@@ -5,7 +5,7 @@
 use serde::de::DeserializeOwned;
 use tauri::{plugin::PluginApi, AppHandle, Runtime};
 
-use crate::AlarmSpec;
+use crate::{AlarmHealth, AlarmSpec};
 
 pub struct Alarm<R: Runtime>(#[allow(dead_code)] AppHandle<R>);
 
@@ -19,6 +19,16 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
 impl<R: Runtime> Alarm<R> {
     pub fn is_available(&self) -> crate::Result<bool> {
         Ok(false)
+    }
+
+    pub fn health(&self) -> crate::Result<AlarmHealth> {
+        Ok(AlarmHealth {
+            platform_supported: false,
+            receiver_registered: false,
+            boot_receiver_registered: false,
+            exact: true,
+            notifications_enabled: true,
+        })
     }
 
     /// No-op; returns `exact = true` so callers never see a degraded state

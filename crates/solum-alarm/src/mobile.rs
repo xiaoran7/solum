@@ -4,7 +4,7 @@ use tauri::{
     AppHandle, Runtime,
 };
 
-use crate::AlarmSpec;
+use crate::{AlarmHealth, AlarmSpec};
 
 const PLUGIN_IDENTIFIER: &str = "dev.solum.alarm";
 
@@ -23,6 +23,9 @@ struct SyncArgs {
     alarms: Vec<AlarmSpec>,
 }
 
+#[derive(Serialize)]
+struct HealthArgs {}
+
 #[derive(Deserialize)]
 struct SyncResponse {
     /// Whether exact scheduling was used (`false` = the user revoked the
@@ -32,7 +35,13 @@ struct SyncResponse {
 
 impl<R: Runtime> Alarm<R> {
     pub fn is_available(&self) -> crate::Result<bool> {
-        Ok(true)
+        self.health().map(|health| health.receiver_registered)
+    }
+
+    pub fn health(&self) -> crate::Result<AlarmHealth> {
+        self.0
+            .run_mobile_plugin::<AlarmHealth>("health", HealthArgs {})
+            .map_err(Into::into)
     }
 
     /// Replace the whole OS alarm set with `alarms` (cancel + re-arm; the

@@ -10,6 +10,11 @@
 > Solum Android：0.2.8（1018 文案/时间解析/发布输入修复）· 0.2.7（1017 图标校正）· 0.2.6（1016 启动图标）· 0.2.5（1015 登录闪退修复）· 0.2.4（1014 后端复审收口）· 0.2.3（1013 默认模型/配额）· 0.2.2（1012 账户外壳/UI 重构）· 0.2.1（1011 中心化账号入口）· 0.2.0（1010 登录即恢复密钥）· 0.1.9（1009 UUID 隔离）· 0.1.8（1008 同步按账号隔离）· 0.1.7（1007 福利监控）· 0.1.5（1005 安全默认值收口）· 0.1.4（1004 排版/缓存）· 0.1.3（1003 导航重构）· 0.1.2（1002 UI 重构）· 0.1.1（1001 隐私门文案）· 0.1.0（1000 首个 release）
 > solum-cloud：0.7.0（opaque backup API v1）· 0.6.4（密码语义/限流收口）· 0.6.3（刷新令牌权限）· 0.6.2（迁移与清理修复）· 0.6.1（AI 代理加固）· 0.6.0（模型目录/额度）· 0.5.1（中心化入口）· 0.5.0（恢复信封）· 0.4.0（PostgreSQL 中心库）
 
+- **F16 Android 提醒交付自检、故障注入与发布核对（2026-08-24，未发布）**：`solum-alarm` 启动即以 `PackageManager.getReceiverInfo` 核对已安装 manifest 的 AlarmReceiver/BootReceiver；缺失时写 P1 诊断、拒绝同步且不更新 Rust alarm signature，设置首页以红色告警暴露进程外提醒或重启恢复不可用。正常时同时展示精确/inexact 调度与系统通知总开关，桌面端不伪装 Android 能力。
+  - Android Debug 设置页新增“模拟后台回收”：确认后延迟杀死当前 PID，保留数据、配置和 AlarmManager PendingIntent，不使用会取消 alarm 的 force-stop；Rust `debug_assertions` 与 Kotlin `BuildConfig.DEBUG` 双层保证 Release 拒绝。固定真机步骤与租户隔离的 `/v1/alerts status=test` 福利告警配方收录于 `docs/ANDROID-RELEASE-QA.md`。
+  - 新增只读 `scripts/verify-android-release.mjs`：要求显式 APK 路径，核对 tauri/Cargo/APK 版本与 versionCode、aapt 包名/SDK/ABI、ZIP native so 和基础条目、merged manifest 三组件、apksigner v2 与证书摘要，末尾生成 CHANGELOG 证据行；GitHub/Gitea CI 持续做脚本语法门禁。脚本已对既有签名 0.2.8/1018 arm64 APK 自测通过，仅证明核对器工作，不把旧产物记成本次源码已打包。
+  - 验证：`cargo test --workspace` 448 项（31 app + 406 core + 4 closed-loop + 7 stats，0 failed/0 ignored）、workspace all-targets Clippy `-D warnings`、Android arm64-v8a `cargo ndk check`、fmt、前端 334 个唯一 ID 静态门禁、发布核对脚本语法检查与 `git diff --check` 全绿；重新生成本机 gitignored Tauri settings 后，`:app:compileArm64DebugKotlin` 通过。当前无在线 ADB 设备，真实进程死亡后的通知到达仍保留为真机发布门槛。
+
 - **F17 受保护的云端备份删除（2026-08-24，未发布）**：Android 备份中心可永久删除单个 complete 封缄点。删除走独立 `backup_delete` Dangerous Tool，预览展示提交时间、密文大小和对象数；一次性 Guard 令牌绑定 backup UUID、隐藏 plan ETag 和完整预览元数据，执行前重新读取严格目录，服务端再以 `If-Match` 在租户锁内做最终比较，陈旧界面不能误删。
   - restore stage 与删除在完整网络/文件生命周期内争用同一锁；正在 hydrate 或 durable takeover 使用的候选版本会被拒绝，删除执行期间也与账号切换、退出及 generation takeover 互斥。隐私同意和完整账号在 Rust 边界复核。本机数据、其他备份版本、密钥与 generation 不受删除影响，审计只保存脱敏操作摘要。
   - 不对传输失败的 DELETE 自动重试，避免服务端已提交但响应丢失时把成功误报成第二次请求的 404；客户端刷新目录核实最终状态，只有明确 401 后的令牌刷新允许安全重发。

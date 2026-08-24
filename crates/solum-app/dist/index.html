@@ -231,6 +231,8 @@
   }
   .banner .ic { color: var(--accent); }
   .banner .grow { flex: 1; min-width: 200px; }
+  .banner.reliability-warning { background: var(--danger-soft); border-color: var(--danger-line); color: var(--danger); }
+  .banner.reliability-warning::before { background: var(--danger); }
 
   #subnavWrap { padding: 16px 28px 0; }
   #subnavWrap:empty, #subnavWrap.hide { display: none; padding: 0; }
@@ -2537,6 +2539,15 @@
     <!-- 设置目录（多级导航一级页；二级页顶部有返回面包屑） -->
     <section class="view" id="view-settings"><div class="vwrap">
       <div class="vhead"><div class="vt"><h2>设置</h2></div></div>
+      <div class="block" id="reminderReliabilityBlock" hidden>
+        <h3>提醒可靠性 <span class="bnote">Android 系统交付</span></h3>
+        <div class="banner reliability-warning" id="reminderDeliveryWarning" role="alert" hidden><div class="grow" id="reminderDeliveryWarningText"></div></div>
+        <div class="statusline" id="reminderDeliveryStatus"><span class="sdot"></span><span class="t">正在检查后台提醒组件…</span></div>
+        <div id="reminderProcessDeathQa" hidden>
+          <p class="hint" style="margin:12px 0 0;max-width:66ch;">Debug 验证：先创建一条几分钟后触发的提醒，再结束当前进程。系统已挂载的提醒不会被取消；请勿用“强行停止”替代。</p>
+          <div class="btnrow"><button class="btn danger" id="reminderProcessDeathBtn" type="button">模拟后台回收</button></div>
+        </div>
+      </div>
       <div class="nav-menu" id="settingsMenu"></div>
     </div></section>
 
@@ -7515,6 +7526,63 @@ $("llmTestBtn").addEventListener("click", async () => {
   } finally { $("llmTestBtn").disabled = false; }
 });
 
+/* ============================== Android 提醒可靠性 ============================== */
+async function refreshReminderDeliveryHealth() {
+  const block = $("reminderReliabilityBlock");
+  const warning = $("reminderDeliveryWarning");
+  const warningText = $("reminderDeliveryWarningText");
+  const status = $("reminderDeliveryStatus");
+  const qa = $("reminderProcessDeathQa");
+  try {
+    const health = await invoke("reminder_delivery_health");
+    if (!health.platformSupported) {
+      block.hidden = true;
+      return;
+    }
+    block.hidden = false;
+    const failures = [];
+    if (!health.receiverRegistered) failures.push("当前安装包缺少后台提醒接收器，应用进程退出后提醒不会触达；请安装通过发布核对的新版本");
+    if (!health.bootReceiverRegistered) failures.push("当前安装包缺少开机恢复组件，设备重启后提醒不会自动重新挂载");
+    if (!health.notificationsEnabled) failures.push("系统通知已关闭，即使提醒到点也无法显示；请在系统设置中允许 Solum 通知");
+    warning.hidden = failures.length === 0;
+    warningText.textContent = failures.join("；");
+    const degraded = !health.exact || failures.length > 0;
+    status.textContent = "";
+    status.appendChild(el("span", { class: "sdot " + (failures.length ? "danger" : degraded ? "amber" : "ok") }));
+    status.appendChild(el("span", { class: "t", text: failures.length
+      ? "后台提醒交付未就绪"
+      : health.exact
+        ? "后台接收、重启恢复与精确提醒均已就绪"
+        : "后台接收与重启恢复已就绪；当前使用系统弹性调度，提醒可能延迟" }));
+    qa.hidden = !health.debugProcessDeathAvailable;
+  } catch (error) {
+    qa.hidden = true;
+    if (!IS_ANDROID) { block.hidden = true; return; }
+    block.hidden = false;
+    warning.hidden = false;
+    warningText.textContent = "无法确认后台提醒组件是否完整，请重新打开应用；若仍出现，请安装通过发布核对的新版本。";
+    status.textContent = "";
+    status.appendChild(el("span", { class: "sdot danger" }));
+    status.appendChild(el("span", { class: "t", text: safeUserError(error, "后台提醒自检失败") }));
+  }
+}
+
+function requestDebugProcessDeath() {
+  openModal("Debug：模拟后台回收", el("div", null, [
+    el("div", { class: "preview", text: "将结束 Solum 当前进程，但不清除数据、不修改设置，也不取消系统已经挂载的提醒。" }),
+    el("div", { class: "fine", text: "请先创建一条几分钟后到点的提醒。应用关闭后等待系统通知；不要从系统设置点“强行停止”。" }),
+  ]), "结束当前进程", async () => {
+    try {
+      const scheduled = await invoke("debug_simulate_process_death");
+      if (!scheduled) throw new Error("当前构建不允许进程回收模拟");
+      toast("当前进程即将结束；请等待已挂载提醒到点", "amber");
+    } catch (error) {
+      toast(safeUserError(error, "无法启动进程回收模拟"), "danger");
+    }
+  }, { icon: "alert" });
+}
+$("reminderProcessDeathBtn").addEventListener("click", requestDebugProcessDeath);
+
 /* ============================== 账号登录（设置 → 云端，solum-cloud 代理） ============================== */
 let accountLoggedIn = false;
 let accountFormSeeded = false; // 同 llm 表单：只首次 seed，refreshAll 不覆盖正在编辑的值
@@ -7524,6 +7592,7 @@ const GUEST_CHOICE_KEY = "solum.guest-choice.v1";
 const GUEST_ALLOWED_VIEWS = new Set(["chat", "agenda", "notifs", "ledger", "journal", "search", "settings", "privacy"]);
 const GUEST_ALLOWED_REFRESHERS = new Set([
   refreshAgenda, refreshNotifs, refreshJournal, refreshLedger, refreshPrivacy, refreshToday,
+  refreshReminderDeliveryHealth,
 ]);
 
 function guestChoiceMade() {
@@ -8700,7 +8769,7 @@ const VIEW_REFRESHERS = {
   ledger: [refreshLedger],
   captures: [refreshLedger],
   search: [refreshAgenda, refreshLedger, refreshJournal],
-  settings: [],
+  settings: [refreshReminderDeliveryHealth],
   persona: [refreshPersona],
   proactivity: [refreshProactivity],
   privacy: [refreshPrivacy],
@@ -8746,6 +8815,7 @@ async function refreshAll(options) {
     refreshLedger, refreshPersona, refreshRules, refreshProactivity, refreshPrivacy,
     refreshCapture, refreshGuard, refreshCloud, refreshAccount, refreshSoulous,
     refreshSyncConfig, refreshBackupCenter, refreshEmail, refreshToday, refreshWidgets, refreshDocuments,
+    refreshReminderDeliveryHealth,
   ];
   const view = currentView || "chat";
   if (options && options.progress) beginRouteRefresh(view);

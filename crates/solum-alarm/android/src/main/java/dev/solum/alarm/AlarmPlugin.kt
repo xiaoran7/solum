@@ -1,6 +1,11 @@
 package dev.solum.alarm
 
 import android.app.Activity
+import android.content.ComponentName
+import android.content.pm.PackageManager
+import android.os.Build
+import android.util.Log
+import androidx.core.app.NotificationManagerCompat
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
@@ -29,8 +34,54 @@ class SyncArgs {
  */
 @TauriPlugin
 class AlarmPlugin(private val activity: Activity) : Plugin(activity) {
+    private val startupReceiverRegistered = receiverRegistered(AlarmReceiver::class.java)
+    private val startupBootReceiverRegistered = receiverRegistered(BootReceiver::class.java)
+
+    init {
+        if (!startupReceiverRegistered) {
+            Log.e("SolumAlarm", "P1: AlarmReceiver is missing or disabled in the installed manifest")
+        }
+        if (!startupBootReceiverRegistered) {
+            Log.e("SolumAlarm", "P1: BootReceiver is missing or disabled in the installed manifest")
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun receiverRegistered(receiverClass: Class<*>): Boolean = try {
+        val component = ComponentName(activity, receiverClass)
+        val info = if (Build.VERSION.SDK_INT >= 33) {
+            activity.packageManager.getReceiverInfo(
+                component,
+                PackageManager.ComponentInfoFlags.of(0),
+            )
+        } else {
+            activity.packageManager.getReceiverInfo(component, 0)
+        }
+        info.enabled && info.applicationInfo.enabled
+    } catch (_: PackageManager.NameNotFoundException) {
+        false
+    }
+
+    @Command
+    fun health(invoke: Invoke) {
+        val ret = JSObject()
+        ret.put("platformSupported", true)
+        ret.put("receiverRegistered", startupReceiverRegistered)
+        ret.put("bootReceiverRegistered", startupBootReceiverRegistered)
+        ret.put("exact", AlarmScheduler.canExact(activity.applicationContext))
+        ret.put(
+            "notificationsEnabled",
+            NotificationManagerCompat.from(activity.applicationContext).areNotificationsEnabled(),
+        )
+        invoke.resolve(ret)
+    }
+
     @Command
     fun sync(invoke: Invoke) {
+        if (!startupReceiverRegistered) {
+            invoke.reject("AlarmReceiver is missing or disabled in the installed manifest")
+            return
+        }
         val args = invoke.parseArgs(SyncArgs::class.java)
         val items = args.alarms.map {
             AlarmScheduler.Item(it.id, it.atMs, it.title, it.body)

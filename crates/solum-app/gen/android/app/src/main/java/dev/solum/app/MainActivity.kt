@@ -137,6 +137,19 @@ class MainActivity : TauriActivity() {
     }
   }
 
+  /**
+   * Debug-only fault injection for reminder QA. Unlike `am force-stop`, this
+   * kills only the current process, so AlarmManager keeps already registered
+   * PendingIntents and can prove receiver delivery after process death.
+   */
+  fun debugScheduleProcessDeath(): Boolean {
+    if (!BuildConfig.DEBUG) return false
+    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+      android.os.Process.killProcess(android.os.Process.myPid())
+    }, 600)
+    return true
+  }
+
   /** Relaunch the Tauri process after an account/profile boundary change. */
   fun restartApp() {
     val launchIntent = packageManager.getLaunchIntentForPackage(packageName) ?: return

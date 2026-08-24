@@ -1070,6 +1070,8 @@ proposed_action / state
 **增补（2026-07-14，F2/F16 硬化，用户拍板）**：
 - ✅ **OS 通知降噪**：系统通知只保留「事件提醒」（开会/考试这类要到点响的）；问询/建议/通知捕获属信息获取，只走窗口内呈现（横幅/toast/对话流卡片），不再打系统通知。
 - ✅ **Android 后台提醒**：新 crate `solum-alarm`——ticker 把 pending 提醒集合镜像成 AlarmManager 精确闹钟（exact 降级 inexact 兜底；开机重挂；已触发即时摘除），app 进程被杀系统也准点投递；Android 上 OS 提醒 toast 由 alarm receiver 独占、提醒状态仍由 `fire_due` 独占（防双响、单写者不变）。模拟器已验证「杀进程 → 准点响 → 重开收敛」全链路，见 CHANGELOG 当日条目。
+- ✅ **安装包自证与可见降级**：Alarm plugin 构造时立即用 `PackageManager.getReceiverInfo` 读取已安装 manifest 中的 AlarmReceiver 与 BootReceiver，并把结果缓存为本次启动的打包证据。AlarmReceiver 缺失/禁用时 `sync` fail closed，Rust 不写入已同步签名并会继续重试；设置页把 receiver、重启恢复、精确调度和通知总开关分别呈现，不能再由“命令成功”伪装为后台可达。桌面 stub 明确返回平台不支持，不显示 Android 告警。
+- ✅ **进程死亡与发布验收 seam**：Debug 构建可从设置页延迟杀死当前 PID，Rust `debug_assertions` 与 Android `BuildConfig.DEBUG` 双门拒绝 Release；它不调用 force-stop、不清数据、不取消系统 PendingIntent，用于复现真实后台回收。`scripts/verify-android-release.mjs` 对显式 APK 只读核对源码/产物版本、aapt badging、ZIP native 条目、三组件 merged manifest、v2 签名与摘要；真机步骤和租户隔离的福利测试事件见 `docs/ANDROID-RELEASE-QA.md`。
 
 **Phase 6（记忆与数据地基，2026-07-15 规划，✅ 2026-07-16 全部完成）** — 缺口评估的第一优先级：现状对话层面仍是无状态问答，与 §0 定位差距最大；同时把"等真实数据"的两条待决项收口。设计见 §3.10 与 MISC 当日条目：
 1. ✅ **M1 会话短期上下文**：聊天壳层提供本地历史会话与切换；chat 上行仍仅携带所选会话最近 ≤ 4 轮对话（完整转录本机存储，不同步、不导出）。独立于其余项、成本最低，可先行。
