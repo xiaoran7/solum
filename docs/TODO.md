@@ -77,7 +77,7 @@
 ### 小项打包
 
 - [x] **已被 2026-08-22“加密云备份取代多主同步”取消：不再扩展 pull 侧 403 语义。** 当前错误保持显式可见直到迁移；资源投入转向备份坏包防护、设备代次接管和换机恢复。
-- [ ] `orchestrator.rs` 三处多步写漏包 `with_transaction`（`persist_event_with_scope` / `fire_due` / `set_importance_rule`；方法已支持嵌套 savepoint，机械缩进调整 + 「insert_notification 故障时事件回滚」回归测试）。
+- [x] **已完成（2026-08-25）**：`orchestrator.rs` 三处多步写已全部包进 `with_transaction`（`persist_event_with_scope` 事件+提醒计划一个单元；`fire_due` 标记 fired 与行为台账一条记录；`set_importance_rule` 每个事件的删旧+重排一个单元），并补「注入 `insert_notification`/`insert_behavior` 故障 → 断言整体回滚」回归测试 3 项。
 - [ ] CoreError::Storage 保留 rusqlite 错误码（BUSY/LOCKED/CONSTRAINT 现被 to_string 抹掉）；row mapper 对损坏 JSON 不再 `unwrap_or_default()` 静默吞（至少 eprintln 带 id 或可见计数）。
 - [ ] push 装箱循环 O(n²) 重复加密改估算式装箱（每加一条 op 就整批重新序列化+ChaCha 加密；积压越大浪费越多，恰是离线回连场景，手机 CPU 上可感知）。
 - [ ] 根目录约 35MB 一次性产物（output/ 旧 APK、演示视频、playwright 日志）移仓库外归档目录。**注意：根目录 `solum.sqlite*` 是「桌面与 CLI 共库」的刻意设计（MISC 有记录），勿清。**

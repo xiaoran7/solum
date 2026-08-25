@@ -765,18 +765,22 @@ impl Orchestrator {
         raw_input_id: i64,
         local_only: bool,
     ) -> Result<(Event, Vec<Notification>)> {
-        let ev_id =
-            self.store
-                .insert_event_with_scope(&ev, Some(raw_input_id), local_only, None)?;
-        ev.id = Some(ev_id);
-        let rule = self.rule_table.rule(ev.kind);
-        let planned = plan_notifications(&ev, &rule, ev.created_at, ev_id);
-        let mut stored = Vec::with_capacity(planned.len());
-        for mut n in planned {
-            let nid = self.store.insert_notification(&n)?;
-            n.id = Some(nid);
-            stored.push(n);
-        }
+        // One unit: an event whose reminder insert fails halfway must not
+        // survive with a partial plan (insert_notification failing used to
+        // leave exactly that).
+        let (ev, stored) = self.store.with_transaction(|s| {
+            let ev_id = s.insert_event_with_scope(&ev, Some(raw_input_id), local_only, None)?;
+            ev.id = Some(ev_id);
+            let rule = self.rule_table.rule(ev.kind);
+            let planned = plan_notifications(&ev, &rule, ev.created_at, ev_id);
+            let mut stored = Vec::with_capacity(planned.len());
+            for mut n in planned {
+                let nid = s.insert_notification(&n)?;
+                n.id = Some(nid);
+                stored.push(n);
+            }
+            Ok((ev, stored))
+        })?;
         Ok((ev, stored))
     }
 
@@ -802,24 +806,29 @@ impl Orchestrator {
     /// This is the reliability path — pure DB work, no LLM in the loop.
     pub fn fire_due(&mut self, now: NaiveDateTime) -> Result<Vec<Notification>> {
         let due = self.store.due_notifications(now)?;
-        for n in &due {
-            if let Some(id) = n.id {
-                self.store.mark_fired(id, now)?;
-                // F4: fired reminders also land in the behavior journal.
-                let title = self
-                    .store
-                    .get_event(n.event_id)
-                    .map(|ev| ev.title)
-                    .unwrap_or_else(|_| format!("event#{}", n.event_id));
-                self.store.insert_behavior(&BehaviorEntry {
-                    id: None,
-                    ts: now,
-                    kind: BehaviorKind::ReminderFired,
-                    content: format!("提醒「{title}」已触发（提前{}）", n.lead_label),
-                    source: Some(format!("notification#{id}")),
-                })?;
+        // Marking fired and journaling the fire are one unit: a journal
+        // failure must not leave the reminder marked delivered with no trace
+        // (or, after a crash between the two writes, unmarked but journaled).
+        self.store.with_transaction(|s| {
+            for n in &due {
+                if let Some(id) = n.id {
+                    s.mark_fired(id, now)?;
+                    // F4: fired reminders also land in the behavior journal.
+                    let title = s
+                        .get_event(n.event_id)
+                        .map(|ev| ev.title)
+                        .unwrap_or_else(|_| format!("event#{}", n.event_id));
+                    s.insert_behavior(&BehaviorEntry {
+                        id: None,
+                        ts: now,
+                        kind: BehaviorKind::ReminderFired,
+                        content: format!("提醒「{title}」已触发（提前{}）", n.lead_label),
+                        source: Some(format!("notification#{id}")),
+                    })?;
+                }
             }
-        }
+            Ok(())
+        })?;
         Ok(due)
     }
 
@@ -1484,15 +1493,20 @@ impl Orchestrator {
         self.store.save_rule_table(&self.rule_table)?;
 
         let events = self.store.upcoming_events(now)?;
+        // Per-event replanning is one unit each: deleting the old pending
+        // reminders must never survive without the new plan when an insert
+        // fails partway (that used to leave a silently unreminded event).
+        let new_rule = self.rule_table.rule(kind);
         let mut replanned = 0;
         for event in events.into_iter().filter(|event| event.kind == kind) {
             let event_id = event.id.expect("stored events always carry an id");
-            self.store
-                .delete_pending_notifications_for_event(event_id)?;
-            let rule = self.rule_table.rule(kind);
-            for notification in plan_notifications(&event, &rule, now, event_id) {
-                self.store.insert_notification(&notification)?;
-            }
+            self.store.with_transaction(|s| {
+                s.delete_pending_notifications_for_event(event_id)?;
+                for notification in plan_notifications(&event, &new_rule, now, event_id) {
+                    s.insert_notification(&notification)?;
+                }
+                Ok(())
+            })?;
             replanned += 1;
         }
         Ok(replanned)
@@ -4008,6 +4022,98 @@ mod tests {
         let fired = o.fire_due(dt(2026, 7, 7, 14, 30)).unwrap();
         assert_eq!(fired.len(), 1);
         assert!(o.fire_due(dt(2026, 7, 7, 14, 30)).unwrap().is_empty());
+    }
+
+    /// Regression tests for the TODO "three multi-step writes lacked a
+    /// transaction" item: each step pair must be one unit, so an injected
+    /// failure in the second write rolls back the first and the caller sees
+    /// the error instead of half-applied state.
+    #[test]
+    fn event_persist_failure_rolls_back_with_its_reminders() {
+        let mut o = Orchestrator::in_memory().unwrap();
+        o.store.arm_insert_tripwire("notifications");
+        o.ingest("明天下午3点开事务回滚测试会", now())
+            .expect_err("injected failure must surface");
+        o.store.disarm_insert_tripwire("notifications");
+
+        // The event itself must be gone with its failed reminder plan — no
+        // visibly scheduled, silently never-firing orphan.
+        let titles: Vec<String> = o
+            .all_events()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.title)
+            .collect();
+        assert!(
+            !titles.iter().any(|t| t.contains("事务回滚测试")),
+            "event must roll back with its reminders, got {titles:?}"
+        );
+        assert!(o.all_notifications().unwrap().is_empty());
+
+        // After disarming the same utterance succeeds normally.
+        o.ingest("明天下午3点开事务回滚测试会", now()).unwrap();
+        assert_eq!(o.all_events().unwrap().len(), 1);
+        assert_eq!(o.all_notifications().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn fire_due_journal_failure_leaves_no_fired_mark() {
+        let mut o = Orchestrator::in_memory().unwrap();
+        o.ingest("明天下午3点开提醒回滚会议", now()).unwrap();
+        o.store.arm_insert_tripwire("behavior_log");
+        let err = o
+            .fire_due(dt(2026, 7, 7, 14, 30))
+            .expect_err("injected journal failure must surface");
+        assert!(err.to_string().contains("injected test failure"));
+        o.store.disarm_insert_tripwire("behavior_log");
+
+        // The reminder must NOT stay marked fired: mark + journal are one
+        // unit, so after rollback it is still pending and will deliver again.
+        let n = &o.all_notifications().unwrap()[0];
+        assert_eq!(n.status.as_str(), "pending");
+        let fired = o.fire_due(dt(2026, 7, 7, 14, 30)).unwrap();
+        assert_eq!(fired.len(), 1);
+        // Now both the fired mark and the journal entry exist together.
+        assert_eq!(o.all_notifications().unwrap()[0].status.as_str(), "fired");
+        assert!(o
+            .store
+            .list_behavior()
+            .unwrap()
+            .iter()
+            .any(|b| b.content.contains("提醒回滚会议")));
+    }
+
+    #[test]
+    fn replan_rule_failure_keeps_old_pending_reminders() {
+        let mut o = Orchestrator::in_memory().unwrap();
+        o.ingest("明天下午3点开重排规则会议", now()).unwrap();
+        let before = &o.all_notifications().unwrap()[0];
+
+        let mut rule = o.rule_table().rule(EventKind::Meeting);
+        rule.lead_times = vec![crate::classify::LeadTime::parse("2h").unwrap()];
+        o.store.arm_insert_tripwire("notifications");
+        let err = o
+            .set_importance_rule(rule, now())
+            .expect_err("injected replan failure must surface");
+        assert!(err.to_string().contains("injected test failure"));
+        o.store.disarm_insert_tripwire("notifications");
+
+        // The old pending reminder survived untouched (delete+reinsert is one
+        // unit per event) and still fires at the original time.
+        let after = &o.all_notifications().unwrap()[0];
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.fire_at, before.fire_at);
+        assert_eq!(after.status.as_str(), "pending");
+
+        // Disarmed, the same replan applies cleanly with the new lead time.
+        let mut rule = o.rule_table().rule(EventKind::Meeting);
+        rule.lead_times = vec![crate::classify::LeadTime::parse("2h").unwrap()];
+        assert_eq!(o.set_importance_rule(rule, now()).unwrap(), 1);
+        assert_eq!(
+            o.all_notifications().unwrap()[0].fire_at,
+            dt(2026, 7, 7, 13, 0),
+            "disarmed replan must produce the new lead time"
+        );
     }
 
     #[test]

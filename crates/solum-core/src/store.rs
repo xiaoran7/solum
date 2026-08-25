@@ -414,6 +414,29 @@ impl Store {
         }
     }
 
+    /// Test-only fault injection: install a trigger that aborts every insert
+    /// into `table` until disarmed, so multi-step writes can prove their
+    /// transaction actually rolls back. Production code never calls this.
+    #[cfg(test)]
+    pub fn arm_insert_tripwire(&self, table: &str) {
+        let name = format!("test_tripwire_{table}");
+        self.conn
+            .execute_batch(&format!(
+                "DROP TRIGGER IF EXISTS {name};
+                 CREATE TRIGGER {name} BEFORE INSERT ON {table}
+                 BEGIN SELECT RAISE(ABORT, 'injected test failure'); END;"
+            ))
+            .expect("install test tripwire");
+    }
+
+    #[cfg(test)]
+    pub fn disarm_insert_tripwire(&self, table: &str) {
+        let name = format!("test_tripwire_{table}");
+        self.conn
+            .execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))
+            .expect("remove test tripwire");
+    }
+
     fn migrate(&self) -> Result<()> {
         self.conn.execute_batch(
             r#"
