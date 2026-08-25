@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+- **存储错误可观测性：SQLite 错误码保留与损坏 JSON 行报告（2026-08-25，未发布）**：`CoreError::Storage` 的 `From<rusqlite::Error>` 转换现在把 SQLite 结果码带进文案（如 `[ConstraintViolation] …`、`[DatabaseBusy] …`），调用方与事故日志终于能区分"该重试的 BUSY"和"该上报的约束冲突"，此前 `to_string()` 会把这层信息抹掉；变体形状不变，既有匹配代码不受影响。`events.people_json` 和 `notifications.channels_json` 两个 row mapper 对损坏 JSON 不再静默当作空值：先以 `[store] events#<id>: corrupt …` 形式输出到诊断日志（带行 id 与解析错误）再回退空值，一行坏数据既不会无痕丢失参与者/渠道语义，也不会拖垮整个列表读取。验证：新增回归测试 3 项（触发器注入真实约束冲突断言错误码前缀；两处损坏 JSON 断言列表存活 + 回退为空），workspace 467 项测试全绿、严格 Clippy 零告警、fmt 零漂移。
+
 - **orchestrator 三处多步写补齐事务与回滚回归测试（2026-08-25，未发布）**：`persist_event_with_scope`（事件 + 提醒计划）、`fire_due`（标记 fired + 行为台账）、`set_importance_rule`（删旧待发提醒 + 重排）现在各自是一个 `with_transaction` 单元——第二步写失败时第一步一并回滚，不再产生"看得见日程但永远不提醒"、"提醒已标 fired 却无台账痕迹"或"旧提醒已删、新计划没写上"的半写状态。新增 Store 测试专用故障注入口子（`#[cfg(test)]` 触发器拦截目标表 insert），3 项回归测试分别注入 `notifications`/`behavior_log` 故障并断言整体回滚与恢复后正常路径。验证：workspace 464 项测试全绿（基线 461 + 新增 3）、严格 Clippy 零告警、fmt 零漂移。
 
 - **push 装箱从 O(n²) 改为按实测大小装箱（2026-08-25，未发布）**：旧实现在装箱循环里每加一条 op 就整批 clone + 重新序列化 + 重新 XChaCha 加密来试探体积上限，积压越大浪费越多——恰是手机离线回连、CPU 最紧的场景。现在每条 op 只序列化一次累加长度，整批只加密一次；保守估算（含逗号与 AEAD 帧）保证不会越过 7 MiB 客户端上限（服务端自身上限 8 MiB，1 MiB 余量吸收估算误差）。单条超限滞留语义不变（`sync_push_holds` + 游标推进）。验证：27 项 sync 测试全绿；开发中曾因重写丢掉滞留分支的游标推进导致死循环，已修复并记入 PITFALLS。

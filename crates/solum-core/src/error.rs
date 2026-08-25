@@ -56,6 +56,14 @@ pub enum CoreError {
 
 impl From<rusqlite::Error> for CoreError {
     fn from(e: rusqlite::Error) -> Self {
-        CoreError::Storage(e.to_string())
+        // `Display` alone drops the SQLite result code (a caller sees
+        // "database is locked", not BUSY; "constraint failed", not which
+        // constraint). Prefixing the code keeps retry-vs-report decisions —
+        // and grep-able incident logs — possible without reshaping this
+        // widely-constructed String variant.
+        match e.sqlite_error_code() {
+            Some(code) => CoreError::Storage(format!("[{code:?}] {e}")),
+            None => CoreError::Storage(e.to_string()),
+        }
     }
 }

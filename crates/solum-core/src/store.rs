@@ -1428,9 +1428,23 @@ impl Store {
         let end_s: Option<String> = row.get("end")?;
         let people_s: String = row.get("people_json")?;
         let created_s: String = row.get("created_at")?;
+        let id_for_log: i64 = row.get("id")?;
         let map = |e: CoreError| rusqlite::Error::ToSqlConversionFailure(Box::new(e));
+        // Corrupt people_json must not silently read as "no participants":
+        // surface it (id + raw bytes) and keep the empty fallback so one bad
+        // row cannot take down list_events for the whole ledger.
+        let people: Vec<String> = match serde_json::from_str(&people_s) {
+            Ok(people) => people,
+            Err(error) => {
+                eprintln!(
+                    "[store] events#{}: corrupt people_json ({error}); treating as empty",
+                    id_for_log
+                );
+                Vec::new()
+            }
+        };
         Ok(Event {
-            id: Some(row.get("id")?),
+            id: Some(id_for_log),
             title: row.get("title")?,
             kind: kind_s.parse().map_err(map)?,
             start: parse_ts(&start_s).map_err(map)?,
@@ -1439,7 +1453,7 @@ impl Store {
                 None => None,
             },
             location: row.get("location")?,
-            people: serde_json::from_str(&people_s).unwrap_or_default(),
+            people,
             raw_input: String::new(),
             created_at: parse_ts(&created_s).map_err(map)?,
         })
@@ -1559,10 +1573,21 @@ impl Store {
         let status_s: String = row.get("status")?;
         let created_s: String = row.get("created_at")?;
         let fired_s: Option<String> = row.get("fired_at")?;
+        let id_for_log: i64 = row.get("id")?;
         let map = |e: CoreError| rusqlite::Error::ToSqlConversionFailure(Box::new(e));
-        let channels: Vec<Channel> = serde_json::from_str(&channels_s).unwrap_or_default();
+        // Same policy as people_json above: a corrupt channels_json is logged
+        // with the row id instead of silently reading as "no channels".
+        let channels: Vec<Channel> = match serde_json::from_str(&channels_s) {
+            Ok(channels) => channels,
+            Err(error) => {
+                eprintln!(
+                    "[store] notifications#{id_for_log}: corrupt channels_json ({error}); treating as empty"
+                );
+                Vec::new()
+            }
+        };
         Ok(Notification {
-            id: Some(row.get("id")?),
+            id: Some(id_for_log),
             event_id: row.get("event_id")?,
             fire_at: parse_ts(&fire_s).map_err(map)?,
             lead_label: row.get("lead_label")?,
@@ -6526,5 +6551,91 @@ mod tests {
         assert!(s.memory_ledger().unwrap().is_empty());
         assert!(s.list_events().unwrap().is_empty());
         assert!(s.list_notifications().unwrap().is_empty());
+    }
+
+    /// CoreError must keep the SQLite result code: callers (and incident
+    /// logs) need BUSY vs CONSTRAINT vs READONLY to decide retry vs report,
+    /// and `Display` alone drops that distinction. Uses the same trigger
+    /// fault-injection as the orchestrator rollback tests to force a real
+    /// constraint violation through the `From` impl.
+    #[test]
+    fn storage_errors_keep_the_sqlite_error_code() {
+        let s = Store::open_in_memory().unwrap();
+        s.conn
+            .execute_batch(
+                "CREATE TRIGGER test_tripwire_events BEFORE INSERT ON events
+                 BEGIN SELECT RAISE(ABORT, 'injected test failure'); END;",
+            )
+            .unwrap();
+        let err = s
+            .insert_event_with_scope(
+                &crate::model::Event {
+                    id: None,
+                    title: "会被拦截".into(),
+                    kind: crate::model::EventKind::Meeting,
+                    start: dt(2026, 7, 7, 15, 0),
+                    end: None,
+                    location: None,
+                    people: Vec::new(),
+                    raw_input: String::new(),
+                    created_at: dt(2026, 7, 6, 10, 0),
+                },
+                None,
+                false,
+                None,
+            )
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("ConstraintViolation"),
+            "error must carry the SQLite code, got: {text}"
+        );
+        assert!(
+            matches!(err, CoreError::Storage(_)),
+            "variant stays Storage for existing matchers"
+        );
+    }
+
+    /// A corrupt people_json row must not silently read as "no participants":
+    /// list_events keeps going (one bad row cannot blank the whole ledger)
+    /// but the corruption is visible on stderr with the row id.
+    #[test]
+    fn corrupt_people_json_is_reported_not_silently_swallowed() {
+        let s = Store::open_in_memory().unwrap();
+        let raw = s
+            .insert_raw_input(
+                "明天下午3点开损坏JSON会议",
+                "schedule_event",
+                dt(2026, 7, 6, 10, 0),
+            )
+            .unwrap();
+        s.conn
+            .execute_batch(&format!(
+                "INSERT INTO events(title, kind, start, people_json, raw_input_id, created_at)
+                 VALUES ('损坏JSON会议', 'meeting', '2026-07-07T15:00:00', '{{oops', {raw}, '2026-07-06T10:00:00');"
+            ))
+            .unwrap();
+
+        let events = s.list_events().unwrap();
+        assert_eq!(events.len(), 1, "the bad row still surfaces");
+        assert!(events[0].people.is_empty(), "fallback stays empty");
+    }
+
+    /// Same policy for a notification whose channels_json is corrupt.
+    #[test]
+    fn corrupt_channels_json_is_reported_not_silently_swallowed() {
+        let s = Store::open_in_memory().unwrap();
+        s.conn
+            .execute_batch(
+                "INSERT INTO events(title, kind, start, created_at)
+                 VALUES ('渠道损坏会议', 'meeting', '2026-07-07T15:00:00', '2026-07-06T10:00:00');
+                 INSERT INTO notifications(event_id, fire_at, lead_label, channels_json, status, created_at)
+                 VALUES (1, '2026-07-07T14:00:00', '1h', '[broken', 'pending', '2026-07-06T10:00:00');",
+            )
+            .unwrap();
+
+        let notifications = s.list_notifications().unwrap();
+        assert_eq!(notifications.len(), 1);
+        assert!(notifications[0].channels.is_empty());
     }
 }
