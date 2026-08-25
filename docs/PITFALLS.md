@@ -21,11 +21,17 @@
 
 - **Android 构建/打包/真机**：08-23 listener 白名单分 profile 但 spool 仍写根目录 · 08-19 restart 只退出进程 · 08-14 JNI 预编译跳过注入 / `Os.flock` 不存在 · 08-13 ndk 相对路径 / Release 输出被占用 · 08-12 Kotlin daemon 跨盘 · 08-11 arm64 flavor 配对 / vivo ADB 断连 / CSP nonce 拒内联 style · 07-21 打包三连坑（native-tls / 改名遗留生成文件 / PERL5LIB）· 07-20 改名两坑 · 07-14 构建五连坑 / AlarmManager 三连坑 · 07-12 Health Connect Kotlin 三连坑 · 07-07 Tauri Android 首建三连坑 / app_data_dir
 - **前端验证量具**：08-20 错误脱敏不只账号页 · 07-27 未显示面板零视口 · 07-20 details 几何失效 / offsetParent 对 fixed 恒真 / 后台标签冻结动画 / px 字号不随根字号 / 滚动量具视图切走失效 / 删节点遗留脚本调用 / 连续改状态再采样 · 07-19 hidden 被 display 压过 / harness 集合形状 / data URL 被拒 / 16×16 窗口 · 07-15 重构验证两坑
-- **同步/迁移/SQLite**：08-21 push 侧毒丸（pull 侧 07-19 条目的孪生）/ 整仓搬迁后 target 缓存引用旧绝对路径 · 08-14 无快照增量不能靠留存回收 · 08-12 服务器隔离了客户端仍可能混库 · 07-20 加列漏触发器 payload / 迁移不在事务撞唯一索引 / 标量列 LWW 吃掉一半 / FK 级联不触发子表触发器 / 不同步表更易漏导出 / 未来表名占位符 · 07-19 合并循环 return Err = 同步永久卡死
+- **同步/迁移/SQLite**：08-25 装箱重写丢游标推进（测试空转像构建卡死）· 08-21 push 侧毒丸（pull 侧 07-19 条目的孪生）/ 整仓搬迁后 target 缓存引用旧绝对路径 · 08-14 无快照增量不能靠留存回收 · 08-12 服务器隔离了客户端仍可能混库 · 07-20 加列漏触发器 payload / 迁移不在事务撞唯一索引 / 标量列 LWW 吃掉一半 / FK 级联不触发子表触发器 / 不同步表更易漏导出 / 未来表名占位符 · 07-19 合并循环 return Err = 同步永久卡死
 - **服务端/账号/PostgreSQL**：08-23 自托管 Actions 镜像/service 网络假设 / generation 不是同代单写者权限 · 08-22 solumsync 灰云误判与橙云四项验收 / 生产迁移海外 VPS 核实 / 恢复演练要预建 solum_api·solum_runtime 角色 / 业务表不在 public schema / 空 crontab 下管道式安装会静默失败 · 08-14 集成测试要全新空库 / 密码裁剪语义不可猜升级 / 限流键无限+同步 KDF 自成 DoS / 注册成功与本机初始化的部分成功 / 进程内 Mutex 护不了跨进程会话文件 · 08-13 FOR UPDATE 需表级 UPDATE 权限 / git archive CRLF / Node 测试并行 socket 假失败 / 并行测试改环境变量互相覆盖 · 08-12 relay 仪表盘 CORS
 - **安全审核修复期教训（07-21 系列）**：宽松断言给缺陷让路 · 跨进程共享可变文件要换数据结构 · 计数器加锁/rename 都不够 · spool 改造自己丢数据 · 复审打回六条 · 修复期五连坑 · 幂等 receipt 配按龄清理等于重开洞 · 把状态误当事件
 - **Windows/PowerShell/工具链**：08-12 PowerShell 5.1 UTF-8 与 JSON 编码 · 07-21 演示视频三坑 · 07-18 PowerShell round-trip 乱码 · 07-06 link.exe/cl.exe 不在 PATH
 - **时间解析/实体抽取（07-06 系列）**：时钟纳秒穿透 UI / 纯日期漏判 / 中文地点人名贪婪 / 规则抢答压制 LLM 兜底 / datetime-local 连续键入串段
+
+## 2026-08-25 重写装箱循环丢掉游标推进，测试以 CPU 空转呈现为"构建卡死"
+
+- **现象**：把 push 装箱循环从 O(n²) 改成按实测大小装箱后，`cargo test -p solum-core` 长时间无输出，`tasklist` 显示 `solum_core-*.exe` 测试进程 CPU 时间持续上涨（单进程 >1500s）——看起来像 Cargo 文件锁卡死（本仓有前科），实际是 `a_backlog_of_only_oversized_ops_terminates_without_pushing_empty_blobs` 在死循环。
+- **根因**：旧实现里"滞留超大单条"分支在同一个 while 循环内 `pos += 1` 后 continue；重写时该分支挪到内层扫描之后单独处理，却漏掉了推进 `pos`。外层 batch 循环从同一条 op 无限重启。教训：**重写循环时逐个核对每个状态变量（pos/last_id/cursor）在每个分支里是否仍被推进**；"全 backlog 都是超大 op"这种边界测试正是为这类回归设的，它跑不完本身就是信号。
+- **解决/避免**：滞留分支补 `pos += 1`。定位手法也值得记：管道 `| tail` 会缓冲输出导致后台任务 0 字节、无法判断进度——直接把 stdout 重定向到文件再 `tail -f 文件`，或用 `--test-threads=1` 让当前执行的测试名实时落盘；区分"编译锁卡死"与"测试死循环"看测试二进制进程的 CPU 时间是否在涨。
 
 ## 2026-08-23 Windows 只读文件句柄调用 `sync_all` 会返回拒绝访问
 

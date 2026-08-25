@@ -1075,6 +1075,20 @@ pub const PUSH_BLOCKED_KEY: &str = "sync_push_blocked";
 const MAX_PUSH_BLOB_BYTES: usize = 7 * 1024 * 1024;
 const MAX_PUSH_OPS: i64 = 256;
 
+/// Conservative serialized-size estimate for the `SyncBatch` envelope minus
+/// its ops: `{"device":"...","ops":[...]}` plus one comma per op added by the
+/// caller. The estimate only has to under-count never over-count relative to
+/// the real ciphertext, which additionally carries a 24-byte nonce and a
+/// 16-byte tag.
+fn push_batch_overhead_bytes(device: &str) -> usize {
+    serde_json::to_string(&SyncBatch {
+        device: device.to_string(),
+        ops: Vec::new(),
+    })
+    .map(|json| json.len() + 24 + 16)
+    .unwrap_or(MAX_PUSH_BLOB_BYTES)
+}
+
 fn cursor(store: &Store, key: &str) -> Result<i64> {
     Ok(store
         .sync_state(key)?
@@ -1115,18 +1129,22 @@ pub fn sync_once(
 
         let mut pos = 0usize;
         while pos < ops.len() {
-            let mut batch_ops = Vec::new();
+            // Pack by measured sizes: serialize each op exactly once and add
+            // up the lengths, instead of re-cloning, re-serializing and
+            // re-encrypting the whole candidate batch after every added op.
+            // That was quadratic work on precisely the offline-catch-up
+            // backlog where a phone has the least CPU to spare. Counting is
+            // conservative (one comma per op, full AEAD framing), and the
+            // 7 MiB client cap sits 1 MiB below the relay's own limit, so an
+            // off-by-a-few estimate cannot turn into a server rejection.
+            let mut batch_ops: Vec<&SyncOp> = Vec::new();
+            let mut batch_bytes = push_batch_overhead_bytes(&device);
             let mut last_id = pushed_cursor;
+            let mut oversize_single: Option<(i64, &SyncOp)> = None;
             while pos < ops.len() {
                 let (id, op) = &ops[pos];
-                batch_ops.push(op.clone());
-                let candidate = SyncBatch {
-                    device: device.clone(),
-                    ops: batch_ops.clone(),
-                };
-                let blob = encrypt(&key, serde_json::to_string(&candidate)?.as_bytes())?;
-                if blob.len() > MAX_PUSH_BLOB_BYTES {
-                    batch_ops.pop();
+                let op_bytes = serde_json::to_string(op)?.len() + 1;
+                if batch_bytes + op_bytes > MAX_PUSH_BLOB_BYTES {
                     if batch_ops.is_empty() {
                         // One op alone exceeds the cap: it can never be
                         // uploaded. Failing used to stop every later op behind
@@ -1134,30 +1152,37 @@ pub fn sync_once(
                         // so a future build with a larger cap or compression
                         // can still find it) and move the cursor past it —
                         // the push-side mirror of `hold_bad_blob`.
-                        let reason = format!(
-                            "单条同步变更超过 {} MiB，无法安全上传",
-                            MAX_PUSH_BLOB_BYTES / 1024 / 1024
-                        );
-                        store.hold_push_op(*id, op, &reason)?;
-                        pushed_cursor = *id;
-                        store.set_sync_state(PUSHED_KEY, &pushed_cursor.to_string())?;
-                        outcome.push_skipped += 1;
-                        pos += 1;
-                        continue;
+                        oversize_single = Some((*id, op));
                     }
                     break;
                 }
+                batch_bytes += op_bytes;
+                batch_ops.push(op);
                 last_id = *id;
                 pos += 1;
             }
 
+            if let Some((id, op)) = oversize_single {
+                let reason = format!(
+                    "单条同步变更超过 {} MiB，无法安全上传",
+                    MAX_PUSH_BLOB_BYTES / 1024 / 1024
+                );
+                store.hold_push_op(id, op, &reason)?;
+                pushed_cursor = id;
+                store.set_sync_state(PUSHED_KEY, &pushed_cursor.to_string())?;
+                outcome.push_skipped += 1;
+                // The oversized op sits at `pos`; advancing past it is what
+                // keeps this loop from retrying it forever.
+                pos += 1;
+                continue;
+            }
             if batch_ops.is_empty() {
                 continue;
             }
             let count = batch_ops.len();
             let batch = SyncBatch {
                 device: device.clone(),
-                ops: batch_ops,
+                ops: batch_ops.into_iter().cloned().collect(),
             };
             let blob = encrypt(&key, serde_json::to_string(&batch)?.as_bytes())?;
             match transport.push(&device, &blob) {
