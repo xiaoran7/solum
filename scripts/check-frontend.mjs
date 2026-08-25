@@ -2,6 +2,8 @@ import fs from "node:fs";
 import vm from "node:vm";
 
 const htmlPath = new URL("../crates/solum-app/dist/index.html", import.meta.url);
+const appJsPath = new URL("../crates/solum-app/dist/app.js", import.meta.url);
+const tauriConfPath = new URL("../crates/solum-app/tauri.conf.json", import.meta.url);
 const appPath = new URL("../crates/solum-app/src/lib.rs", import.meta.url);
 const accountCorePath = new URL("../crates/solum-core/src/account.rs", import.meta.url);
 const notificationPipelinePath = new URL(
@@ -9,16 +11,30 @@ const notificationPipelinePath = new URL(
   import.meta.url,
 );
 const html = fs.readFileSync(htmlPath, "utf8");
+const appJs = fs.readFileSync(appJsPath, "utf8");
+const tauriConf = fs.readFileSync(tauriConfPath, "utf8");
 const app = fs.readFileSync(appPath, "utf8");
 const accountCore = fs.readFileSync(accountCorePath, "utf8");
 const notificationPipeline = fs.readFileSync(notificationPipelinePath, "utf8");
 
-const inlineScripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)];
-if (inlineScripts.length === 0) {
-  throw new Error("index.html has no inline script to validate");
+// The application script lives in dist/app.js since the CSP dropped
+// 'unsafe-inline' (2026-08-26). index.html must not grow a new inline
+// <script> — that would be silently blocked in production and silently
+// skipped here if this check only looked at inline content.
+const inlineScripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)];
+if (inlineScripts.length !== 0) {
+  throw new Error("index.html must not contain inline <script>; put JS in dist/app.js (CSP script-src has no 'unsafe-inline')");
 }
-for (const [index, match] of inlineScripts.entries()) {
-  new vm.Script(match[1], { filename: `index.html:inline-${index + 1}` });
+new vm.Script(appJs, { filename: "dist/app.js" });
+if (!/<script\s+src="app\.js"><\/script>/.test(html)) {
+  throw new Error('index.html must load the application via <script src="app.js"></script>');
+}
+// Every JS-content assertion below reads `js` (= app.js); HTML-only checks
+// keep reading `html`. A regression that moves code back into index.html now
+// fails loudly instead of validating an empty string.
+const js = appJs;
+if (!/script-src[^;]*'self'(?![^;]*'unsafe-inline')/.test(tauriConf)) {
+  throw new Error("CSP script-src must not re-add 'unsafe-inline'");
 }
 
 const rawErrorRenderPatterns = [
@@ -28,13 +44,13 @@ const rawErrorRenderPatterns = [
   /setPrivacyGateStatus\([^\n]*String\((?:e|error)\)/,
 ];
 for (const pattern of rawErrorRenderPatterns) {
-  if (pattern.test(html)) {
+  if (pattern.test(js)) {
     throw new Error(`raw exceptions must pass through safeUserError: ${pattern}`);
   }
 }
-const backupSortStart = html.indexOf("backups.sort(");
-const backupSortEnd = html.indexOf('$("backupCount")', backupSortStart);
-const backupSort = html.slice(backupSortStart, backupSortEnd);
+const backupSortStart = js.indexOf("backups.sort(");
+const backupSortEnd = js.indexOf('$("backupCount")', backupSortStart);
+const backupSort = js.slice(backupSortStart, backupSortEnd);
 if (backupSortStart < 0 || backupSortEnd < 0
     || !/right\.committed_at[\s\S]*?left\.committed_at[\s\S]*?right\.backup_id[\s\S]*?left\.backup_id/.test(backupSort)) {
   throw new Error("backup center must order sealed versions by server committed_at with a stable backup_id tie-breaker");
@@ -42,7 +58,7 @@ if (backupSortStart < 0 || backupSortEnd < 0
 if (backupSort.includes("created_at")) {
   throw new Error("backup center must not determine the latest sealed version from the client clock");
 }
-if (!html.includes("backupDate(latest.committed_at)") || !html.includes("backupDate(version.committed_at)")) {
+if (!js.includes("backupDate(latest.committed_at)") || !js.includes("backupDate(version.committed_at)")) {
   throw new Error("backup center must display server commit time for sealed versions");
 }
 
@@ -52,16 +68,16 @@ if (duplicates.length > 0) {
   throw new Error(`duplicate HTML ids: ${duplicates.join(", ")}`);
 }
 
-if (/invoke\s*\(\s*["']event_cancel["']/.test(html)) {
+if (/invoke\s*\(\s*["']event_cancel["']/.test(js)) {
   throw new Error("event_cancel must go through guard_request/guard_confirm, not direct IPC");
 }
 if (/#\[tauri::command\]\s*fn\s+event_cancel\b/.test(app)) {
   throw new Error("event_cancel must not be exposed as a direct Tauri command");
 }
 
-const acceptStart = html.indexOf('$("privacyGateAcceptBtn").addEventListener');
-const declineStart = html.indexOf('$("privacyGateDeclineBtn").addEventListener', acceptStart);
-const acceptHandler = html.slice(acceptStart, declineStart);
+const acceptStart = js.indexOf('$("privacyGateAcceptBtn").addEventListener');
+const declineStart = js.indexOf('$("privacyGateDeclineBtn").addEventListener', acceptStart);
+const acceptHandler = js.slice(acceptStart, declineStart);
 const consentAt = acceptHandler.indexOf('"privacy_consent_accept"');
 const notificationAt = acceptHandler.indexOf('"notification_permission_request"');
 if (acceptStart < 0 || declineStart < 0 || consentAt < 0 || notificationAt < consentAt) {
@@ -82,10 +98,10 @@ const requiredAccountGateIds = [
 for (const id of requiredAccountGateIds) {
   if (!ids.includes(id)) throw new Error(`account shell is missing #${id}`);
 }
-if (!html.includes('password !== $("accountGateConfirm").value')) {
+if (!js.includes('password !== $("accountGateConfirm").value')) {
   throw new Error("registration must confirm the exact password before creating an account");
 }
-if (html.includes('submitAccount("account_register"')) {
+if (js.includes('submitAccount("account_register"')) {
   throw new Error("registration must use the single account-gate flow");
 }
 const privacyViewStart = html.indexOf('id="view-privacy"');
@@ -94,16 +110,16 @@ const privacyView = html.slice(privacyViewStart, nextViewStart);
 if (!privacyView.includes('id="privacyAccountLock"') || !privacyView.includes('id="privacyAccountControls"')) {
   throw new Error("guest privacy account controls must stay inside #view-privacy");
 }
-if (!html.includes('const GUEST_ALLOWED_VIEWS = new Set(["chat", "agenda", "notifs", "ledger", "journal", "search", "settings", "privacy", "capture"])')) {
+if (!js.includes('const GUEST_ALLOWED_VIEWS = new Set(["chat", "agenda", "notifs", "ledger", "journal", "search", "settings", "privacy", "capture"])')) {
   throw new Error("guest view contract changed without updating the frontend gate");
 }
-if (!html.includes("if (!accountLoggedIn && !GUEST_ALLOWED_VIEWS.has(view))")) {
+if (!js.includes("if (!accountLoggedIn && !GUEST_ALLOWED_VIEWS.has(view))")) {
   throw new Error("showView must guard every account-only route");
 }
-if (!html.includes('class: "meta capture-preview", text: preview')) {
+if (!js.includes('class: "meta capture-preview", text: preview')) {
   throw new Error("capture candidates must expose a bounded raw-text preview before adoption");
 }
-if (!/GUEST_ALLOWED_REFRESHERS[\s\S]*?refreshPrivacy[\s\S]*?refreshToday/.test(html)) {
+if (!/GUEST_ALLOWED_REFRESHERS[\s\S]*?refreshPrivacy[\s\S]*?refreshToday/.test(js)) {
   throw new Error("guest startup must refresh the privacy lock state");
 }
 const letterSpacingDeclarations = [...html.matchAll(/letter-spacing\s*:\s*([^;}{]+)/gi)];
@@ -168,7 +184,7 @@ for (const command of accountOnlyCommands) {
     throw new Error(`${command} must enforce require_full_account()`);
   }
 }
-if (!html.includes("登录后生成包含建议与跨设备信息的今日简报")) {
+if (!js.includes("登录后生成包含建议与跨设备信息的今日简报")) {
   throw new Error("daily brief entry must explain the account lock to guests");
 }
 

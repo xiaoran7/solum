@@ -6536,15 +6536,15 @@ mod tests {
 
     #[test]
     fn frontend_hydrates_only_inactive_generation_and_does_not_publish_pointer() {
-        let html = include_str!("../dist/index.html");
-        assert!(html.contains("hydratePortableGenerationWebView(generationId)"));
-        assert!(html.contains("restore_webview_begin"));
-        assert!(html.contains("restore_webview_document_chunk"));
-        assert!(html.contains("restore_webview_finish"));
-        assert!(html.contains("store.clear()"));
-        assert!(html.contains("await sha256Hex(await actual.blob.arrayBuffer())"));
-        assert!(html.contains("safeLocalGet(storage.chat_sessions_key) !== chatJson"));
-        assert!(!html.contains("publish_profile_generation"));
+        let js = include_str!("../dist/app.js");
+        assert!(js.contains("hydratePortableGenerationWebView(generationId)"));
+        assert!(js.contains("restore_webview_begin"));
+        assert!(js.contains("restore_webview_document_chunk"));
+        assert!(js.contains("restore_webview_finish"));
+        assert!(js.contains("store.clear()"));
+        assert!(js.contains("await sha256Hex(await actual.blob.arrayBuffer())"));
+        assert!(js.contains("safeLocalGet(storage.chat_sessions_key) !== chatJson"));
+        assert!(!js.contains("publish_profile_generation"));
     }
 
     #[test]
@@ -6597,62 +6597,63 @@ mod tests {
 
     #[test]
     fn frontend_publication_requires_fresh_exact_webview_snapshot() {
-        let html = include_str!("../dist/index.html");
-        assert!(html.contains("snapshotLiveWebViewSummary()"));
-        assert!(html.contains("saveCurrentChatDraft(true)"));
-        assert!(html.contains("chat_json: chatJson"));
-        assert!(html.contains("ui_state_json: uiStateJson"));
-        assert!(html.contains("await sha256Hex(await row.blob.arrayBuffer())"));
-        assert!(html.contains("restore_publish_preview"));
-        assert!(html.contains("backup_restore_takeover_publish"));
-        assert!(!html.contains("restore_publish_confirm"));
-        assert!(html.contains("const webview = await snapshotLiveWebViewSummary();"));
+        let js = include_str!("../dist/app.js");
+        assert!(js.contains("snapshotLiveWebViewSummary()"));
+        assert!(js.contains("saveCurrentChatDraft(true)"));
+        assert!(js.contains("chat_json: chatJson"));
+        assert!(js.contains("ui_state_json: uiStateJson"));
+        assert!(js.contains("await sha256Hex(await row.blob.arrayBuffer())"));
+        assert!(js.contains("restore_publish_preview"));
+        assert!(js.contains("backup_restore_takeover_publish"));
+        assert!(!js.contains("restore_publish_confirm"));
+        assert!(js.contains("const webview = await snapshotLiveWebViewSummary();"));
     }
 
     #[test]
     fn frontend_backup_seam_streams_bounded_chunks_and_commits_last() {
-        let html = include_str!("../dist/index.html");
-        assert!(html.contains("const BACKUP_UPLOAD_IPC_CHUNK_BYTES = 512 * 1024"));
-        assert!(html.contains("async function createAndUploadPortableBackup()"));
-        assert!(html.contains("dataBase64: encodeCanonicalBase64(chunk)"));
-        assert!(html.contains("row.blob.size !== expected.plaintext_size"));
-        let begin = html.find("backup_upload_begin").unwrap();
-        let chunk = html.find("backup_upload_attachment_chunk").unwrap();
-        let finish = html.find("backup_upload_attachment_finish").unwrap();
-        let commit = html.find("backup_upload_commit").unwrap();
+        let js = include_str!("../dist/app.js");
+        assert!(js.contains("const BACKUP_UPLOAD_IPC_CHUNK_BYTES = 512 * 1024"));
+        assert!(js.contains("async function createAndUploadPortableBackup()"));
+        assert!(js.contains("dataBase64: encodeCanonicalBase64(chunk)"));
+        assert!(js.contains("row.blob.size !== expected.plaintext_size"));
+        let begin = js.find("backup_upload_begin").unwrap();
+        let chunk = js.find("backup_upload_attachment_chunk").unwrap();
+        let finish = js.find("backup_upload_attachment_finish").unwrap();
+        let commit = js.find("backup_upload_commit").unwrap();
         assert!(begin < chunk && chunk < finish && finish < commit);
-        assert!(html[commit..].contains("backup_upload_cancel"));
+        assert!(js[commit..].contains("backup_upload_cancel"));
     }
 
     #[test]
     fn frontend_backup_center_is_manual_and_recovery_requires_preview_takeover() {
         let html = include_str!("../dist/index.html");
+        let js = include_str!("../dist/app.js");
         assert!(html.contains("id=\"view-backup\""));
         assert!(html.contains("id=\"backupCreateBtn\""));
-        assert!(html.contains("createAndUploadPortableBackup()"));
-        assert!(!html.contains("setInterval(createAndUploadPortableBackup"));
-        let stage = html.find("backup_restore_stage").unwrap();
-        let hydrate = html[stage..]
+        assert!(js.contains("createAndUploadPortableBackup()"));
+        assert!(!js.contains("setInterval(createAndUploadPortableBackup"));
+        let stage = js.find("backup_restore_stage").unwrap();
+        let hydrate = js[stage..]
             .find("hydratePortableGenerationWebView")
             .unwrap()
             + stage;
-        let preview = html[hydrate..].find("prepareRestorePublication").unwrap() + hydrate;
-        let takeover = html[preview..]
+        let preview = js[hydrate..].find("prepareRestorePublication").unwrap() + hydrate;
+        let takeover = js[preview..]
             .find("backup_restore_takeover_publish")
             .unwrap()
             + preview;
         assert!(stage < hydrate && hydrate < preview && preview < takeover);
-        assert!(html.contains("替换本机并接管"));
+        assert!(js.contains("替换本机并接管"));
         assert!(html.contains("尚未改动本机"));
-        assert!(html.contains("tool: \"backup_delete\""));
-        assert!(html.contains("plan_etag: version.plan_etag"));
-        assert!(html.contains("永久删除此版本"));
-        assert!(html.contains("onError: async () => { await refreshBackupCenter(); }"));
+        assert!(js.contains("tool: \"backup_delete\""));
+        assert!(js.contains("plan_etag: version.plan_etag"));
+        assert!(js.contains("永久删除此版本"));
+        assert!(js.contains("onError: async () => { await refreshBackupCenter(); }"));
     }
 
     #[test]
     fn android_reminder_delivery_has_a_startup_tripwire_and_debug_process_death_seam() {
-        let html = include_str!("../dist/index.html");
+        let js = include_str!("../dist/app.js");
         let plugin =
             include_str!("../../solum-alarm/android/src/main/java/dev/solum/alarm/AlarmPlugin.kt");
         let activity =
@@ -6660,9 +6661,9 @@ mod tests {
         assert!(plugin.contains("getReceiverInfo"));
         assert!(plugin.contains("startupReceiverRegistered"));
         assert!(plugin.contains("P1: AlarmReceiver is missing or disabled"));
-        assert!(html.contains("reminder_delivery_health"));
-        assert!(html.contains("当前安装包缺少后台提醒接收器"));
-        assert!(html.contains("debug_simulate_process_death"));
+        assert!(js.contains("reminder_delivery_health"));
+        assert!(js.contains("当前安装包缺少后台提醒接收器"));
+        assert!(js.contains("debug_simulate_process_death"));
         assert!(activity.contains("if (!BuildConfig.DEBUG) return false"));
         assert!(activity.contains("android.os.Process.killProcess"));
         assert!(!activity.contains("forceStopPackage"));
@@ -6671,13 +6672,17 @@ mod tests {
     #[test]
     fn local_capture_stays_available_to_guests_and_dynamic_styles_survive_csp() {
         let html = include_str!("../dist/index.html");
+        let js = include_str!("../dist/app.js");
         let config = include_str!("../tauri.conf.json");
-        assert!(html.contains(
+        assert!(js.contains(
             "const GUEST_ALLOWED_VIEWS = new Set([\"chat\", \"agenda\", \"notifs\", \"ledger\", \"journal\", \"search\", \"settings\", \"privacy\", \"capture\"])"
         ));
         assert!(config.contains("\"dangerousDisableAssetCspModification\": [\"style-src\"]"));
         assert!(config.contains("style-src 'self' 'unsafe-inline'"));
-        assert!(html.contains("meta capture-preview"));
-        assert!(html.contains("previewChars.slice(0, 240)"));
+        assert!(!config.contains("script-src 'self' 'unsafe-inline'"));
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("<script src=\"app.js\"></script>"));
+        assert!(js.contains("meta capture-preview"));
+        assert!(js.contains("previewChars.slice(0, 240)"));
     }
 }

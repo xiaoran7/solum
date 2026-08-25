@@ -55,6 +55,7 @@ class NotificationPipelineService : Service() {
 
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             CHANNEL_ID,
             "Solum 通知处理",
@@ -63,7 +64,11 @@ class NotificationPipelineService : Service() {
             description = "保持 Solum 在后台处理你已授权应用的通知"
             setShowBadge(false)
         }
-        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        manager.createNotificationChannel(channel)
+        // 2026-07-20 改名决议的残留清理：渠道 ID 曾是 pa_notification_pipeline，
+        // 用户可见名当时已改但 ID 没跟。新渠道创建后删除旧渠道，避免设置里
+        // 留下一条永远不再使用的"已删除"通道。
+        manager.deleteNotificationChannel(LEGACY_CHANNEL_ID)
     }
 
     private fun buildNotification(): Notification = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -437,7 +442,10 @@ class NotificationPipelineService : Service() {
 
 
     companion object {
-        private const val CHANNEL_ID = "pa_notification_pipeline"
+        private const val CHANNEL_ID = "solum_notification_pipeline"
+        /// Pre-rename channel id, deleted on every channel ensure so upgraded
+        /// installs do not keep a dead entry in system settings.
+        private const val LEGACY_CHANNEL_ID = "pa_notification_pipeline"
         private const val NOTIFICATION_ID = 41020
         private const val ALERT_CHANNEL_ID = "solum_benefit_alerts"
         private const val ALERT_NOTIFICATION_ID = 41021

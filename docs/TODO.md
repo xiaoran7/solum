@@ -70,7 +70,7 @@
 - [x] **已被 2026-08-22“加密云备份取代多主同步”取消：不再设计 sync_oplog 压实。** oplog 在新备份/恢复闭环验收前仅维持现状以保护迁移；随后整体退役，不再为其增加长期维护机制。
 - [x] **已被 2026-08-22“退役独立中继”取代：不再扩建 Rust 中继清扫。** PostgreSQL 同步历史在快照/压缩协议出现前继续永久保留并以租户硬配额拒绝新写入；旧 Rust 中继只完成迁移和下线，不再增加定时清扫、统计或水位线能力。
 - [x] **已完成（2026-08-25）**：`memory_ledger_page(layer, limit, cursor)` 按层 keyset 分页（`created_at DESC, id ASC` + 游标 `(created_at|id)`，每层 `LIMIT+1` 探测截断），九张源表补齐 `(created_at, id)` 索引；前端台账首屏改为每层各拉 50 条合并显示，"加载更多"逐层续拉，全量版 `memory_ledger()` 仅保留给导出/测试。
-- [ ] **CSP 去 unsafe-inline 收尾**（MISC 2026-07-21 明记「别忘了」）：tauri.conf.json script-src 仍带 unsafe-inline。2026-08-22 实测 `index.html` 为 394,377 UTF-8 字节、其中唯一内联脚本 256,535 字节；相对 07-21 的 268,890 / 184,401 字节分别增长约 46.7% / 39.1%，不能把整文件增幅误写成脚本增幅。拆 `dist/app.js` 时 `check-frontend.mjs` 必须同步改为校验 `app.js`——否则 `<script src>` 被捕获为空内容、`vm.Script("")` 静默通过，静态检查空转。
+- [x] **已完成（2026-08-26）**：294KB 内联脚本拆为 `dist/app.js`（`<script src>` 相对引用，不违反无框架/无 npm 铁律），CSP `script-src` 去掉 `'unsafe-inline'`（`style-src` 维持现状——内联 style 属性迁移是另一批次）。`check-frontend.mjs` 同步改为校验 app.js 并新增防回退断言：index.html 出现任何内联 `<script>`、或 CSP 重新引入 script `'unsafe-inline'` 都直接失败；六个按内容断言前端的 Rust 测试改读 app.js。真浏览器验证外部脚本加载执行正常、21 视图渲染、无 CSP 拦截报错。
 - [x] **云服务小加固打包（2026-08-25）**：/v1/auth/refresh|logout 补每 IP 失败窗口（15 分钟 100 次，失败才计数）；ai.usage_events 增加保留期清理（默认 90 天，`SOLUM_USAGE_EVENT_RETENTION_DAYS` 可调 30–3650，随 6 小时周期保留任务执行；月度聚合继续承担配额判定）。~~compose 增加 pg_dump 备份编排 + 恢复演练~~ ✅ **已做（2026-08-22）**：每日 UTC 03:23 自动 pg_dump（保留 14 份，`/opt/1panel/backup/solum-cloud/`），全新容器恢复演练通过（10 表行数比对一致、0 错误，手册 RESTORE.md 同目录）；recovery envelope 与 /v1/devices 补运行时集成测试（现仅 contract 正则断言，create-only 语义测不出来）——运行时集成测试仍待做。
 - [x] **已完成：文档检索层**（本批）：PITFALLS/MISC 尾部时序错乱修正 + 头部主题索引与插入规则；CHANGELOG 版本速查索引；docs/README.md 导航升级；ARCHITECTURE 状态句与 §6 标题更正。详见 CHANGELOG 当日条目。
 
@@ -80,7 +80,7 @@
 - [x] **已完成（2026-08-25）**：`orchestrator.rs` 三处多步写已全部包进 `with_transaction`（`persist_event_with_scope` 事件+提醒计划一个单元；`fire_due` 标记 fired 与行为台账一条记录；`set_importance_rule` 每个事件的删旧+重排一个单元），并补「注入 `insert_notification`/`insert_behavior` 故障 → 断言整体回滚」回归测试 3 项。
 - [x] **已完成（2026-08-25）**：`CoreError::From<rusqlite::Error>` 现在把 SQLite 错误码带进文案前缀（`[ConstraintViolation] …`、`[DatabaseBusy] …`），变体保持 `Storage(String)` 不破坏既有匹配；`events.people_json` 与 `notifications.channels_json` 两个 row mapper 对损坏 JSON 改为 eprintln 带行 id + 解析错误后回退空值（一行坏数据不再无痕消失，也不会拖垮整个台账列表）。回归测试 3 项。
 - [x] **已完成（2026-08-25，`5a42346`）**：push 装箱改为按实测大小装箱——每条 op 只序列化一次累加长度、整批只加密一次；保守估算（含逗号与 AEAD 帧）保证不越过 7 MiB 上限。单条超限滞留语义不变（`sync_push_holds` + 游标推进）。
-- [ ] 根目录约 35MB 一次性产物（output/ 旧 APK、演示视频、playwright 日志）移仓库外归档目录。**注意：根目录 `solum.sqlite*` 是「桌面与 CLI 共库」的刻意设计（MISC 有记录），勿清。**
+- [x] **已完成（2026-08-26）**：`output/`、两版演示视频与截图、脚本、`.playwright-cli/` 共约 35MB 未跟踪产物已移出仓库，归档在 `Backups/solum-repo-artifacts-20260826/`；根目录 `solum.sqlite*` 按刻意保留决定未动。
 - [ ] 通知渠道 ID `pa_notification_pipeline` 改名残留：与 2026-07-20 改名决议矛盾（同批改了 pa_reminders 渠道），改名（带 deleteChannel 迁移）或补进刻意保留清单，二选一显式拍板。
 - [x] **受阻项代码侧推进（2026-08-24）**：Android Debug 设置页提供双层拒绝 Release 的延迟进程死亡注入，只杀当前 PID，不改配置、不清数据、不取消 AlarmManager PendingIntent；`docs/ANDROID-RELEASE-QA.md` 固化提醒回收与 `/v1/alerts` `status=test` 福利告警配方，包含首次游标初始化、唯一 event id、幂等重放、短期令牌和 7 天自然清理边界。两项均从“缺测试入口”转为“待有设备验证”。
 - [ ] CHANGELOG 全史切版：大量粗体顶层条目仍堆在唯一 `[Unreleased]` 下，并存在千字级单行；条目数和最长行会随文档提交变化，不再用易过时数字描述。需逐条定版本归属，属专门批次；当前以头部版本速查索引缓解。
