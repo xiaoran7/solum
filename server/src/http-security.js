@@ -252,6 +252,7 @@ module.exports = {
   refreshTokenSessionId,
   requestClientAddress,
   requestOriginAllowed,
+  secureEqualHex,
   verifyPasswordAsync,
   verifyPasswordOrDummyAsync,
 };

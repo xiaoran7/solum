@@ -213,7 +213,7 @@ impl SyncConfig {
         )
     }
 
-    fn key_bytes(&self) -> Result<[u8; 32]> {
+    pub fn key_bytes(&self) -> Result<[u8; 32]> {
         let hex = self.key.trim();
         if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(CoreError::Invalid(
@@ -598,6 +598,127 @@ pub fn provision_account_sync(
     )
 }
 
+/// Read the account sync config from an explicit path (no env overrides).
+/// `None` when the file does not exist yet.
+pub fn load_account_sync_config(config_path: &std::path::Path) -> Option<SyncConfig> {
+    let raw = std::fs::read_to_string(config_path).ok()?;
+    match serde_json::from_str::<SyncConfigFile>(&raw).ok()? {
+        SyncConfigFile::Direct { url, token, key } => Some(SyncConfig {
+            url,
+            token,
+            key,
+            account: None,
+        }),
+        SyncConfigFile::Credentials {
+            url,
+            username,
+            password,
+        } => {
+            let (token, key) = derive_credentials(&username, &password).ok()?;
+            Some(SyncConfig {
+                url,
+                token,
+                key,
+                account: None,
+            })
+        }
+        SyncConfigFile::Account { url, key } => Some(SyncConfig {
+            url,
+            token: String::new(),
+            key,
+            account: None,
+        }),
+    }
+}
+
+/// Persist the account sync config to an explicit path. Public for the
+/// recovery-code login flow, which writes a key recovered from the server
+/// envelope before the profile goes live.
+pub fn save_account_sync_config_public(
+    path: &std::path::Path,
+    server_url: &str,
+    key: &[u8; 32],
+) -> Result<()> {
+    save_account_sync_config(path, server_url, key)
+}
+
+/// After a recovery-code login wrote the unwrapped master key to disk, verify
+/// the persisted file really holds that key before the profile goes live.
+/// The code envelope was already authenticated by AEAD; this is the remaining
+/// local-vs-disk integrity check and never overwrites either side.
+pub fn verify_account_sync_provision(
+    session: &crate::account::AccountSession,
+    expected_key: &[u8; 32],
+    config_path: &std::path::Path,
+) -> Result<()> {
+    if session.stable_user_id().is_none() {
+        return Err(CoreError::Invalid("账号缺少不可变 user_id".into()));
+    }
+    let local = read_local_account_key(config_path)?;
+    match local {
+        Some(existing) => {
+            if existing != *expected_key {
+                return Err(CoreError::Invalid(
+                    "本机同步主密钥与恢复码解出的密钥不一致；已停止登录切换".into(),
+                ));
+            }
+            Ok(())
+        }
+        None => Err(CoreError::Invalid("同步密钥配置写入失败，请重试".into())),
+    }
+}
+
+/// Change the account password end-to-end: derive the new password's wrap
+/// key, rewrap the master key into a fresh envelope client-side, then let the
+/// server swap credential hash + envelope atomically. The old password stays
+/// the only live credential until the server commit succeeds.
+pub fn change_account_password(
+    session: &crate::account::AccountSession,
+    current_password: &str,
+    new_password: &str,
+    master_key: &[u8; 32],
+) -> Result<String> {
+    use base64::Engine;
+
+    let user_id = session
+        .stable_user_id()
+        .ok_or_else(|| CoreError::Invalid("账号缺少不可变 user_id".into()))?;
+    if new_password.chars().count() < 12 {
+        return Err(CoreError::Invalid("新密码至少需要 12 个字符".into()));
+    }
+    // Rewrap first: nothing changes remotely until the new envelope exists.
+    let proposed = wrap_recovery_key(user_id, new_password, master_key)?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(30))
+        .build();
+    let response = agent
+        .post(&format!("{}/v1/account/password", session.server_url))
+        .set("Authorization", &format!("Bearer {}", session.access_token))
+        .send_json(serde_json::json!({
+            "current_password": current_password,
+            "new_password": new_password,
+            "password_envelope": B64.encode(proposed),
+        }))
+        .map_err(|error| match error {
+            ureq::Error::Status(401, _) => CoreError::Invalid("登录已过期，请重新登录".into()),
+            ureq::Error::Status(403, _) => CoreError::Invalid("当前密码不正确".into()),
+            ureq::Error::Status(code, _) => {
+                CoreError::Invalid(format!("密码修改暂时不可用（{code}）"))
+            }
+            other => CoreError::Invalid(format!(
+                "无法连接密码修改服务：{}",
+                humanize_transport_error(&other)
+            )),
+        })?;
+    if response.status() != 200 {
+        return Err(CoreError::Invalid(format!(
+            "密码修改暂时不可用（{}）",
+            response.status()
+        )));
+    }
+    Ok("密码已更新。其他设备需要用新密码重新登录".to_string())
+}
+
 fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -737,7 +858,7 @@ fn chain_has_io_kind(err: &(dyn std::error::Error + 'static), kind: std::io::Err
 /// rustls' no-GREASE ClientHello is RST-ed while browser-grade ones pass, from
 /// any network path — so the message points there, and never at disabling
 /// certificate verification.
-fn humanize_transport_error(error: &ureq::Error) -> String {
+pub(crate) fn humanize_transport_error(error: &ureq::Error) -> String {
     match error {
         ureq::Error::Status(code, _) => format!("服务器返回 {code}"),
         ureq::Error::Transport(t) => {

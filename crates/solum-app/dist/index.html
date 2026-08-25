@@ -2925,11 +2925,53 @@
           <div class="field"><label for="accountModel">云端模型</label>
             <select id="accountModel"><option value="mimo-v2.5">mimo-v2.5（默认）</option></select></div>
           <p class="account-model-note" id="accountModelNote"></p>
+          <div id="accountRecoverForm" hidden>
+            <div class="fieldrow">
+              <div class="field"><label for="accountRecoverUser">账号</label>
+                <input type="text" id="accountRecoverUser" autocomplete="off" spellcheck="false" /></div>
+              <div class="field"><label for="accountRecoverCode">恢复码</label>
+                <input type="text" id="accountRecoverCode" autocomplete="off" spellcheck="false"
+                  placeholder="XXXXX-XXXXX-XXXXX-XXXXX" /></div>
+            </div>
+            <div class="btnrow">
+              <button class="btn primary" id="accountRecoverSubmit">用恢复码登录</button>
+              <button class="btn" id="accountRecoverCancel">返回密码登录</button>
+            </div>
+            <p class="hint" style="margin:4px 0 0;">恢复码登录不经过密码；成功后可在此修改密码。</p>
+          </div>
+          <button class="btn sm" id="accountRecoverToggle" hidden>忘记密码？用恢复码登录</button>
           <div class="btnrow">
             <button class="btn primary" id="accountLoginBtn">登录</button>
             <button class="btn" id="accountRegisterBtn">注册</button>
             <button class="btn" id="accountModelBtn" hidden>保存模型</button>
             <button class="btn" id="accountLogoutBtn" hidden>退出登录</button>
+          </div>
+          <div id="accountSecurityArea" hidden>
+            <div class="statusline" style="margin-top:14px;">
+              <span class="sdot" id="recoveryCodeDot"></span>
+              <span class="t" id="recoveryCodeStatusText">正在检查恢复码状态…</span>
+            </div>
+            <div class="btnrow">
+              <button class="btn" id="recoveryCodeIssueBtn">生成恢复码</button>
+              <button class="btn" id="accountChangePassBtn">修改密码</button>
+            </div>
+            <div class="hint" style="margin:4px 0 0 16px;" id="recoveryCodeHint">
+              恢复码是密码之外的备用钥匙：忘记密码时可用它登录并找回加密数据。
+              只显示一次，请离线抄写保存；息壤 与中心都无法替你找回。</div>
+            <div id="recoveryCodeResult" hidden></div>
+            <div id="accountChangePassForm" hidden>
+              <div class="fieldrow" style="margin-top:10px;">
+                <div class="field"><label for="accountCurrentPass">当前密码</label>
+                  <input type="password" id="accountCurrentPass" autocomplete="off" /></div>
+                <div class="field"><label for="accountNewPass">新密码（至少 12 位）</label>
+                  <input type="password" id="accountNewPass" autocomplete="new-password" /></div>
+              </div>
+              <div class="btnrow">
+                <button class="btn primary sm" id="accountChangePassSubmit">确认修改</button>
+                <button class="btn sm" id="accountChangePassCancel">取消</button>
+              </div>
+              <p class="hint" style="margin:4px 0 0;">修改后其他设备需要用新密码重新登录；本机加密数据不受影响。</p>
+            </div>
           </div>
         </div>
         </div>
@@ -7758,6 +7800,13 @@ async function refreshAccount() {
   $("accountRegisterBtn").hidden = accountLoggedIn;
   $("accountLogoutBtn").hidden = !accountLoggedIn;
   $("accountModelBtn").hidden = !accountLoggedIn;
+  $("accountSecurityArea").hidden = !accountLoggedIn;
+  if (accountLoggedIn) {
+    setRecoverMode(false);
+    refreshRecoveryCodeStatus();
+  } else {
+    $("accountRecoverToggle").hidden = false;
+  }
   if (accountLoggedIn) $("accountFold").open = true;
   const modelSelect = $("accountModel");
   const currentValue = modelSelect.value;
@@ -7920,8 +7969,126 @@ $("accountModelBtn").addEventListener("click", async () => {
     $("llmRow").title = summary;
     accountFormSeeded = false;
     refreshAccount();
-  } catch (e) { toast(String(e), "danger"); }
+  } catch (e) { toast(safeUserError(e, "模型未保存，请稍后重试。"), "danger"); }
   finally { $("accountModelBtn").disabled = false; }
+});
+
+/* ============================== 恢复码与改密 ============================== */
+let recoveryCodeChecking = false;
+
+function setRecoverMode(on) {
+  $("accountLoginForm").hidden = on || accountLoggedIn;
+  $("accountRecoverForm").hidden = !on;
+  $("accountRecoverToggle").hidden = on || accountLoggedIn;
+}
+
+async function refreshRecoveryCodeStatus() {
+  if (!accountLoggedIn || recoveryCodeChecking) return;
+  recoveryCodeChecking = true;
+  const dot = $("recoveryCodeDot");
+  const text = $("recoveryCodeStatusText");
+  try {
+    const state = await invoke("recovery_code_status");
+    if (state.configured) {
+      dot.className = "sdot ok";
+      text.textContent = "已设置恢复码：忘记密码时可用它登录并找回数据。重新生成会使旧码失效。";
+      $("recoveryCodeIssueBtn").textContent = "重新生成恢复码";
+    } else {
+      dot.className = "sdot amber";
+      text.textContent = "还没有恢复码：如果忘记密码，将没有任何办法找回加密数据。建议现在生成一个。";
+      $("recoveryCodeIssueBtn").textContent = "生成恢复码";
+    }
+  } catch (_) {
+    dot.className = "sdot";
+    text.textContent = "恢复码状态暂时无法确认，可稍后再试。";
+  } finally {
+    recoveryCodeChecking = false;
+  }
+}
+
+$("recoveryCodeIssueBtn").addEventListener("click", async () => {
+  const btn = $("recoveryCodeIssueBtn");
+  if (btn.disabled) return;
+  const rotating = btn.textContent.includes("重新生成");
+  const confirmed = window.confirm(rotating
+    ? "重新生成会让旧恢复码立即失效。确定继续吗？"
+    : "恢复码只显示这一次，请准备好离线抄写的地方（纸笔或密码管理器）。继续吗？");
+  if (!confirmed) return;
+  btn.disabled = true;
+  try {
+    const code = await invoke("recovery_code_issue");
+    const out = $("recoveryCodeResult");
+    out.hidden = false;
+    out.replaceChildren(
+      el("div", { class: "hint", style: "margin:8px 0 4px;font-weight:600;",
+        text: "请立即离线抄写下面的恢复码，关闭后将无法再次查看：" }),
+      el("div", { style: "font-family:var(--mono,monospace);font-size:1.05rem;", text: code }),
+      el("div", { class: "hint", style: "margin-top:4px;",
+        text: "息壤 与中心都无法找回这个码；丢失它且忘记密码时，加密数据将无法解开。" }),
+    );
+    toast("恢复码已生成", "ok");
+    refreshRecoveryCodeStatus();
+  } catch (e) { toast(safeUserError(e, "恢复码生成失败，请稍后重试。"), "danger"); }
+  finally { btn.disabled = false; }
+});
+
+$("accountChangePassBtn").addEventListener("click", () => {
+  const form = $("accountChangePassForm");
+  form.hidden = !form.hidden;
+  if (!form.hidden) $("accountCurrentPass").focus();
+});
+
+$("accountChangePassCancel").addEventListener("click", () => {
+  $("accountChangePassForm").hidden = true;
+  $("accountCurrentPass").value = "";
+  $("accountNewPass").value = "";
+});
+
+$("accountChangePassSubmit").addEventListener("click", async () => {
+  const btn = $("accountChangePassSubmit");
+  if (btn.disabled) return;
+  const currentPassword = $("accountCurrentPass").value;
+  const newPassword = $("accountNewPass").value;
+  if (!currentPassword) return toast("请输入当前密码", "danger");
+  if (newPassword.length < 12) return toast("新密码至少需要 12 个字符", "danger");
+  btn.disabled = true;
+  try {
+    const message = await invoke("account_change_password", { currentPassword, newPassword });
+    $("accountChangePassForm").hidden = true;
+    $("accountCurrentPass").value = "";
+    $("accountNewPass").value = "";
+    toast(message, "ok");
+  } catch (e) { toast(safeUserError(e, "密码没有修改，请稍后重试。"), "danger"); }
+  finally { btn.disabled = false; }
+});
+
+$("accountRecoverToggle").addEventListener("click", () => setRecoverMode(true));
+$("accountRecoverCancel").addEventListener("click", () => {
+  $("accountRecoverCode").value = "";
+  setRecoverMode(false);
+});
+
+$("accountRecoverSubmit").addEventListener("click", async () => {
+  const btn = $("accountRecoverSubmit");
+  if (btn.disabled || accountAuthSubmitting) return;
+  const serverUrl = $("accountServer").value.trim() || SOLUM_CENTER_URL;
+  const username = $("accountRecoverUser").value.trim();
+  const code = $("accountRecoverCode").value.trim();
+  if (!username || !code) return toast("请填写账号和恢复码", "danger");
+  btn.disabled = true;
+  accountAuthSubmitting = true;
+  try {
+    const summary = await invoke("recovery_code_login", { serverUrl, username, code });
+    $("accountRecoverCode").value = "";
+    toast(summary || "已用恢复码登录", "ok");
+    accountFormSeeded = false;
+    refreshAccount(); refreshCloud(); refreshSyncConfig(); refreshSyncStatus();
+  } catch (e) {
+    toast(safeUserError(e, "恢复码登录失败，请稍后重试。"), "danger");
+  } finally {
+    btn.disabled = false;
+    accountAuthSubmitting = false;
+  }
 });
 
 /* ============================== Soulous（设置 → 云端） ============================== */

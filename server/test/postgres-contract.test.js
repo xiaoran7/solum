@@ -28,8 +28,8 @@ const root = path.join(__dirname, '..');
 test('PostgreSQL schema forces RLS on every tenant-owned table', () => {
   const sql = fs.readFileSync(path.join(root, 'db', 'init', '01-schema.sql'), 'utf8');
   for (const table of ['sync.devices', 'sync.blobs', 'sync.preferences', 'sync.alerts',
-    'vault.key_envelopes', 'vault.backup_state', 'vault.backups', 'vault.backup_objects',
-    'ai.entitlements', 'ai.usage_monthly', 'ai.usage_events']) {
+    'vault.key_envelopes', 'vault.recovery_codes', 'vault.backup_state', 'vault.backups',
+    'vault.backup_objects', 'ai.entitlements', 'ai.usage_monthly', 'ai.usage_events']) {
     assert.match(sql, new RegExp(`alter table ${table.replace('.', '\\.')}` +
       ' enable row level security;', 'i'));
     assert.match(sql, new RegExp(`alter table ${table.replace('.', '\\.')}` +
@@ -43,12 +43,18 @@ test('PostgreSQL schema forces RLS on every tenant-owned table', () => {
   assert.match(sql, /grant select, insert on sync\.blobs to solum_api;/i);
   assert.match(sql, /grant select, insert, delete on sync\.alerts to solum_api;/i);
   assert.match(sql, /grant select, insert on vault\.key_envelopes to solum_api;/i);
+  assert.match(sql, /grant select, insert, update on vault\.recovery_codes to solum_api;/i);
+  // The password change endpoint may only touch credential columns.
+  assert.match(sql,
+    /grant update \(password_hash, password_salt, password_version\) on auth\.users to solum_api;/i);
   assert.match(sql, /grant select, insert, update on vault\.backup_state to solum_api;/i);
   assert.match(sql, /grant select, insert, update, delete on vault\.backups to solum_api;/i);
   assert.match(sql, /grant select, insert, update on vault\.backup_objects to solum_api;/i);
   assert.match(sql, /grant select, insert, update, delete on auth\.refresh_tokens to solum_api;/i);
   assert.doesNotMatch(sql, /grant[^;]*delete[^;]*on sync\.blobs/i);
-  assert.doesNotMatch(sql, /grant[^;]*update[^;]*on (?:auth\.users|vault\.key_envelopes)/i);
+  // No table-level UPDATE on credentials or envelopes; the password change
+  // path is limited to an explicit column-scoped grant.
+  assert.doesNotMatch(sql, /grant update on (?:auth\.users|vault\.key_envelopes)\b/i);
   assert.match(sql, /users_password_version_check/i);
   assert.match(sql, /refresh_tokens_session_idx\s+on auth\.refresh_tokens \(session_id\)/i);
   assert.match(sql, /refresh_tokens_previous_idx\s+on auth\.refresh_tokens \(previous_token_hash\)/i);
@@ -450,6 +456,32 @@ test('recovery envelope is fixed-scope and create-only', () => {
   assert.match(source, /where tenant_id=\$1 and revoked_at is null/);
   assert.match(source, /device_limit_exceeded/);
   assert.equal((source.match(/throw new HttpError\(403, 'device_revoked'\)/g) || []).length, 2);
+});
+
+test('recovery code endpoints never accept the plaintext code', () => {
+  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  // Two-step online verification: challenge returns only the PBKDF2 salt.
+  assert.match(source, /POST' && url\.pathname === '\/v1\/auth\/recover\/challenge'/);
+  assert.match(source, /POST' && url\.pathname === '\/v1\/auth\/recover'/);
+  assert.match(source, /solum-recover-dummy-salt-v1/);
+  assert.match(source, /scryptBurnAsync/);
+  // Envelope storage and rotation are authenticated and atomic-replace.
+  assert.match(source, /PUT' && url\.pathname === '\/v1\/account\/recovery-code'/);
+  assert.match(source, /GET' && url\.pathname === '\/v1\/keys\/recovery-code'/);
+  assert.match(source, /recovery-code-xchacha20poly1305/);
+  assert.match(source, /on conflict\(tenant_id\) do update/i);
+  // Explicit password change swaps hash + envelope + other sessions in one path.
+  assert.match(source, /invalid_current_secret/);
+  assert.match(source, /password_version=2/);
+  assert.match(source, /do update set envelope=excluded\.envelope, created_at=now\(\)/);
+  // Strict request shapes: no field anywhere can carry a plaintext code.
+  assert.match(source,
+    /requireExactKeys\(body, \['username', 'verify_hash'\], 'invalid_credentials'\)/);
+  const passwordBody = source.slice(
+    source.indexOf("'/v1/account/password'"), source.indexOf("'/v1/account/recovery-code'"));
+  for (const forbidden of ['current_code"', 'code_plaintext', 'recovery_code"']) {
+    assert.ok(!passwordBody.includes(forbidden), `forbidden field: ${forbidden}`);
+  }
 });
 
 test('legacy importer preserves tenant ownership and cursor sequences atomically', () => {

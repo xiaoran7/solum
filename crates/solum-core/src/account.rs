@@ -113,7 +113,7 @@ impl AccountSession {
         Ok(session)
     }
 
-    fn normalize(&mut self) -> Result<()> {
+    pub(crate) fn normalize(&mut self) -> Result<()> {
         self.server_url = normalize_server_url(&self.server_url)?;
         self.user_id = self.user_id.trim().to_ascii_lowercase();
         if !self.user_id.is_empty() && !is_valid_user_id(&self.user_id) {

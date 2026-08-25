@@ -37,6 +37,7 @@ pub mod privacy;
 pub mod proactivity;
 pub mod profile_generation;
 pub mod recall;
+pub mod recovery_code;
 pub mod restore_v3;
 pub mod review;
 pub mod routine;

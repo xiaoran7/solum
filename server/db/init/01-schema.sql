@@ -290,6 +290,21 @@ create table if not exists vault.key_envelopes (
 create index if not exists key_envelopes_tenant_device_idx
   on vault.key_envelopes (tenant_id, recipient_device_id, key_version desc);
 
+-- One row per tenant: the user-chosen recovery code envelope. The envelope
+-- wraps the same E2EE master key as the password envelope but under an
+-- independent key domain; verify_hash is a client-computed digest of the
+-- derived wrap key (never of the code itself) used only for online
+-- verification. The plaintext code never reaches the server.
+create table if not exists vault.recovery_codes (
+  tenant_id uuid primary key references auth.users(id) on delete cascade,
+  key_version integer not null check (key_version > 0),
+  algorithm text not null check (algorithm = 'recovery-code-xchacha20poly1305'),
+  envelope bytea not null check (octet_length(envelope) between 56 and 65536),
+  verify_hash text not null check (verify_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists vault.backup_state (
   tenant_id uuid primary key references auth.users(id) on delete cascade,
   active_generation bigint not null default 1 check (active_generation between 1 and 9007199254740991),
@@ -353,6 +368,8 @@ alter table sync.alerts enable row level security;
 alter table sync.alerts force row level security;
 alter table vault.key_envelopes enable row level security;
 alter table vault.key_envelopes force row level security;
+alter table vault.recovery_codes enable row level security;
+alter table vault.recovery_codes force row level security;
 alter table vault.backup_state enable row level security;
 alter table vault.backup_state force row level security;
 alter table vault.backups enable row level security;
@@ -388,6 +405,11 @@ create policy alerts_tenant_policy on sync.alerts
   with check (tenant_id = (select sync.current_tenant_id()));
 drop policy if exists key_envelopes_tenant_policy on vault.key_envelopes;
 create policy key_envelopes_tenant_policy on vault.key_envelopes
+  for all to solum_api
+  using (tenant_id = (select sync.current_tenant_id()))
+  with check (tenant_id = (select sync.current_tenant_id()));
+drop policy if exists recovery_codes_tenant_policy on vault.recovery_codes;
+create policy recovery_codes_tenant_policy on vault.recovery_codes
   for all to solum_api
   using (tenant_id = (select sync.current_tenant_id()))
   with check (tenant_id = (select sync.current_tenant_id()));
@@ -435,11 +457,15 @@ revoke all on all functions in schema sync from solum_api, solum_runtime;
 
 grant usage on schema auth, sync, vault, ai to solum_api;
 grant select, insert on auth.users to solum_api;
+-- Column-scoped: the explicit password change endpoint may only touch the
+-- credential columns, never identity or status.
+grant update (password_hash, password_salt, password_version) on auth.users to solum_api;
 grant select, insert, update, delete on auth.refresh_tokens to solum_api;
 grant select, insert, update on sync.devices to solum_api;
 grant select, insert on sync.blobs to solum_api;
 grant select, insert, delete on sync.alerts to solum_api;
 grant select, insert on vault.key_envelopes to solum_api;
+grant select, insert, update on vault.recovery_codes to solum_api;
 grant select, insert, update on vault.backup_state to solum_api;
 grant select, insert, update, delete on vault.backups to solum_api;
 grant select, insert, update on vault.backup_objects to solum_api;
