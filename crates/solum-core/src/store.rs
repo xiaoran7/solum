@@ -244,6 +244,38 @@ const QUARANTINE_DROPPED_KEY: &str = "sync_quarantine_dropped";
 const NOTIF_CLOUD_META_KEY: &str = "notif_cloud";
 const NOTIFICATION_INTELLIGENCE_META_KEY: &str = "notification_intelligence";
 
+/// Keyset position for one F12 ledger page: "strictly after this
+/// (created_at, id) in (created_at DESC, id ASC) order". `excl_id` compares
+/// with `id >` because the ledger sorts same-timestamp rows by ascending id;
+/// encoding uses the storage timestamp format so decode is exact.
+#[derive(Debug, Clone)]
+struct LedgerCursor {
+    created_at_str: String,
+    excl_id: i64,
+}
+
+impl LedgerCursor {
+    fn encode(&self) -> String {
+        format!("{}|{}", self.created_at_str, self.excl_id)
+    }
+
+    fn decode(raw: &str) -> Result<Self> {
+        let (created_at_str, excl_id) = raw
+            .rsplit_once('|')
+            .ok_or_else(|| CoreError::Invalid("台账分页游标格式无效".into()))?;
+        if created_at_str.is_empty() || parse_ts(created_at_str).is_err() {
+            return Err(CoreError::Invalid("台账分页游标时间无效".into()));
+        }
+        let excl_id: i64 = excl_id
+            .parse()
+            .map_err(|_| CoreError::Invalid("台账分页游标序号无效".into()))?;
+        Ok(LedgerCursor {
+            created_at_str: created_at_str.to_string(),
+            excl_id,
+        })
+    }
+}
+
 /// Tables that participate in multi-device sync (§3.8). `audit_log` stays
 /// device-local by design (§4), and `meta` is handled key-by-key.
 const SYNCED_TABLES: &[&str] = &[
@@ -725,6 +757,18 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_behavior_ts ON behavior_log(kind, ts);
             CREATE INDEX IF NOT EXISTS idx_health_kind_start ON health_samples(kind, start);
             CREATE INDEX IF NOT EXISTS idx_soulous_kind_time ON soulous_facts(kind, occurs_at);
+
+            -- F12 ledger paging: keyset reads per layer walk these in
+            -- (created_at DESC, id ASC) order without loading whole tables.
+            CREATE INDEX IF NOT EXISTS idx_raw_inputs_created ON raw_inputs(created_at, id);
+            CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at, id);
+            CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at, id);
+            CREATE INDEX IF NOT EXISTS idx_behavior_created ON behavior_log(ts, id);
+            CREATE INDEX IF NOT EXISTS idx_suggestions_created ON suggestions(created_at, id);
+            CREATE INDEX IF NOT EXISTS idx_health_created ON health_samples(created_at, id);
+            CREATE INDEX IF NOT EXISTS idx_facts_created ON memory_facts(created_at, id);
+            CREATE INDEX IF NOT EXISTS idx_routines_created ON routines(created_at, id);
+            CREATE INDEX IF NOT EXISTS idx_captures_created ON notification_captures(received_at, id);
             "#,
         )?;
 
@@ -3903,6 +3947,10 @@ impl Store {
 
     /// A unified, newest-first view of everything the agent remembers, across
     /// layers. This is the surface the user inspects and prunes.
+    ///
+    /// Whole-ledger callers (export, tests) only. The F12 UI must use
+    /// [`Store::memory_ledger_page`] — this loads every table in full and
+    /// sorts in memory, which is unbounded on a long-lived device.
     pub fn memory_ledger(&self) -> Result<Vec<MemoryEntry>> {
         let mut entries = Vec::new();
 
@@ -3928,29 +3976,164 @@ impl Store {
             });
         }
 
-        for ev in self.list_events()? {
-            let loc = ev
-                .location
-                .as_ref()
-                .map(|l| format!(" @{l}"))
-                .unwrap_or_default();
-            entries.push(MemoryEntry {
-                layer: MemoryLayer::Event,
-                id: ev.id.unwrap_or(0),
-                summary: format!(
-                    "[{}] {} — {}{}",
-                    ev.kind.label(),
-                    ev.title,
-                    crate::model::fmt_ts_human(&ev.start),
-                    loc
-                ),
-                source: None,
-                created_at: ev.created_at,
-            });
-        }
+        entries.extend(self.ledger_events(None, usize::MAX)?);
+        entries.extend(self.ledger_notifications(None, usize::MAX)?);
+        entries.extend(self.ledger_behavior(None, usize::MAX)?);
+        entries.extend(self.ledger_suggestions(None, usize::MAX)?);
+        entries.extend(self.ledger_wearable(None, usize::MAX)?);
+        entries.extend(self.ledger_facts(None, usize::MAX)?);
+        entries.extend(self.ledger_routines(None, usize::MAX)?);
+        entries.extend(self.ledger_captures(None, usize::MAX)?);
 
-        for n in self.list_notifications()? {
-            entries.push(MemoryEntry {
+        entries.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
+        Ok(entries)
+    }
+
+    /// One F12 ledger page: newest-first entries of a single layer, keyset
+    /// paginated so the UI never loads a long-lived device's whole table.
+    ///
+    /// `cursor` is the `next_cursor` from the previous call (None for the
+    /// first page). The returned cursor is None once this layer is exhausted.
+    /// Rows written while paging are not revisited; rows deleted between
+    /// pages just shrink later pages.
+    pub fn memory_ledger_page(
+        &self,
+        layer: MemoryLayer,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<MemoryEntry>, Option<String>)> {
+        if limit == 0 || limit > 500 {
+            return Err(CoreError::Invalid("台账分页每页须为 1..=500 条".into()));
+        }
+        // Fetch one extra row to detect "there is more" without a count query.
+        let probe = limit + 1;
+        let after = cursor.map(LedgerCursor::decode).transpose()?;
+
+        let mut entries = match layer {
+            MemoryLayer::RawInput => {
+                // raw_inputs has no list helper that preserves intent/source
+                // metadata, so its row builder takes the statement directly.
+                let mut stmt = self.conn.prepare(&format!(
+                    "SELECT * FROM raw_inputs {}",
+                    Self::LEDGER_KEYSET_TAIL.replace("{col}", "created_at")
+                ))?;
+                let rows = stmt.query_map(Self::keyset_params(after.as_ref(), probe), |r| {
+                    Ok((
+                        r.get::<_, i64>("id")?,
+                        r.get::<_, String>("text")?,
+                        r.get::<_, String>("intent")?,
+                        r.get::<_, String>("created_at")?,
+                        r.get::<_, String>("source_id")?,
+                    ))
+                })?;
+                let mut entries = Vec::new();
+                for row in rows {
+                    let (id, text, intent, created, source_id) = row?;
+                    entries.push(MemoryEntry {
+                        layer,
+                        id,
+                        summary: text,
+                        source: Some(format!("source={source_id} · intent={intent}")),
+                        created_at: parse_ts(&created)?,
+                    });
+                }
+                entries
+            }
+            MemoryLayer::Event => self.ledger_events(after.as_ref(), probe)?,
+            MemoryLayer::Notification => self.ledger_notifications(after.as_ref(), probe)?,
+            MemoryLayer::Behavior => self.ledger_behavior(after.as_ref(), probe)?,
+            MemoryLayer::Suggestion => self.ledger_suggestions(after.as_ref(), probe)?,
+            MemoryLayer::Wearable => self.ledger_wearable(after.as_ref(), probe)?,
+            MemoryLayer::Fact => self.ledger_facts(after.as_ref(), probe)?,
+            MemoryLayer::Routine => self.ledger_routines(after.as_ref(), probe)?,
+            MemoryLayer::NotificationCapture => self.ledger_captures(after.as_ref(), probe)?,
+        };
+
+        let next_cursor = if entries.len() > limit {
+            entries.truncate(limit);
+            let last = &entries[limit - 1];
+            Some(
+                LedgerCursor {
+                    created_at_str: fmt_ts(&last.created_at),
+                    excl_id: last.id,
+                }
+                .encode(),
+            )
+        } else {
+            None
+        };
+        Ok((entries, next_cursor))
+    }
+
+    /// Shared WHERE/ORDER/LIMIT tail for the per-layer paged queries. The
+    /// three-part keyset predicate keeps exactly the ordering the full-ledger
+    /// sort uses; NULL params mean "first page". `{col}` is substituted by
+    /// each helper (notification_captures pages on received_at, behavior on
+    /// ts).
+    const LEDGER_KEYSET_TAIL: &str = "WHERE (?1 IS NULL OR {col} < ?2 OR ({col} = ?2 AND id > ?3))
+         ORDER BY {col} DESC, id ASC LIMIT ?4";
+
+    fn keyset_params(after: Option<&LedgerCursor>, probe: usize) -> [rusqlite::types::Value; 4] {
+        [
+            after.map(|c| c.created_at_str.clone()).into(),
+            after.map(|c| c.created_at_str.clone()).into(),
+            after.map(|c| c.excl_id).into(),
+            (probe as i64).into(),
+        ]
+    }
+
+    // Per-layer paged reads behind memory_ledger_page. Each maps rows through
+    // exactly the summary formatting the full ledger uses, so a paged UI and
+    // an export of the same row render identically.
+
+    fn ledger_events(
+        &self,
+        after: Option<&LedgerCursor>,
+        probe: usize,
+    ) -> Result<Vec<MemoryEntry>> {
+        let tail = Self::LEDGER_KEYSET_TAIL.replace("{col}", "created_at");
+        let mut stmt = self.conn.prepare(&format!("SELECT * FROM events {tail}"))?;
+        let rows = stmt.query_map(Self::keyset_params(after, probe), Self::row_to_event)?;
+        let events = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(events
+            .into_iter()
+            .map(|ev| {
+                let loc = ev
+                    .location
+                    .as_ref()
+                    .map(|l| format!(" @{l}"))
+                    .unwrap_or_default();
+                MemoryEntry {
+                    layer: MemoryLayer::Event,
+                    id: ev.id.unwrap_or(0),
+                    summary: format!(
+                        "[{}] {} — {}{}",
+                        ev.kind.label(),
+                        ev.title,
+                        crate::model::fmt_ts_human(&ev.start),
+                        loc
+                    ),
+                    source: None,
+                    created_at: ev.created_at,
+                }
+            })
+            .collect())
+    }
+
+    fn ledger_notifications(
+        &self,
+        after: Option<&LedgerCursor>,
+        probe: usize,
+    ) -> Result<Vec<MemoryEntry>> {
+        let tail = Self::LEDGER_KEYSET_TAIL.replace("{col}", "created_at");
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT * FROM notifications {tail}"))?;
+        let rows = stmt.query_map(Self::keyset_params(after, probe), Self::row_to_notification)?;
+        let notifications = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(notifications
+            .into_iter()
+            .map(|n| MemoryEntry {
                 layer: MemoryLayer::Notification,
                 id: n.id.unwrap_or(0),
                 summary: format!(
@@ -3966,26 +4149,63 @@ impl Store {
                 ),
                 source: Some(format!("event#{}", n.event_id)),
                 created_at: n.created_at,
-            });
-        }
+            })
+            .collect())
+    }
 
-        for b in self.list_behavior()? {
-            let label = match b.kind {
-                BehaviorKind::Status => "状态",
-                BehaviorKind::CheckinAsked => "问询",
-                BehaviorKind::ReminderFired => "提醒触发",
-            };
-            entries.push(MemoryEntry {
-                layer: MemoryLayer::Behavior,
-                id: b.id.unwrap_or(0),
-                summary: format!("[{label}] {}", b.content),
-                source: b.source,
-                created_at: b.ts,
-            });
-        }
+    fn ledger_behavior(
+        &self,
+        after: Option<&LedgerCursor>,
+        probe: usize,
+    ) -> Result<Vec<MemoryEntry>> {
+        let tail = Self::LEDGER_KEYSET_TAIL.replace("{col}", "ts");
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT * FROM behavior_log {tail}"))?;
+        let rows = stmt.query_map(Self::keyset_params(after, probe), |r| {
+            Ok((
+                r.get::<_, i64>("id")?,
+                r.get::<_, String>("ts")?,
+                r.get::<_, String>("kind")?,
+                r.get::<_, String>("content")?,
+                r.get::<_, Option<String>>("source")?,
+            ))
+        })?;
+        let entries = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        entries
+            .into_iter()
+            .map(|(id, ts, kind, content, source)| {
+                let label = match kind.as_str() {
+                    "status" => "状态",
+                    "checkin_asked" => "问询",
+                    "reminder_fired" => "提醒触发",
+                    _ => "行为",
+                };
+                Ok(MemoryEntry {
+                    layer: MemoryLayer::Behavior,
+                    id,
+                    summary: format!("[{label}] {content}"),
+                    source,
+                    created_at: parse_ts(&ts)?,
+                })
+            })
+            .collect()
+    }
 
-        for s in self.list_suggestions()? {
-            entries.push(MemoryEntry {
+    fn ledger_suggestions(
+        &self,
+        after: Option<&LedgerCursor>,
+        probe: usize,
+    ) -> Result<Vec<MemoryEntry>> {
+        let tail = Self::LEDGER_KEYSET_TAIL.replace("{col}", "created_at");
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT * FROM suggestions {tail}"))?;
+        let rows = stmt.query_map(Self::keyset_params(after, probe), Self::row_to_suggestion)?;
+        let suggestions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(suggestions
+            .into_iter()
+            .map(|s| MemoryEntry {
                 layer: MemoryLayer::Suggestion,
                 id: s.id.unwrap_or(0),
                 summary: format!(
@@ -3999,41 +4219,81 @@ impl Store {
                 ),
                 source: s.source,
                 created_at: s.created_at,
-            });
-        }
+            })
+            .collect())
+    }
 
-        for h in self.list_health_samples()? {
-            let unit = match h.kind {
-                HealthMetric::HeartRate => "bpm",
-                HealthMetric::Steps => "步",
-                HealthMetric::Sleep => "分钟",
-            };
-            entries.push(MemoryEntry {
-                layer: MemoryLayer::Wearable,
-                id: h.id.unwrap_or(0),
-                summary: format!(
-                    "[{}] {} {unit} @ {}",
-                    h.kind.label(),
-                    h.value,
-                    crate::model::fmt_ts_human(&h.start)
-                ),
-                source: Some(h.source),
-                created_at: h.created_at,
-            });
-        }
+    fn ledger_wearable(
+        &self,
+        after: Option<&LedgerCursor>,
+        probe: usize,
+    ) -> Result<Vec<MemoryEntry>> {
+        let tail = Self::LEDGER_KEYSET_TAIL.replace("{col}", "created_at");
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT * FROM health_samples {tail}"))?;
+        let rows = stmt.query_map(
+            Self::keyset_params(after, probe),
+            Self::row_to_health_sample,
+        )?;
+        let samples = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(samples
+            .into_iter()
+            .map(|h| {
+                let unit = match h.kind {
+                    HealthMetric::HeartRate => "bpm",
+                    HealthMetric::Steps => "步",
+                    HealthMetric::Sleep => "分钟",
+                };
+                MemoryEntry {
+                    layer: MemoryLayer::Wearable,
+                    id: h.id.unwrap_or(0),
+                    summary: format!(
+                        "[{}] {} {unit} @ {}",
+                        h.kind.label(),
+                        h.value,
+                        crate::model::fmt_ts_human(&h.start)
+                    ),
+                    source: Some(h.source),
+                    created_at: h.created_at,
+                }
+            })
+            .collect())
+    }
 
-        for f in self.list_facts()? {
-            entries.push(MemoryEntry {
+    fn ledger_facts(&self, after: Option<&LedgerCursor>, probe: usize) -> Result<Vec<MemoryEntry>> {
+        let tail = Self::LEDGER_KEYSET_TAIL.replace("{col}", "created_at");
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT * FROM memory_facts {tail}"))?;
+        let rows = stmt.query_map(Self::keyset_params(after, probe), Self::row_to_fact)?;
+        let facts = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(facts
+            .into_iter()
+            .map(|f| MemoryEntry {
                 layer: MemoryLayer::Fact,
                 id: f.id.unwrap_or(0),
                 summary: f.content,
                 source: Some(f.source),
                 created_at: f.created_at,
-            });
-        }
+            })
+            .collect())
+    }
 
-        for r in self.list_routines()? {
-            entries.push(MemoryEntry {
+    fn ledger_routines(
+        &self,
+        after: Option<&LedgerCursor>,
+        probe: usize,
+    ) -> Result<Vec<MemoryEntry>> {
+        let tail = Self::LEDGER_KEYSET_TAIL.replace("{col}", "created_at");
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT * FROM routines {tail}"))?;
+        let rows = stmt.query_map(Self::keyset_params(after, probe), Self::row_to_routine)?;
+        let routines = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(routines
+            .into_iter()
+            .map(|r| MemoryEntry {
                 layer: MemoryLayer::Routine,
                 id: r.id.unwrap_or(0),
                 summary: format!(
@@ -4044,44 +4304,57 @@ impl Store {
                 ),
                 source: r.source,
                 created_at: r.created_at,
-            });
-        }
-
-        for capture in self.list_notification_captures()? {
-            let lane = match capture.lane {
-                CaptureLane::Urgent => "重要·即时",
-                CaptureLane::Batch => "普通·批量",
-            };
-            let state = match capture.state {
-                CaptureState::Queued => "待处理",
-                CaptureState::EventCreated => "已建事件",
-                CaptureState::Filtered => "已过滤",
-                CaptureState::Deduplicated => "已判重",
-                CaptureState::NeedsReview => "待回看",
-                CaptureState::Resolved => "已处理",
-            };
-            let reason = capture
-                .reason
-                .as_deref()
-                .map(|reason| format!(" · {reason}"))
-                .unwrap_or_default();
-            entries.push(MemoryEntry {
-                layer: MemoryLayer::NotificationCapture,
-                id: capture.id.unwrap_or(0),
-                summary: format!("[{lane}·{state}] {}", capture.title),
-                source: Some(format!("{}{}", capture.package_name, reason)),
-                created_at: capture.received_at,
-            });
-        }
-
-        entries.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
-        Ok(entries)
+            })
+            .collect())
     }
 
-    /// Delete a memory entry. Deleting a raw input or event cascades to the
-    /// records derived from it — once gone, it cannot be recovered by chatting
-    /// (F12 delete semantics).
-    /// What deleting this ledger row would actually take with it.
+    fn ledger_captures(
+        &self,
+        after: Option<&LedgerCursor>,
+        probe: usize,
+    ) -> Result<Vec<MemoryEntry>> {
+        // notification_captures orders by received_at rather than created_at.
+        let mut stmt = self.conn.prepare(
+            "SELECT * FROM notification_captures
+             WHERE (?1 IS NULL OR received_at < ?2 OR (received_at = ?2 AND id > ?3))
+             ORDER BY received_at DESC, id ASC LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(
+            Self::keyset_params(after, probe),
+            Self::row_to_notification_capture,
+        )?;
+        let captures = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(captures
+            .into_iter()
+            .map(|capture| {
+                let lane = match capture.lane {
+                    CaptureLane::Urgent => "重要·即时",
+                    CaptureLane::Batch => "普通·批量",
+                };
+                let state = match capture.state {
+                    CaptureState::Queued => "待处理",
+                    CaptureState::EventCreated => "已建事件",
+                    CaptureState::Filtered => "已过滤",
+                    CaptureState::Deduplicated => "已判重",
+                    CaptureState::NeedsReview => "待回看",
+                    CaptureState::Resolved => "已处理",
+                };
+                let reason = capture
+                    .reason
+                    .as_deref()
+                    .map(|reason| format!(" · {reason}"))
+                    .unwrap_or_default();
+                MemoryEntry {
+                    layer: MemoryLayer::NotificationCapture,
+                    id: capture.id.unwrap_or(0),
+                    summary: format!("[{lane}·{state}] {}", capture.title),
+                    source: Some(format!("{}{}", capture.package_name, reason)),
+                    created_at: capture.received_at,
+                }
+            })
+            .collect())
+    }
+
     ///
     /// The Guard's preview is only worth showing if it names the *whole*
     /// blast radius, and for `raw_input` that is not one row: the cascade
@@ -6637,5 +6910,93 @@ mod tests {
         let notifications = s.list_notifications().unwrap();
         assert_eq!(notifications.len(), 1);
         assert!(notifications[0].channels.is_empty());
+    }
+
+    /// F12 ledger paging: pages walk every row exactly once in the same
+    /// newest-first order the full ledger produces, cursors chain cleanly,
+    /// and an exhausted layer returns no cursor.
+    #[test]
+    fn ledger_pages_match_the_full_ledger_order() {
+        let s = Store::open_in_memory().unwrap();
+        // Seed three layers with known timestamps, including same-second
+        // ties that exercise the id tiebreak.
+        for i in 0..5 {
+            s.insert_raw_input(
+                &format!("原始输入{i}"),
+                "schedule_event",
+                dt(2026, 7, 6, 10, i % 2),
+            )
+            .unwrap();
+        }
+        for i in 0..4 {
+            s.insert_fact_if_new(&crate::memory::MemoryFact {
+                id: None,
+                content: format!("事实{i}"),
+                source: "chat".into(),
+                created_at: dt(2026, 7, 6, 9, i),
+                last_used_at: None,
+            })
+            .unwrap()
+            .unwrap();
+        }
+        s.conn
+            .execute_batch(
+                "INSERT INTO behavior_log(ts, kind, content) VALUES
+                 ('2026-07-06T08:00:00', 'status', '状态一'),
+                 ('2026-07-06T08:00:00', 'status', '状态二'),
+                 ('2026-07-06T08:01:00', 'reminder_fired', '触发一');",
+            )
+            .unwrap();
+
+        let full = s.memory_ledger().unwrap();
+
+        for (layer, expected_len) in [
+            (MemoryLayer::RawInput, 5usize),
+            (MemoryLayer::Fact, 4),
+            (MemoryLayer::Behavior, 3),
+        ] {
+            let expected: Vec<(String, i64)> = full
+                .iter()
+                .filter(|e| e.layer == layer)
+                .map(|e| (e.summary.clone(), e.id))
+                .collect();
+            assert_eq!(expected.len(), expected_len);
+
+            // Page through two-at-a-time and compare against the full view.
+            let mut seen = Vec::new();
+            let mut cursor: Option<String> = None;
+            loop {
+                let (entries, next) = s.memory_ledger_page(layer, 2, cursor.as_deref()).unwrap();
+                assert!(entries.len() <= 2);
+                for e in &entries {
+                    seen.push((e.summary.clone(), e.id));
+                }
+                match next {
+                    Some(c) => cursor = Some(c),
+                    None => break,
+                }
+            }
+            assert_eq!(seen, expected, "paged {layer:?} must equal full order");
+        }
+
+        // A page size larger than the table just returns everything at once.
+        let (all, next) = s.memory_ledger_page(MemoryLayer::Fact, 500, None).unwrap();
+        assert_eq!(all.len(), 4);
+        assert!(next.is_none());
+    }
+
+    /// Cursor validation is fail-closed: garbage input must be rejected, not
+    /// silently read as "first page".
+    #[test]
+    fn ledger_page_rejects_malformed_cursors_and_limits() {
+        let s = Store::open_in_memory().unwrap();
+        assert!(s.memory_ledger_page(MemoryLayer::Event, 0, None).is_err());
+        assert!(s.memory_ledger_page(MemoryLayer::Event, 501, None).is_err());
+        assert!(s
+            .memory_ledger_page(MemoryLayer::Event, 10, Some("not-a-cursor"))
+            .is_err());
+        assert!(s
+            .memory_ledger_page(MemoryLayer::Event, 10, Some("2026-07-06T10:00:00|x"))
+            .is_err());
     }
 }

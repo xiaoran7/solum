@@ -1454,6 +1454,17 @@ impl Orchestrator {
         self.store.memory_ledger()
     }
 
+    /// Paged single-layer ledger slice for the F12 UI; see
+    /// [`Store::memory_ledger_page`] for the cursor semantics.
+    pub fn ledger_page(
+        &self,
+        layer: crate::model::MemoryLayer,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<MemoryEntry>, Option<String>)> {
+        self.store.memory_ledger_page(layer, limit, cursor)
+    }
+
     pub fn forget(&self, layer: MemoryLayer, id: i64) -> Result<()> {
         self.store.delete_memory(layer, id)?;
         self.audit_irreversible("forget", &format!("删除记忆 {}#{id}", layer.as_str()));

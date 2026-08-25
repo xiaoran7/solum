@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+- **F12 记忆台账按层分页（2026-08-25，未发布）**：台账界面不再全量加载九张表后在内存排序（长寿命设备上内存与 JSON 载荷线性无界）。core 新增 `memory_ledger_page(layer, limit, cursor)` 按层 keyset 分页：`(created_at DESC, id ASC)` 排序、`created_at|id` 游标续页、每层 `LIMIT+1` 探测截断、limit 钳制 1..=500 且游标 fail-closed；九张源表补 `(created_at, id)` 索引。全量版 `memory_ledger()` 保留给导出/测试路径，行摘要格式与分页版逐字一致。前端台账首屏改为九层各拉 50 条并行合并显示，"加载更多"对仍有余量的层各再拉一页后整体重排；空态/删除/事实改写/固定提醒编辑行为不变。验证：workspace 469 项测试全绿（新增 2 项分页回归——三层数据含同秒并列的翻页顺序必须与全量视图一致、非法游标/越界 limit 拒绝）、严格 Clippy 零告警、fmt 零漂移、前端门禁 359 个唯一 ID 通过；mock-IPC 真浏览器走查确认首屏 106 行渲染、"加载更多"两轮后取满 186 行且游标耗尽按钮消失、全程时间序新→旧、删除按钮可见、375px 无横向溢出。
+
 - **存储错误可观测性：SQLite 错误码保留与损坏 JSON 行报告（2026-08-25，未发布）**：`CoreError::Storage` 的 `From<rusqlite::Error>` 转换现在把 SQLite 结果码带进文案（如 `[ConstraintViolation] …`、`[DatabaseBusy] …`），调用方与事故日志终于能区分"该重试的 BUSY"和"该上报的约束冲突"，此前 `to_string()` 会把这层信息抹掉；变体形状不变，既有匹配代码不受影响。`events.people_json` 和 `notifications.channels_json` 两个 row mapper 对损坏 JSON 不再静默当作空值：先以 `[store] events#<id>: corrupt …` 形式输出到诊断日志（带行 id 与解析错误）再回退空值，一行坏数据既不会无痕丢失参与者/渠道语义，也不会拖垮整个列表读取。验证：新增回归测试 3 项（触发器注入真实约束冲突断言错误码前缀；两处损坏 JSON 断言列表存活 + 回退为空），workspace 467 项测试全绿、严格 Clippy 零告警、fmt 零漂移。
 
 - **orchestrator 三处多步写补齐事务与回滚回归测试（2026-08-25，未发布）**：`persist_event_with_scope`（事件 + 提醒计划）、`fire_due`（标记 fired + 行为台账）、`set_importance_rule`（删旧待发提醒 + 重排）现在各自是一个 `with_transaction` 单元——第二步写失败时第一步一并回滚，不再产生"看得见日程但永远不提醒"、"提醒已标 fired 却无台账痕迹"或"旧提醒已删、新计划没写上"的半写状态。新增 Store 测试专用故障注入口子（`#[cfg(test)]` 触发器拦截目标表 insert），3 项回归测试分别注入 `notifications`/`behavior_log` 故障并断言整体回滚与恢复后正常路径。验证：workspace 464 项测试全绿（基线 461 + 新增 3）、严格 Clippy 零告警、fmt 零漂移。

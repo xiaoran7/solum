@@ -6083,18 +6083,148 @@ $("reviewBtn").addEventListener("click", async () => {
 });
 
 /* ============================== 记忆台账 ============================== */
+// F12 台账分页状态：每层的下一页游标（null = 该层已取完）；
+// rows 是已加载条目的合并缓存，"加载更多"在其上追加并整体重排。
+const ledgerPaging = { cursors: {}, loading: false, routines: [] };
+let ledgerRowsCache = [];
+const LEDGER_PAGE_SIZE = 50;
+const LEDGER_LAYERS = ["raw_input", "event", "notification", "behavior", "suggestion",
+  "wearable", "fact", "routine", "notification_capture"];
+
+function ledgerMoreAvailable() {
+  return LEDGER_LAYERS.some((layer) => ledgerPaging.cursors[layer] !== null);
+}
+
+async function loadLedgerFirstPage() {
+  for (const layer of LEDGER_LAYERS) ledgerPaging.cursors[layer] = "";
+  // 每层各拉一页并行返回；空串游标表示从第一页开始。
+  const active = LEDGER_LAYERS.filter((layer) => ledgerPaging.cursors[layer] !== null);
+  const pages = await Promise.all(active.map(async (layer) => {
+    const [entries, next] = await invoke("ledger_page", {
+      layer, limit: LEDGER_PAGE_SIZE, cursor: null,
+    });
+    return { entries, next };
+  }));
+  let rows = [];
+  active.forEach((layer, i) => {
+    const { entries, next } = pages[i];
+    rows.push(...entries);
+    ledgerPaging.cursors[layer] = typeof next === "string" ? next : null;
+  });
+  return sortLedgerRows(rows);
+}
+
+async function loadLedgerNextPages() {
+  // 只对还有余量的层各再拉一页。
+  const active = LEDGER_LAYERS.filter((layer) => ledgerPaging.cursors[layer]);
+  const pages = await Promise.all(active.map(async (layer) => {
+    const [entries, next] = await invoke("ledger_page", {
+      layer, limit: LEDGER_PAGE_SIZE, cursor: ledgerPaging.cursors[layer],
+    });
+    return { entries, next };
+  }));
+  let rows = [];
+  active.forEach((layer, i) => {
+    const { entries, next } = pages[i];
+    rows.push(...entries);
+    ledgerPaging.cursors[layer] = typeof next === "string" ? next : null;
+  });
+  return sortLedgerRows(rows);
+}
+
+function sortLedgerRows(rows) {
+  return rows.sort((a, b) =>
+    (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : a.id - b.id));
+}
+
+function renderLedgerRows(box, rows) {
+  if (!rows.length) {
+    box.appendChild(emptyBox("memory", "记忆台账为空", "对话、事件、提醒、行为都会以可删的形式沉淀在这里。"));
+    return;
+  }
+  box.appendChild(dataTable(["层", "#", "内容", "来源", "时间", ""],
+    rows.map(ledgerRowCells)));
+}
+
+function appendLedgerMoreButton(box) {
+  if (!ledgerMoreAvailable()) return;
+  const wrap = el("div", { style: "display:flex;justify-content:center;padding:10px 0 2px;" });
+  wrap.appendChild(el("button", {
+    class: "btn", text: "加载更多", "aria-label": "加载更多台账条目",
+    onclick: () => loadMoreLedger(),
+  }));
+  box.appendChild(wrap);
+}
+
+async function loadMoreLedger() {
+  if (ledgerPaging.loading || !ledgerMoreAvailable()) return;
+  ledgerPaging.loading = true;
+  const box = $("ledgerBox");
+  try {
+    const more = await loadLedgerNextPages();
+    ledgerRowsCache.push(...more);
+    sortLedgerRows(ledgerRowsCache);
+    box.textContent = "";
+    renderLedgerRows(box, ledgerRowsCache);
+    appendLedgerMoreButton(box);
+  } catch (e) {
+    toast(safeUserError(e, "加载更多失败，请稍后重试。"), "danger");
+  } finally {
+    ledgerPaging.loading = false;
+  }
+}
+
+function ledgerRowCells(m) {
+  const ly = LAYER[m.layer] || [m.layer, ""];
+  const routine = m.layer === "routine"
+    ? ledgerPaging.routines.find((r) => r.id === m.id) : null;
+  return [
+    [tag(ly[0], ly[1])],
+    td(String(m.id), "num"),
+    [m.summary],
+    td(humanSourceLabel(m.source), "mut"),
+    [fmtDT(m.created_at)],
+    [el("span", { style: "display:flex;gap:6px;" }, [
+      // F12 可编辑：目前只有语义记忆（fact）支持就地改写——其余层是
+      // 行为/事件的忠实记录，改写等于篡改历史，只提供删除。
+      m.layer === "fact"
+        ? el("button", {
+            class: "btn icon", title: "改写这条记忆", "aria-label": "改写这条记忆",
+            onclick: () => askFactEdit(m.id, m.summary),
+          }, icon("pencil", 16))
+        : "",
+      routine
+        ? el("button", {
+            class: "btn icon", title: "编辑固定提醒", "aria-label": "编辑固定提醒",
+            onclick: () => askRoutineEdit(routine),
+          }, icon("pencil", 16))
+        : "",
+      routine
+        ? el("button", {
+            class: "btn sm", text: routine.active ? "暂停" : "启用",
+            title: routine.active ? "暂停这条固定提醒" : "重新启用这条固定提醒",
+            onclick: (event) => setRoutineActive(m.id, !routine.active, event.currentTarget),
+          })
+        : "",
+      el("button", {
+        class: "btn icon danger", title: "删除这条记忆", "aria-label": "删除这条记忆",
+        onclick: () => askForget(m.layer, m.id),
+      }, icon("trash", 16)),
+    ])],
+  ];
+}
+
 async function refreshLedger() {
   const box = $("ledgerBox"), outboundBox = $("soulousOutboundLedger"), notificationBox = $("notificationLedger");
   try {
-    const [rows, routines, soulous, notificationIntelligence] = await Promise.all([
-      invoke("ledger"),
+    const [routines, soulous, notificationIntelligence] = await Promise.all([
       accountLoggedIn ? invoke("routines") : Promise.resolve([]),
       accountLoggedIn
         ? invoke("soulous_config_get", { now: nowParam() })
         : Promise.resolve({ push_schedule_events: false }),
       accountLoggedIn ? invoke("notif_intelligence_status") : Promise.resolve(null),
     ]);
-    const routineById = new Map(routines.map((routine) => [routine.id, routine]));
+    ledgerPaging.routines = routines;
     const outboundEnabled = Boolean(soulous.push_schedule_events);
     outboundBox.textContent = "";
     outboundBox.appendChild(el("div", { class: "statusline", title: outboundEnabled
@@ -6112,49 +6242,11 @@ async function refreshLedger() {
       notificationBox.appendChild(emptyBox("lock", "登录后查看通知智能记录", "访客的本地记忆台账仍可正常查看和编辑。"));
     }
     box.textContent = "";
-    if (!rows.length) {
-      box.appendChild(emptyBox("memory", "记忆台账为空", "对话、事件、提醒、行为都会以可删的形式沉淀在这里。"));
-      return;
-    }
-    box.appendChild(dataTable(["层", "#", "内容", "来源", "时间", ""],
-      rows.map((m) => {
-        const ly = LAYER[m.layer] || [m.layer, ""];
-        const routine = m.layer === "routine" ? routineById.get(m.id) : null;
-        return [
-          [tag(ly[0], ly[1])],
-          td(String(m.id), "num"),
-          [m.summary],
-          td(humanSourceLabel(m.source), "mut"),
-          [fmtDT(m.created_at)],
-          [el("span", { style: "display:flex;gap:6px;" }, [
-            // F12 可编辑：目前只有语义记忆（fact）支持就地改写——其余层是
-            // 行为/事件的忠实记录，改写等于篡改历史，只提供删除。
-            m.layer === "fact"
-              ? el("button", {
-                  class: "btn icon", title: "改写这条记忆", "aria-label": "改写这条记忆",
-                  onclick: () => askFactEdit(m.id, m.summary),
-                }, icon("pencil", 16))
-              : "",
-            routine
-              ? el("button", {
-                  class: "btn icon", title: "编辑固定提醒", "aria-label": "编辑固定提醒",
-                  onclick: () => askRoutineEdit(routine),
-                }, icon("pencil", 16))
-              : "",
-            routine
-              ? el("button", {
-                  class: "btn sm", text: routine.active ? "暂停" : "启用",
-                  title: routine.active ? "暂停这条固定提醒" : "重新启用这条固定提醒",
-                  onclick: (event) => setRoutineActive(m.id, !routine.active, event.currentTarget),
-                })
-              : "",
-            el("button", {
-              class: "btn icon danger", title: "删除这条记忆", "aria-label": "删除这条记忆",
-              onclick: () => askForget(m.layer, m.id),
-            }, icon("trash", 16)),
-          ])],
-        ];
-      })));
+
+    // 首屏：每层各一页合并显示；之后"加载更多"逐层续拉。
+    ledgerRowsCache = await loadLedgerFirstPage();
+    renderLedgerRows(box, ledgerRowsCache);
+    appendLedgerMoreButton(box);
   } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", safeUserError(e, "内容暂时无法读取，请稍后重试。"))); }
 }
 async function askSoulousEventPush(id) {

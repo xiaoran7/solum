@@ -2947,6 +2947,21 @@ fn ledger(state: State<AppState>) -> CmdResult<Vec<MemoryEntry>> {
     lock!(state).ledger().map_err(core_err)
 }
 
+/// One paged ledger slice for the F12 UI: a single layer, keyset-paginated.
+/// Returns (entries, next_cursor); a null cursor means the layer is done.
+#[tauri::command]
+fn ledger_page(
+    state: State<AppState>,
+    layer: String,
+    limit: usize,
+    cursor: Option<String>,
+) -> CmdResult<(Vec<MemoryEntry>, Option<String>)> {
+    let layer: solum_core::model::MemoryLayer = layer.parse().map_err(core_err)?;
+    lock!(state)
+        .ledger_page(layer, limit, cursor.as_deref())
+        .map_err(core_err)
+}
+
 /// F12 可编辑：改写一条语义记忆的措辞（recall 立即生效）。
 #[tauri::command]
 fn fact_update(state: State<AppState>, id: i64, content: String) -> CmdResult<()> {
@@ -5880,6 +5895,7 @@ pub fn run() {
             fire_due,
             dismiss,
             ledger,
+            ledger_page,
             rules,
             rules_save,
             chat_context_set,
