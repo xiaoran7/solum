@@ -484,6 +484,31 @@ test('recovery code endpoints never accept the plaintext code', () => {
   }
 });
 
+test('unauthenticated refresh and logout are IP-rate-limited', () => {
+  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  assert.match(source, /REFRESH_IP_MAX_FAILURES/);
+  const refreshBody = source.slice(
+    source.indexOf("'/v1/auth/refresh'"), source.indexOf("'/v1/auth/logout'"));
+  assert.ok(refreshBody.includes('refreshIpFailures.reserve(address)'),
+    'refresh endpoint must reserve from the per-IP window');
+  // A failed verification counts toward the window; server faults do not.
+  assert.match(refreshBody, /ipReservation\.commit\(\)/);
+  const logoutBody = source.slice(
+    source.indexOf("'/v1/auth/logout'"), source.indexOf("// ---- Recovery code"));
+  assert.ok(logoutBody.includes('logoutIpReservation.commit()'),
+    'logout failures must count toward the window');
+});
+
+test('usage events have a retention policy like every other table', () => {
+  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  assert.match(source, /SOLUM_USAGE_EVENT_RETENTION_DAYS \|\| 90/);
+  assert.ok(source.includes('delete from ai.usage_events where tenant_id=$1 '),
+    'retention cleanup must cover ai.usage_events');
+  assert.ok(source.includes("and created_at<now()-($2::text||' days')::interval"),
+    'cleanup must be age-based');
+  assert.match(source, /usageEventRetentionDays < 30/);
+});
+
 test('legacy importer preserves tenant ownership and cursor sequences atomically', () => {
   const source = fs.readFileSync(path.join(root, 'scripts', 'import-legacy-sqlite.js'), 'utf8');
   assert.match(source, /new DatabaseSync\([^,]+, \{ readOnly: true \}\)/);

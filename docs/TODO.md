@@ -71,7 +71,7 @@
 - [x] **已被 2026-08-22“退役独立中继”取代：不再扩建 Rust 中继清扫。** PostgreSQL 同步历史在快照/压缩协议出现前继续永久保留并以租户硬配额拒绝新写入；旧 Rust 中继只完成迁移和下线，不再增加定时清扫、统计或水位线能力。
 - [ ] **memory_ledger 分页**：全表加载无 LIMIT，作为 F12 日常界面在长寿命设备上内存与 JSON 载荷线性无界；加 (layer, limit, cursor) 按层懒加载，导出继续走 export.rs 独立路径。
 - [ ] **CSP 去 unsafe-inline 收尾**（MISC 2026-07-21 明记「别忘了」）：tauri.conf.json script-src 仍带 unsafe-inline。2026-08-22 实测 `index.html` 为 394,377 UTF-8 字节、其中唯一内联脚本 256,535 字节；相对 07-21 的 268,890 / 184,401 字节分别增长约 46.7% / 39.1%，不能把整文件增幅误写成脚本增幅。拆 `dist/app.js` 时 `check-frontend.mjs` 必须同步改为校验 `app.js`——否则 `<script src>` 被捕获为空内容、`vm.Script("")` 静默通过，静态检查空转。
-- [ ] **云服务小加固打包**：/v1/auth/refresh|logout 补 IP 限流（认证面唯一没节流的未鉴权入口，垃圾 token 也打满一次 DB 事务 + advisory lock）；ai.usage_events 增加保留期清理（全库唯一无清理表）；~~compose 增加 pg_dump 备份编排 + 恢复演练~~ ✅ **已做（2026-08-22）**：每日 UTC 03:23 自动 pg_dump（保留 14 份，`/opt/1panel/backup/solum-cloud/`），全新容器恢复演练通过（10 表行数比对一致、0 错误，手册 RESTORE.md 同目录）；recovery envelope 与 /v1/devices 补运行时集成测试（现仅 contract 正则断言，create-only 语义测不出来）。
+- [x] **云服务小加固打包（2026-08-25）**：/v1/auth/refresh|logout 补每 IP 失败窗口（15 分钟 100 次，失败才计数）；ai.usage_events 增加保留期清理（默认 90 天，`SOLUM_USAGE_EVENT_RETENTION_DAYS` 可调 30–3650，随 6 小时周期保留任务执行；月度聚合继续承担配额判定）。~~compose 增加 pg_dump 备份编排 + 恢复演练~~ ✅ **已做（2026-08-22）**：每日 UTC 03:23 自动 pg_dump（保留 14 份，`/opt/1panel/backup/solum-cloud/`），全新容器恢复演练通过（10 表行数比对一致、0 错误，手册 RESTORE.md 同目录）；recovery envelope 与 /v1/devices 补运行时集成测试（现仅 contract 正则断言，create-only 语义测不出来）——运行时集成测试仍待做。
 - [x] **已完成：文档检索层**（本批）：PITFALLS/MISC 尾部时序错乱修正 + 头部主题索引与插入规则；CHANGELOG 版本速查索引；docs/README.md 导航升级；ARCHITECTURE 状态句与 §6 标题更正。详见 CHANGELOG 当日条目。
 
 ### 小项打包

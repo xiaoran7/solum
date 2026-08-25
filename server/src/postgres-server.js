@@ -32,6 +32,7 @@ const LOGIN_MAX_FAILURES = 5;
 const LOGIN_IP_MAX_FAILURES = 50;
 const MAX_CONCURRENT_AUTH_KDFS = 8;
 const REGISTRATION_MAX_ATTEMPTS = 5;
+const REFRESH_IP_MAX_FAILURES = 100;
 const MAX_REFRESH_SESSIONS_PER_USER = 32;
 const REFRESH_REPLAY_GRACE_MS = 5_000;
 const MAX_AI_TOKENS_PER_REQUEST = 10 * 1000 * 1000;
@@ -469,6 +470,7 @@ function buildConfig(overrides = {}) {
     trustProxy: process.env.SOLUM_TRUST_PROXY === 'true',
     poolMax: Number(process.env.SOLUM_DB_POOL_MAX || 10),
     alertRetentionDays: Number(process.env.SOLUM_ALERT_RETENTION_DAYS || 7),
+    usageEventRetentionDays: Number(process.env.SOLUM_USAGE_EVENT_RETENTION_DAYS || 90),
     tenantMaxBlobBytes: Number(process.env.SOLUM_TENANT_MAX_BLOB_BYTES || 1073741824),
     tenantMaxBlobs: Number(process.env.SOLUM_TENANT_MAX_BLOBS || 100000),
     tenantMaxDevices: Number(process.env.SOLUM_TENANT_MAX_DEVICES || 32),
@@ -502,6 +504,10 @@ function buildConfig(overrides = {}) {
   if (!Number.isSafeInteger(config.alertRetentionDays) || config.alertRetentionDays < 1 ||
     config.alertRetentionDays > 36500) {
     throw new Error('SOLUM_ALERT_RETENTION_DAYS must be between 1 and 36500');
+  }
+  if (!Number.isSafeInteger(config.usageEventRetentionDays) ||
+    config.usageEventRetentionDays < 30 || config.usageEventRetentionDays > 3650) {
+    throw new Error('SOLUM_USAGE_EVENT_RETENTION_DAYS must be between 30 and 3650');
   }
   for (const [name, value, maximum] of [
     ['SOLUM_TENANT_MAX_BLOB_BYTES', config.tenantMaxBlobBytes, Number.MAX_SAFE_INTEGER],
@@ -684,6 +690,13 @@ async function cleanExpiredData(pool, config) {
         "delete from vault.backups where tenant_id=$1 and status='pending' " +
           "and created_at<now()-($2::text||' hours')::interval",
         [user.id, config.backupPendingTtlHours]
+      );
+      // Usage events are the only table without any cleanup; monthly
+      // aggregates keep serving quota checks after the rows are gone.
+      await client.query(
+        "delete from ai.usage_events where tenant_id=$1 " +
+          "and created_at<now()-($2::text||' days')::interval",
+        [user.id, config.usageEventRetentionDays]
       );
     });
   }
@@ -1277,6 +1290,12 @@ async function createPostgresServer(overrides = {}) {
   const registrationAttempts = createFixedWindowLimiter({
     windowMs: LOGIN_WINDOW_MS, maxAttempts: REGISTRATION_MAX_ATTEMPTS,
   });
+  // Unauthenticated refresh/logout share one per-IP failure window; garbage
+  // token floods from one address otherwise hold pool connections in
+  // transactions just like login floods did.
+  const refreshIpFailures = createFixedWindowLimiter({
+    windowMs: LOGIN_WINDOW_MS, maxAttempts: REFRESH_IP_MAX_FAILURES,
+  });
   const authKdfConcurrency = createConcurrencyLimiter(MAX_CONCURRENT_AUTH_KDFS);
 
   async function authenticate(req) {
@@ -1461,6 +1480,12 @@ async function createPostgresServer(overrides = {}) {
     if (req.method === 'POST' && url.pathname === '/v1/auth/refresh') {
       const body = await readJson(req);
       const refresh = requiredOpaqueString(body.refresh_token, 'invalid_refresh_token', 512);
+      // Refresh and logout are unauthenticated endpoints that each trigger a
+      // database transaction; without an IP cap, garbage tokens can saturate
+      // the pool just like login attempts could.
+      const address = requestClientAddress(req, config.trustProxy);
+      const ipReservation = refreshIpFailures.reserve(address);
+      if (!ipReservation) throw new HttpError(429, 'too_many_attempts');
       const hash = tokenHash(refresh);
       const sessionId = refreshTokenSessionId(refresh, config.authSecret);
       const client = await pool.connect();
@@ -1533,9 +1558,16 @@ async function createPostgresServer(overrides = {}) {
           refresh_token: rotatedRefresh,
           user: { id: row.user_id, username: row.username },
         };
+        ipReservation.release();
         return json(res, 200, session);
       } catch (error) {
         if (transactionOpen) await client.query('rollback').catch(() => {});
+        // A failed token verification is exactly what the limiter counts.
+        if (error instanceof HttpError && error.status === 401) {
+          ipReservation.commit();
+        } else {
+          ipReservation.release();
+        }
         throw error;
       } finally {
         client.release();
@@ -1544,6 +1576,9 @@ async function createPostgresServer(overrides = {}) {
 
     if (req.method === 'POST' && url.pathname === '/v1/auth/logout') {
       const body = await readJson(req);
+      const address = requestClientAddress(req, config.trustProxy);
+      const logoutIpReservation = refreshIpFailures.reserve(address);
+      if (!logoutIpReservation) throw new HttpError(429, 'too_many_attempts');
       const refresh = requiredOpaqueString(body.refresh_token, 'invalid_refresh_token', 512);
       const sessionId = refreshTokenSessionId(refresh, config.authSecret);
       const hash = tokenHash(refresh);
@@ -1565,10 +1600,16 @@ async function createPostgresServer(overrides = {}) {
         await client.query('commit');
       } catch (error) {
         await client.query('rollback').catch(() => {});
+        if (error instanceof HttpError && (error.status === 400 || error.status === 401)) {
+          logoutIpReservation.commit();
+        } else {
+          logoutIpReservation.release();
+        }
         throw error;
       } finally {
         client.release();
       }
+      logoutIpReservation.release();
       return json(res, 200, { status: 'ok' });
     }
 
