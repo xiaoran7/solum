@@ -79,7 +79,7 @@
 - [x] **已被 2026-08-22“加密云备份取代多主同步”取消：不再扩展 pull 侧 403 语义。** 当前错误保持显式可见直到迁移；资源投入转向备份坏包防护、设备代次接管和换机恢复。
 - [x] **已完成（2026-08-25）**：`orchestrator.rs` 三处多步写已全部包进 `with_transaction`（`persist_event_with_scope` 事件+提醒计划一个单元；`fire_due` 标记 fired 与行为台账一条记录；`set_importance_rule` 每个事件的删旧+重排一个单元），并补「注入 `insert_notification`/`insert_behavior` 故障 → 断言整体回滚」回归测试 3 项。
 - [x] **已完成（2026-08-25）**：`CoreError::From<rusqlite::Error>` 现在把 SQLite 错误码带进文案前缀（`[ConstraintViolation] …`、`[DatabaseBusy] …`），变体保持 `Storage(String)` 不破坏既有匹配；`events.people_json` 与 `notifications.channels_json` 两个 row mapper 对损坏 JSON 改为 eprintln 带行 id + 解析错误后回退空值（一行坏数据不再无痕消失，也不会拖垮整个台账列表）。回归测试 3 项。
-- [ ] push 装箱循环 O(n²) 重复加密改估算式装箱（每加一条 op 就整批重新序列化+ChaCha 加密；积压越大浪费越多，恰是离线回连场景，手机 CPU 上可感知）。
+- [x] **已完成（2026-08-25，`5a42346`）**：push 装箱改为按实测大小装箱——每条 op 只序列化一次累加长度、整批只加密一次；保守估算（含逗号与 AEAD 帧）保证不越过 7 MiB 上限。单条超限滞留语义不变（`sync_push_holds` + 游标推进）。
 - [ ] 根目录约 35MB 一次性产物（output/ 旧 APK、演示视频、playwright 日志）移仓库外归档目录。**注意：根目录 `solum.sqlite*` 是「桌面与 CLI 共库」的刻意设计（MISC 有记录），勿清。**
 - [ ] 通知渠道 ID `pa_notification_pipeline` 改名残留：与 2026-07-20 改名决议矛盾（同批改了 pa_reminders 渠道），改名（带 deleteChannel 迁移）或补进刻意保留清单，二选一显式拍板。
 - [x] **受阻项代码侧推进（2026-08-24）**：Android Debug 设置页提供双层拒绝 Release 的延迟进程死亡注入，只杀当前 PID，不改配置、不清数据、不取消 AlarmManager PendingIntent；`docs/ANDROID-RELEASE-QA.md` 固化提醒回收与 `/v1/alerts` `status=test` 福利告警配方，包含首次游标初始化、唯一 event id、幂等重放、短期令牌和 7 天自然清理边界。两项均从“缺测试入口”转为“待有设备验证”。
