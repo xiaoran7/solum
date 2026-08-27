@@ -4,6 +4,13 @@
 >
 > 插入规则（2026-08-21 定）：新条目插在本行下方、保持全文件新→旧；**不要追加到文件尾部**——历史上尾部追加造成时序错乱（2026-08-21 已修正归位）。
 
+## 2026-08-27 Android 模拟器连接境内外 HTTPS：必须以 `-http-proxy` 启动才能覆盖 Rust/Linux 原生套接字
+
+- **现象**：在 Android 模拟器内调用 `account_register`（连接 `https://solumsync.tannerlab.xyz`）时报 `Connection reset by peer (os error 104)`；在模拟器系统设置中配置 `settings put global http_proxy 10.0.2.2:10808` 依然失败。
+- **根因**：Android 系统的 `global http_proxy` 只对 Java 层的 OkHttp / HttpURLConnection / WebView 生效，底层 Rust `ureq` 的 Linux socket 直连不受其影响。当海外 CDN（Cloudflare）连接需要经过宿主代理时，直连 TCP 握手被直接 RST。
+- **解决/避免**：启动模拟器时显式附加 `-http-proxy http://127.0.0.1:10808` 参数。QEMU/netsimd 会在虚拟网络层统一将客机的所有出站流量通过宿主代理转发，Rust 原生套接字与 Java 层无需任何特殊代码改动即可正常完成 TLS 握手。
+- **关联（2026-08-27 生产服务端版本差异）**：模拟器注册成功并鉴权后，调用 `recovery_code_issue` 遇到 `账号服务器版本过旧：缺少恢复码接口，请先升级 solum-cloud`，印证了生产 VPS 目前仍运行 `solum-cloud 0.6.4`（待后续将 `solum-cloud 0.7.0` 部署上线后支持 F26 与 F17 备份 API）。
+
 ## 2026-08-23 自托管 Actions 镜像与 service 网络不能照搬 GitHub-hosted 假设
 
 - **现象**：Gitea runner 接到工作流后，Rust job 在 `rustup: command not found` 处失败；PostgreSQL job 先因 service 尝试绑定宿主 `127.0.0.1:5432`、与生产 PostgreSQL 已占端口冲突而失败，修掉端口后又依次在 provision 报 `psql: not found`、在 Node 测试报依赖模块不存在。

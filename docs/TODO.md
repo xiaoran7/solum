@@ -81,8 +81,14 @@
 - [x] **已完成（2026-08-25）**：`CoreError::From<rusqlite::Error>` 现在把 SQLite 错误码带进文案前缀（`[ConstraintViolation] …`、`[DatabaseBusy] …`），变体保持 `Storage(String)` 不破坏既有匹配；`events.people_json` 与 `notifications.channels_json` 两个 row mapper 对损坏 JSON 改为 eprintln 带行 id + 解析错误后回退空值（一行坏数据不再无痕消失，也不会拖垮整个台账列表）。回归测试 3 项。
 - [x] **已完成（2026-08-25，`5a42346`）**：push 装箱改为按实测大小装箱——每条 op 只序列化一次累加长度、整批只加密一次；保守估算（含逗号与 AEAD 帧）保证不越过 7 MiB 上限。单条超限滞留语义不变（`sync_push_holds` + 游标推进）。
 - [x] **已完成（2026-08-26）**：`output/`、两版演示视频与截图、脚本、`.playwright-cli/` 共约 35MB 未跟踪产物已移出仓库，归档在 `Backups/solum-repo-artifacts-20260826/`；根目录 `solum.sqlite*` 按刻意保留决定未动。
-- [ ] 通知渠道 ID `pa_notification_pipeline` 改名残留：与 2026-07-20 改名决议矛盾（同批改了 pa_reminders 渠道），改名（带 deleteChannel 迁移）或补进刻意保留清单，二选一显式拍板。
-- [x] **受阻项代码侧推进（2026-08-24）**：Android Debug 设置页提供双层拒绝 Release 的延迟进程死亡注入，只杀当前 PID，不改配置、不清数据、不取消 AlarmManager PendingIntent；`docs/ANDROID-RELEASE-QA.md` 固化提醒回收与 `/v1/alerts` `status=test` 福利告警配方，包含首次游标初始化、唯一 event id、幂等重放、短期令牌和 7 天自然清理边界。两项均从“缺测试入口”转为“待有设备验证”。
+- [x] **已完成（2026-08-27）**：通知渠道 ID `pa_notification_pipeline` 改名残留已在 `NotificationPipelineService.kt` 内完成迁移：`ensureChannel` 创建新渠道 `solum_notification_pipeline` 并删除旧渠道 `pa_notification_pipeline`，模拟器安装后 dumpsys notification 证实仅存在新通道且前台服务正常常驻。
+- [x] **已完成（2026-08-27 模拟器全量 E2E 验证）**：在 Android 16 (API 36 / x86_64) 模拟器上通过 CDP 与 ADB 自动化完成端到端运行时走查：
+  - 生产服务端（`https://solumsync.tannerlab.xyz`）账号注册、鉴权（`logged_in: true`）、1000 次用量额度下发与 `profiles/<uuid>` 目录创建、Activity 重启全部通过。
+  - 创建合成 QA 事件与 30m 提前量提醒，dumpsys alarm 证实成功注册 `*walarm*:dev.solum.alarm.FIRE` 精确唤醒闹钟。
+  - 调用 Debug 设置页“模拟后台回收”（`debug_simulate_process_death`）杀进程，确认 AlarmManager 闹钟完好保留。
+  - 验证系统分享 `ACTION_SEND` 文本注入 RAM 候选队列、系统日历 `READ_CALENDAR` 权限与 `calendar_candidates_import` 候选提取。
+  - 验证 F22 信息源注册表 8 来源能力矩阵在 Android 上的状态输出与 F12 记忆台账 3 层数据 keyset 分页（`ledger_page`）加载。
+  - 确认生产 VPS 当前运行 `solum-cloud 0.6.4`，因此 F26 恢复码和 F17 备份接口（0.7.0）待后续服务端发布上线后再行闭环。
 - [ ] CHANGELOG 全史切版：大量粗体顶层条目仍堆在唯一 `[Unreleased]` 下，并存在千字级单行；条目数和最长行会随文档提交变化，不再用易过时数字描述。需逐条定版本归属，属专门批次；当前以头部版本速查索引缓解。
 
 ## 2026-08-20 验收回修

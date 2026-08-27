@@ -6,6 +6,16 @@
 
 ## [Unreleased]
 
+- **Android 模拟器全量链路 E2E 走查与运行时修复（2026-08-27，未发布）**：使用 `Medium_Phone_API_36.1`（Android 16 / API 36 / x86_64）完成 Android 客户端全量自动化与运行时走查。
+  1. **构建与打包门禁**：修复 `NotificationPipelineService.kt` 缺失的 `ensureChannel()` / `buildNotification()` 方法；通过 `cargo ndk` + `SOLUM_PREBUILT_JNILIBS=1` 编译 x86_64 原生库，打出 debug APK 并通过 `verify-android-release.mjs` 签名校验（v2 签名有效，`AlarmReceiver`、`BootReceiver`、`SolumNotificationListener` 三大静态接收器全部合规存在）。
+  2. **CSP 与 WebView 容器**：真机 CDP 探针确认 WebView 成功加载 `app.js`，严格 `script-src 'self'` 下 21 个视图正常渲染、无任何 CSP 违规报错；隐私政策 v3 门禁交互与同意状态持久化正常。
+  3. **生产端账号鉴权与 Profile 隔离**：配置 QEMU `-http-proxy` 出站转发后，在模拟器内直接调用生产服务端 `https://solumsync.tannerlab.xyz` 注册 QA 账号并成功鉴权（`logged_in: true`，用量额度 1000 正常下发）；客户端自动创建 `profiles/<uuid>` 隔离目录并完成 Activity 重启。
+  4. **精确闹钟与后台回收仿真**：创建带 30m 提前量提醒的事件，确认 Android AlarmManager 成功注册 `*walarm*:dev.solum.alarm.FIRE` 唤醒闹钟；调用 Debug `debug_simulate_process_death` 模拟后台进程回收，进程退出后 AlarmManager 闹钟完好保留。
+  5. **系统能力与候选箱**：验证 `ACTION_SEND` 文本分享进入候选队列、系统日历 `READ_CALENDAR` 权限授予与 `calendar_candidates_import` 候选提取、F22 信息源注册表 8 来源矩阵状态展示、F12 记忆台账 3 层数据 keyset 分页（`ledger_page`）加载。
+  6. **前台服务与通道迁移**：确认 `solum_notification_pipeline` 前台服务常驻，旧 `pa_notification_pipeline` 通道已自动移除。
+  7. **环境断言备忘**：确认生产 VPS 当前运行 `solum-cloud 0.6.4`，因此 F26 恢复码和 F17 备份接口（0.7.0）待后续服务端发布上线后再行闭环。
+  8. **质量基线**：workspace 469 项测试全绿、严格 Clippy 零告警、fmt 零漂移、前端门禁 359 个唯一 ID 通过。
+
 - **CSP script-src 去 unsafe-inline：前端脚本拆分 dist/app.js（2026-08-26，未发布）**：兑现 MISC 2026-07-21「别忘了」的收尾。294,610 字节的唯一内联 `<script>` 机械拆为 `dist/app.js`，index.html 以相对路径 `<script src="app.js">` 加载（不引入框架/npm/构建步骤，技术栈铁律不破）；`tauri.conf.json` 的 CSP `script-src` 去掉 `'unsafe-inline'`——注入者从此即使拿到执行能力也没有"内联即合法"的便利面，远程加载脚本的拦截不变。`style-src` 维持现状（51 处内联 style 属性迁移属前端批次，且 2026-08-11 PITFALLS 已记录 nonce 与 unsafe-inline 并存时的拒绝行为）。配套：`check-frontend.mjs` 改为语法校验 app.js、新增三道防回退门（index.html 出现内联 `<script>` 即失败；必须以指定形式引用 app.js；CSP 重新出现 script `'unsafe-inline'` 即失败），六个按内容断言前端的 Rust 测试改读 app.js。验证：workspace 469 项测试全绿、严格 Clippy 零告警、fmt 零漂移、前端门禁 359 个唯一 ID 通过；mock-IPC 真浏览器走查确认外部脚本在收紧后的 CSP 下正常加载执行（21 视图渲染、动态视图可达、无 CSP 拦截报错）。Android 真机/模拟器上的 production CSP 注入（Tauri 会给 script-src 附加 nonce/hash）仍待下轮打包验收。
 
 - **通知前台服务渠道 ID 完成改名迁移（2026-08-26，未发布）**：`NotificationPipelineService` 渠道 ID 从改名残留的 `pa_notification_pipeline` 改为 `solum_notification_pipeline`，`ensureChannel` 创建新渠道后删除旧渠道——升级安装不再在系统设置里留下一条永远不再使用的死通道（2026-07-20 决议当时只改了用户可见名）。验证：Gradle `:app:compileArm64DebugKotlin` 编译通过。

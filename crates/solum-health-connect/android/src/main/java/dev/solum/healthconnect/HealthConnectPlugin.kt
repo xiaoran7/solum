@@ -22,6 +22,8 @@ import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.time.Duration
 import java.time.Instant
@@ -40,7 +42,8 @@ class ReadRecentArgs {
  */
 @TauriPlugin
 class HealthConnectPlugin(private val activity: Activity) : Plugin(activity) {
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val job = SupervisorJob()
+    private val scope = CoroutineScope(Dispatchers.IO + job)
 
     private val permissions = setOf(
         HealthPermission.getReadPermission(HeartRateRecord::class),
@@ -57,7 +60,7 @@ class HealthConnectPlugin(private val activity: Activity) : Plugin(activity) {
         /** Longest history one `readRecent` may ask for. */
         const val MAX_LOOKBACK_DAYS = 7L
         /** Heart-rate sub-samples emitted across the bridge in one response. */
-        const val MAX_EMITTED_SAMPLES = 50_000
+        const val MAX_EMITTED_SAMPLES = 3_000
     }
 
     private fun client(): HealthConnectClient? =

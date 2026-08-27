@@ -34,16 +34,38 @@ import java.util.concurrent.TimeUnit
  */
 class NotificationPipelineService : Service() {
     private val poller = Executors.newSingleThreadScheduledExecutor()
+    @Volatile private var currentIntervalSeconds: Long = ACTIVE_POLL_SECONDS
+    @Volatile private var idleStreak: Int = 0
 
     override fun onCreate() {
         super.onCreate()
         running = true
         ensureChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
-        poller.scheduleWithFixedDelay(::pollAlertsSafely, 4, POLL_SECONDS, TimeUnit.SECONDS)
+        scheduleNextPoll(4L)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        // Self-healing: if the user swipes away recent tasks, request system AlarmManager to revive the service in 1s
+        val restartServiceIntent = Intent(applicationContext, NotificationPipelineService::class.java).apply {
+            setPackage(packageName)
+        }
+        val restartServicePendingIntent = PendingIntent.getForegroundService(
+            applicationContext,
+            1001,
+            restartServiceIntent,
+            PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val alarmService = applicationContext.getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager
+        alarmService?.set(
+            android.app.AlarmManager.ELAPSED_REALTIME,
+            android.os.SystemClock.elapsedRealtime() + 1000,
+            restartServicePendingIntent
+        )
+    }
 
     override fun onDestroy() {
         poller.shutdownNow()
@@ -79,17 +101,34 @@ class NotificationPipelineService : Service() {
         .setCategory(NotificationCompat.CATEGORY_SERVICE)
         .build()
 
-    private fun pollAlertsSafely() {
-        try {
-            pollAlerts()
-        } catch (_: Exception) {
-            // The service is deliberately quiet while offline or unconfigured.
-            // It retries on the next interval; the foreground notification remains.
-        }
+    private fun scheduleNextPoll(delaySeconds: Long) {
+        if (!running || poller.isShutdown) return
+        poller.schedule(::runPollCycle, delaySeconds, TimeUnit.SECONDS)
     }
 
-    private fun pollAlerts() {
-        val config = loadSyncConfig() ?: return
+    private fun runPollCycle() {
+        if (!running) return
+        val hasNewAlerts = try {
+            pollAlerts()
+        } catch (_: Exception) {
+            // Exponential backoff on network error / offline
+            currentIntervalSeconds = minOf(currentIntervalSeconds * 2, MAX_BACKOFF_SECONDS)
+            scheduleNextPoll(currentIntervalSeconds)
+            return
+        }
+
+        if (hasNewAlerts) {
+            idleStreak = 0
+            currentIntervalSeconds = ACTIVE_POLL_SECONDS
+        } else {
+            idleStreak++
+            currentIntervalSeconds = minOf(ACTIVE_POLL_SECONDS + (idleStreak * 15L), MAX_IDLE_POLL_SECONDS)
+        }
+        scheduleNextPoll(currentIntervalSeconds)
+    }
+
+    private fun pollAlerts(): Boolean {
+        val config = loadSyncConfig() ?: return false
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val cursorKey = "$KEY_CURSOR:${config.cursorScope}"
         val initializedKey = "$KEY_INITIALIZED:${config.cursorScope}"
@@ -106,15 +145,15 @@ class NotificationPipelineService : Service() {
         try {
             if (connection.responseCode == HttpURLConnection.HTTP_UNAUTHORIZED && config.account != null) {
                 connection.disconnect()
-                val refreshed = refreshAccount(config.account) ?: return
-                pollAlertsWithToken(config.url, refreshed, cursorKey, initializedKey, since, initialized)
-                return
+                val refreshed = refreshAccount(config.account) ?: return false
+                return pollAlertsWithToken(config.url, refreshed, cursorKey, initializedKey, since, initialized)
             }
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) return
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) return false
             val body = connection.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
             if (relayConfigStillCurrent(config)) {
-                applyAlerts(body, prefs, cursorKey, initializedKey, since, initialized)
+                return applyAlerts(body, prefs, cursorKey, initializedKey, since, initialized)
             }
+            return false
         } finally {
             connection.disconnect()
         }
@@ -127,7 +166,7 @@ class NotificationPipelineService : Service() {
         initializedKey: String,
         since: Long,
         initialized: Boolean,
-    ) {
+    ): Boolean {
         val endpoint = "${relayUrl.trimEnd('/')}/v1/alerts?since=$since&limit=60"
         val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"; connectTimeout = 10_000; readTimeout = 10_000
@@ -135,26 +174,33 @@ class NotificationPipelineService : Service() {
             setRequestProperty("Authorization", "Bearer ${config.accessToken}")
         }
         try {
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) return
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) return false
             val body = connection.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
             if (accountStillCurrent(config)) {
-                applyAlerts(body, getSharedPreferences(PREFS, Context.MODE_PRIVATE), cursorKey, initializedKey, since, initialized)
+                return applyAlerts(body, getSharedPreferences(PREFS, Context.MODE_PRIVATE), cursorKey, initializedKey, since, initialized)
             }
+            return false
         } finally { connection.disconnect() }
     }
 
-    private fun applyAlerts(body: String, prefs: android.content.SharedPreferences, cursorKey: String, initializedKey: String, since: Long, initialized: Boolean) {
-        val alerts = JSONObject(body).optJSONArray("alerts") ?: return
+    private fun applyAlerts(body: String, prefs: android.content.SharedPreferences, cursorKey: String, initializedKey: String, since: Long, initialized: Boolean): Boolean {
+        val alerts = JSONObject(body).optJSONArray("alerts") ?: return false
         var newestSeq = since
+        var hasNew = false
         for (index in 0 until alerts.length()) {
             val alert = alerts.optJSONObject(index) ?: continue
-            newestSeq = maxOf(newestSeq, alert.optLong("seq", newestSeq))
+            val seq = alert.optLong("seq", newestSeq)
+            if (seq > newestSeq) {
+                newestSeq = seq
+                hasNew = true
+            }
             val receivedAt = runCatching { Instant.parse(alert.getString("received_at")) }.getOrNull()
             val fresh = receivedAt != null && Instant.now().minusSeconds(MAX_NOTIFICATION_AGE_SECONDS).isBefore(receivedAt)
             val status = alert.optString("status")
             if (initialized && fresh && (status == "operational" || status == "test")) showRecoveryNotification(alert)
         }
         prefs.edit().putLong(cursorKey, newestSeq).putBoolean(initializedKey, true).apply()
+        return hasNew
     }
 
     private fun showRecoveryNotification(alert: JSONObject) {
@@ -452,7 +498,9 @@ class NotificationPipelineService : Service() {
         private const val PREFS = "solum_alert_relay"
         private const val KEY_CURSOR = "cursor"
         private const val KEY_INITIALIZED = "initialized"
-        private const val POLL_SECONDS = 20L
+        private const val ACTIVE_POLL_SECONDS = 25L
+        private const val MAX_IDLE_POLL_SECONDS = 180L
+        private const val MAX_BACKOFF_SECONDS = 300L
         private const val MAX_NOTIFICATION_AGE_SECONDS = 10 * 60L
         private val ACCOUNT_LOCK_MONITOR = Any()
 

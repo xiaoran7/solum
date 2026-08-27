@@ -39,7 +39,7 @@
         <!-- F1: notification capture (user must grant notification access) -->
         <service
             android:name=".SolumNotificationListener"
-            android:exported="false"
+            android:exported="true"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />

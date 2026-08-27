@@ -5778,6 +5778,7 @@ const dataMotionObserver = new MutationObserver((records) => {
   for (const record of records) {
     for (const node of record.addedNodes) {
       if (!(node instanceof HTMLElement)) continue;
+      if (node.closest("#chatLog") || node.matches("#chatLog, .msg, .msg *")) continue;
       const candidates = node.matches(".row,.ev-row,.notif-row,.mail-row,.gc-card,.search-result,.search-quick,.empty,.statusline")
         ? [node]
         : Array.from(node.querySelectorAll(".row,.ev-row,.notif-row,.mail-row,.gc-card,.search-result,.search-quick,.empty,.statusline"));

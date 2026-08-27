@@ -90,6 +90,7 @@ object AlarmScheduler {
      * Throws if the schedule could not be persisted. The caller must not
      * record this set as synced in that case — see [save].
      */
+    @Synchronized
     fun replaceAll(ctx: Context, items: List<Item>): Boolean {
         val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         // Read the outgoing set *before* the save overwrites the file — that
@@ -106,6 +107,7 @@ object AlarmScheduler {
     }
 
     /** Arm all future items (used by both sync and boot re-arm). */
+    @Synchronized
     fun applyAll(ctx: Context, items: List<Item> = load(ctx)): Boolean {
         val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val now = System.currentTimeMillis()
