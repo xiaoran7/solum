@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+- **域名合并第一步落地：solum.tannerlab.xyz 已挂上 Solum Center API 路由（2026-08-27，未发布）**：接同日「solumsync 域名进入废弃流程」决策，替代域名定为 `solum.tannerlab.xyz`，官网与 API 同域。已在海外 VPS openresty `conf.d/solum.tannerlab.xyz.conf` 增加 `location ^~ /v1/ { proxy_pass http://127.0.0.1:18083; }`（与 solumsync vhost 的 root.conf 同一上游、同一组 proxy 头与 no-store 缓存语义），改动前备份 `.bak-v1merge-20260827`，容器内 `nginx -t` 通过后 reload。**验收证据**：①Cloudflare DoH 与 Google DoH 一致返回 CF 边缘 `104.21.64.111 / 172.67.182.236`（非源站 IP）；②公网 `/cdn-cgi/trace` 显示 `h=solum.tannerlab.xyz`、`colo=SEA`、`visit_scheme=https`；③源站本机 :443 与 :8443 及独立公网 GET `/v1/health` 均返回 Solum Center 健康 JSON（0.7.0/a2a6edb），站点根路径仍 200，solumsync 链路无回归；④真机 rustls push/pull 复测待用户设备执行（见 TODO）。客户端硬编码默认值本批次不动，兼容窗口期间两个域名同时可用。
+
 - **域名决策：solumsync.tannerlab.xyz 进入废弃流程（2026-08-27，未发布）**：站长拍板该域名已经没有存在必要，最终将不再是 Solum Center 的对外身份；本文档先行留痕，运行时配置本批次一律不动。当前真实链路不变：客户端 → CF 橙云边缘 ：443 → 海外 VPS openresty :8443 → solum-cloud（0.6.4），阿里云 `8.148.11.79` 的主机 nginx vhost（`sites-enabled/solumsync-cn-relay.conf`）+ 容器中转只剩手工切灰云时的备胎角色。**废弃的硬前置**：`crates/solum-app/dist/app.js` 的 `SOLUM_CENTER_URL` 与登录页 `accountServer` 输入框默认值仍硬编码该域名，存量安装继续用它注册与鉴权，因此必须先定替代域名并走完整条迁移链（见 TODO 同日新增项），兼容窗口收口之前不得删 CF 记录或下线服务端路由。
 
 - **Android 模拟器全量链路 E2E 走查与运行时修复（2026-08-27，未发布）**：使用 `Medium_Phone_API_36.1`（Android 16 / API 36 / x86_64）完成 Android 客户端全量自动化与运行时走查。
