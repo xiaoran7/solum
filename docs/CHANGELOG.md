@@ -6,7 +6,7 @@
 
 ## [Unreleased]
 
-- **Solum Center 最终域名改为已备案的 `solum.tannerlab.cn`（2026-08-27，未发布、生产路由待上线）**：客户端默认中心地址已从中间方案 `solum.tannerlab.xyz` 切到 `.cn`，core 的存量迁移映射同时覆盖最早的 `solumsync.tannerlab.xyz` 与中间的 `solum.tannerlab.xyz`，账号会话和 profile 内备份密钥配置继续共用同一映射，任意自定义端点保持不变。只读现网核验显示 Cloudflare 与 Google DoH 均返回 CF 边缘地址，`/cdn-cgi/trace` 命中边缘；但 VPS openresty 尚无 `.cn` vhost，公网 `/v1/health` 当前落入默认 TannerLab Authorization Server 并返回 401，不能算 Solum 健康。本次 workspace 全量测试、Clippy 严格告警和前端静态门禁均通过；生产 vhost/证书、solum-cloud 升级和 vivo 裸蜂窝 rustls 验收仍待后续门禁，旧 `.xyz` 域名在兼容窗口内不得下线。
+- **Solum Center 最终域名改为已备案的 `solum.tannerlab.cn`（2026-08-27，未发布、生产路由待上线）**：客户端默认中心地址已从中间方案 `solum.tannerlab.xyz` 切到 `.cn`，core 的存量迁移映射同时覆盖最早的 `solumsync.tannerlab.xyz` 与中间的 `solum.tannerlab.xyz`，账号会话和 profile 内备份密钥配置继续共用同一映射，任意自定义端点保持不变。只读现网核验显示 Cloudflare 与 Google DoH 均返回 CF 边缘地址，`/cdn-cgi/trace` 命中边缘；但 VPS openresty 尚无 `.cn` vhost，公网 `/v1/health` 当前落入默认 TannerLab Authorization Server 并返回 401，不能算 Solum 健康。本次 workspace 全量测试、Clippy 严格告警、前端静态门禁及 server 测试（46 通过、4 个需 PostgreSQL 环境的用例跳过）均通过。生产容器还暴露出构建溯源异常：健康接口标称 `a2a6edb`，但容器内源码缺少该 Git 提交实际已有的 backup objects/commit 路由，也缺少后续 recovery-code/password 路由；上线必须从已验证 Git archive 重建，不得只相信 revision 标签。生产 vhost/证书、solum-cloud 升级和 vivo 裸蜂窝 rustls 验收仍待后续门禁，旧 `.xyz` 域名在兼容窗口内不得下线。
 
 - **vivo 真机蜂窝网复测：发现 tannerlab.xyz 全域 SNI 过滤阻断 rustls（2026-08-27，未发布）**：QA 隔离包（`dev.solum.app.vivoqa`，`solumQaApplicationIdSuffix` 机制）装上 vivo V2405A（Android 16、联通 5G、无代理）后 rustls 注册新域名被 `os error 104` 掐断；对照矩阵显示新旧域名同炸、每域重复探测确定性 RST、同机 DNS 正确解析 CF 边缘且 ICMP 可达——过滤器在出网链路按注册域 SNI 匹配非浏览器级 ClientHello，**与源站/橙云与否无关，08-21 的阿里云归因据此升级修正**。含义：①本次域名合并在技术上（服务端链路+客户端迁移）依然成立；②但 tannerlab.xyz 下任何主机名对国内裸蜂窝网络都不可用，旧域名生产用户该场景早已同炸——属先于合并存在的环境级阻塞，非回归；③上线新增站长前置决策：备案合规接入或改用注册局身份不同的全新域名（PITFALLS 当日条目含方案对比）。当天遗留清单同步更新至 TODO 迁移条目。
 

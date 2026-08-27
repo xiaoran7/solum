@@ -4,6 +4,12 @@
 >
 > 插入规则（2026-08-21 定）：新条目插在本行下方、保持全文件新→旧；**不要追加到文件尾部**——历史上尾部追加造成时序错乱（2026-08-21 已修正归位）。
 
+## 2026-08-27 健康接口 revision 与容器真实源码不一致：构建标签不是供应链证据
+
+- **现象**：生产 `/v1/health` 返回 `0.7.0 / a2a6edb…`，但容器内 `/app/src/postgres-server.js` 只有备份 plan/list/generation 路由，缺少 objects/commit 与 recovery-code/password 路由；本地对 Git 对象 `a2a6edb` 只读检查却确认同一文件在该提交已经含 objects/commit。
+- **根因**：现有 release 的 `BUILD_REVISION` 与实际进入镜像的 build context 不一致，可能是沿用旧目录或旧镜像时只更新了 revision 环境值。仅看健康接口、目录名或 compose 标签会把一个不可复现镜像误认成对应 Git 提交。
+- **解决/避免**：发布必须从目标 commit 的 `git archive` 生成全新只读 release 目录，构建后在容器内检查关键路由/文件摘要并跑 health/API smoke；记录镜像 digest、Git commit 与 release 目录三者映射。回滚可以复用已验证旧目录和数据库备份，但不能把当前 `a2a6edb` 容器当作源码完整性的基线。
+
 ## 2026-08-27 Cloudflare 橙云与站点根路径 200 都不能证明新域名已接入正确后端
 
 - **现象**：`solum.tannerlab.cn` 已由 Cloudflare 与 Google DoH 一致解析到 CF 边缘，`/cdn-cgi/trace` 也返回 `CF-RAY`，根路径还能看到 200 页面；但公网 `/v1/health` 实际是 401 `unauthenticated`，页面标题为 TannerLab Authorization Server，不是 Solum Center。
