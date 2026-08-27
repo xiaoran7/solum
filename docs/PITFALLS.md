@@ -4,6 +4,12 @@
 >
 > 插入规则（2026-08-21 定）：新条目插在本行下方、保持全文件新→旧；**不要追加到文件尾部**——历史上尾部追加造成时序错乱（2026-08-21 已修正归位）。
 
+## 2026-08-27 Cloudflare 橙云与站点根路径 200 都不能证明新域名已接入正确后端
+
+- **现象**：`solum.tannerlab.cn` 已由 Cloudflare 与 Google DoH 一致解析到 CF 边缘，`/cdn-cgi/trace` 也返回 `CF-RAY`，根路径还能看到 200 页面；但公网 `/v1/health` 实际是 401 `unauthenticated`，页面标题为 TannerLab Authorization Server，不是 Solum Center。
+- **根因**：海外 VPS openresty 没有 `.cn` 的 `server_name`，请求回源后落入同机默认授权站点。Cloudflare 能完成边缘 TLS 只证明客户端到边缘可用；它既不证明 Host 在源站有匹配 vhost，也不证明 `/v1/` 指向 `127.0.0.1:18083`。此前一次网页读取器返回健康 JSON 的结果与源站 `nginx -T`、干净 VPS 请求和响应体冲突，不能作为当前状态证据。
+- **解决/避免**：新域名上线必须逐项验证两家 DoH、CF trace/ray、源站运行态 `nginx -T` 中的精确 `server_name`/upstream、公网 `/v1/health` 的 Solum 版本 JSON，最后在目标手机用实际 rustls 裸网请求。根路径 200、证书可握手或 CF 橙云单项都不构成业务验收；改 vhost 前先备份运行配置并准备 reload 回滚。
+
 ## 2026-08-27 真机蜂窝网复测：tannerlab.xyz 全域按 SNI 掐非浏览器 TLS，换源站/切橙云无效
 
 - **现象**：vivo V2405A（Android 16、联通 5G NR IPv6 双栈、无系统代理）上用真实 rustls 客户端连 `https://solum.tannerlab.xyz/v1/auth/register|login` 一律 `tls connection init failed: Connection reset by peer (os error 104)`，对新旧两个域名、每域重复探测均确定性复现；同机 `ping` 到 CF 边缘 `104.21.64.111` 可达、运营商 DNS 解析两家域名均正确指向边缘 IP——DNS 与路由无辜，RST 发生在 TLS 握手层。

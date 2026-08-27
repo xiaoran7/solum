@@ -1,6 +1,6 @@
 # TODO 待办
 
-> 状态约定：`待验证` 尚未在目标环境跑通；`已通过` 已有可复查证据；`已复现` 已稳定观察到缺陷；`受阻` 受设备、权限或外部环境限制。Android 真机测试默认使用已安装的生产版客户端与 `https://solumsync.tannerlab.xyz`，不得卸载应用、清空数据或删除用户内容。
+> 状态约定：`待验证` 尚未在目标环境跑通；`已通过` 已有可复查证据；`已复现` 已稳定观察到缺陷；`受阻` 受设备、权限或外部环境限制。Android 真机测试的最终 Center 目标是 `https://solum.tannerlab.cn`；在生产路由与新包上线前保留已安装客户端和旧域名会话原状，不得卸载应用、清空数据或删除用户内容。
 
 ## 2026-08-22 Mobile-only、Android-first + 加密云备份架构收口（用户拍板）
 
@@ -32,7 +32,7 @@
 - [ ] **退役独立 Rust/SQLite 中继与服务端 SQLite 入口。** 从 Cargo workspace、构建/测试/部署链和文档删除 `crates/solum-sync-server`；迁移完成后删除 `server/src/server.js`、`npm run start:sqlite` 及双实现契约分支。一次性只读迁移器和归档说明可以保留，不得继续暴露第二套可写服务器。
 - [ ] **移除网页端与网页登录入口。** 删除 PostgreSQL 入口 `server/src/postgres-server.js` 当前使用的 `server/src/dashboard.html` 及其 `GET /` HTML；旧 SQLite 入口 `server/src/server.js` 本来就没有 Dashboard 或 `GET /`，无需虚构删除项。根路径改为 404、204 或无用户功能的机器响应。注册、登录、备份和恢复只在移动客户端 UI 提供，并收紧 Origin/CORS。若未来要求证明官方安装包身份，另立设备密钥、mTLS 或平台 App Attestation 设计，不能靠 User-Agent。
 - [ ] **统一域名、接口与产品术语。** 所有移动端只保存一个 `server_url`，供 `/v1/auth/*`、`/v1/ai/*`、`/v1/backups/*`、`/v1/keys/*` 共用。`solumsync.tannerlab.xyz` 只作迁移期兼容别名，最终不再代表独立同步系统；把产品和文档中的“多设备同步 / Sync Server”改为“端到端加密云备份 / 换机恢复”。
-  - [ ] **退役 solumsync.tannerlab.xyz 域名（2026-08-27 决策：替代域名定为 solum.tannerlab.xyz；真机复测发现环境级前置阻塞，收口时间顺延）。** 上线顺序与现状：①✅ 服务端同等链路已就绪并通过部分验收——VPS openresty `conf.d/solum.tannerlab.xyz.conf` 新增 `location ^~ /v1/ → http://127.0.0.1:18083`（上游与 solumsync vhost 的 root.conf 相同，改前有 `.bak-v1merge-20260827` 备份）；PITFALLS 2026-08-22 四项验收前三项已通过（两家独立 DoH 返回 CF 边缘 IP、公网 `/cdn-cgi/trace` 命中边缘、公网 `GET /v1/health` 返回 Solum Center 健康 JSON 且站点根路径仍 200、solumsync 无回归）；②✅ 客户端代码已切换并带存量迁移垫片（详见 CHANGELOG 当日条目），模拟器 debug 包验证旧数据自动迁移、refresh/模型/用量/备份目录全通新域名，**正式 release 发版待打包**；③⚠️ 四项验收第④项真机复测已完成但结论为**环境级 TLS 过滤阻断**：vivo 裸蜂窝网上 rustls 对新旧域名确定性 RST（同机 DNS/ICMP 正常），证明 tannerlab.xyz 全域被出网侧按 SNI 掐非浏览器握手——域内换名无效，旧域名生产用户在该场景同样不可用（先于合并存在，非回归）。完整备份 push 与 F26 恢复码另受服务端版本落后（a2a6edb 缺 objects/commit 与 recovery-code 路由）拦截。**上线新前置（站长拍板）：解决 SNI 域名过滤——备案合规接入或改用注册局身份不同的全新域名，然后重排兼容窗口与发版顺序**；④旧域名保留兼容窗口直至存量安装基本迁完；⑤清理阿里云 `8.148.11.79` 备胎 vhost `sites-enabled/solumsync-cn-relay.conf`（同时决定是否给最终承载域名配等价国内备胎）与 CF 旧记录，并在部署文档标注退役日期。兼容窗口收口前不得删 DNS 或停路由。
+  - [ ] **退役 `.xyz` Center 域名（2026-08-27 最终决策：改用已备案的 `solum.tannerlab.cn`）。** 上线顺序与现状：①✅ 新域名两家 DoH 均返回 CF 边缘，公网 `/cdn-cgi/trace` 命中边缘；⚠️ 海外 VPS openresty 尚无 `.cn` vhost，公网 `/v1/health` 当前落到默认 TannerLab Authorization Server 并返回 401，因此服务端路由仍待备份、证书/Host 核对、`nginx -t` 与 reload 后验收。②✅ 客户端源码默认值已切到 `.cn`，存量映射同时覆盖 `solumsync.tannerlab.xyz` 和中间域名 `solum.tannerlab.xyz`，账号会话与备份配置共用迁移规则，workspace 全量测试、Clippy 与前端门禁均通过；待推送、生产路由就绪后打正式 release，不能拿此前 `.xyz` 模拟器结果冒充 `.cn` 通过。③生产 `solum-cloud` 仍运行旧 revision `a2a6edb`，完整备份 objects/commit 与 recovery-code 路由待升级后验收。④vivo V2405A 当前 ADB 未连接；生产链路就绪后必须在联通 5G 裸网用实际 rustls 验证 `.cn`，这一步才证明绕开 `tannerlab.xyz` SNI 过滤。⑤两个 `.xyz` 域名保留兼容窗口直至存量安装基本迁完；之后再清理 CF 记录和阿里云 `8.148.11.79` 的旧中转 vhost，并明确 `.cn` 是否保留等价国内备胎。兼容窗口收口前不得删 DNS 或停旧路由。
 
 ### 备份地基之后的移动端核心优化
 
