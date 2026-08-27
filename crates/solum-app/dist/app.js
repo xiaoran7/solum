@@ -4369,7 +4369,7 @@ const LLM_PRESETS = [
   { id: "custom", label: "自定义端点", base: "", models: [], timeout: 30, temp: "default",
     note: "任何 OpenAI 兼容 /chat/completions 端点均可。" },
 ];
-const SOLUM_CENTER_URL = "https://solumsync.tannerlab.xyz";
+const SOLUM_CENTER_URL = "https://solum.tannerlab.xyz";
 let llmKeyTail = "";   // 已保存密钥的尾巴（空 = 还没存过 key，保存时必填）
 let llmFormSeeded = false; // 表单只在首次加载/保存后回填，refreshAll 不许覆盖正在编辑的内容
 

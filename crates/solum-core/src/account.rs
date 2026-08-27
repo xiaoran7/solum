@@ -28,6 +28,23 @@ use crate::extract::Reasoner;
 pub const DEFAULT_CLOUD_MODEL: &str = "mimo-v2.5";
 pub const CLOUD_MODEL_OPTIONS: &[&str] = &["mimo-v2.5", "mimo-v2.5-pro"];
 
+/// Solum Center 当前对外身份（2026-08-27 域名合并：官网与 API 同域）。
+pub const SOLUM_CENTER_URL: &str = "https://solum.tannerlab.xyz";
+/// 已进入废弃流程的旧中心域名；存量会话读到它时透明改写为新身份（同一后端，
+/// token 不绑定 Host），兼容窗口内旧域名仍可用作别名。
+const LEGACY_CENTER_URL: &str = "https://solumsync.tannerlab.xyz";
+
+/// 域名合并映射：恰好等于旧中心域名（忽略末尾斜杠）时改写为当前身份，
+/// 其余地址原样返回。账号会话与同步密钥配置共用这一条规则。
+pub fn migrate_legacy_center_url(value: &str) -> String {
+    let trimmed = value.trim_end_matches('/');
+    if trimmed.eq_ignore_ascii_case(LEGACY_CENTER_URL) {
+        SOLUM_CENTER_URL.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CloudModelOption {
     pub id: String,
@@ -114,7 +131,7 @@ impl AccountSession {
     }
 
     pub(crate) fn normalize(&mut self) -> Result<()> {
-        self.server_url = normalize_server_url(&self.server_url)?;
+        self.server_url = migrate_legacy_center_url(&normalize_server_url(&self.server_url)?);
         self.user_id = self.user_id.trim().to_ascii_lowercase();
         if !self.user_id.is_empty() && !is_valid_user_id(&self.user_id) {
             return Err(CoreError::Invalid(
@@ -905,6 +922,47 @@ mod tests {
         let opaque = AccountSession::from_json(opaque).unwrap();
         assert_eq!(opaque.access_token, "  access  ");
         assert_eq!(opaque.refresh_token, "\trefresh\n");
+    }
+
+    #[test]
+    fn sessions_saved_under_the_retired_center_follow_the_merged_domain() {
+        // 2026-08-27 域名合并：旧中心域名下的存量会话在加载时透明迁移到新身份。
+        let legacy = r#"{
+            "server_url": "https://solumsync.tannerlab.xyz",
+            "user_id": "9d4df1be-9f7b-4a3a-b986-ec920d2df60e",
+            "username": "tangren",
+            "access_token": "a.b",
+            "refresh_token": "r"
+        }"#;
+        let session = AccountSession::from_json(legacy).unwrap();
+        assert_eq!(session.server_url, SOLUM_CENTER_URL);
+        // 合并只针对旧中心域名，其他地址原样保留。
+        let untouched = AccountSession::from_json(
+            &legacy.replace("https://solumsync.tannerlab.xyz", "https://solum.example.org"),
+        )
+        .unwrap();
+        assert_eq!(untouched.server_url, "https://solum.example.org");
+    }
+
+    #[test]
+    fn center_domain_merge_maps_only_the_retired_host() {
+        // 恰好等于旧中心域名（含末尾斜杠）→ 当前身份；其他地址一律不动。
+        assert_eq!(
+            migrate_legacy_center_url("https://solumsync.tannerlab.xyz"),
+            SOLUM_CENTER_URL
+        );
+        assert_eq!(
+            migrate_legacy_center_url("https://solumsync.tannerlab.xyz/"),
+            SOLUM_CENTER_URL
+        );
+        assert_eq!(
+            migrate_legacy_center_url(SOLUM_CENTER_URL),
+            SOLUM_CENTER_URL
+        );
+        assert_eq!(
+            migrate_legacy_center_url("https://solumsync.example.org"),
+            "https://solumsync.example.org"
+        );
     }
 
     #[test]

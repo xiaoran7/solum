@@ -190,7 +190,8 @@ impl SyncConfig {
             SyncConfigFile::Account { url, key } => crate::account::AccountSession::load()
                 .filter(|account| account.stable_user_id().is_some())
                 .map(|account| SyncConfig {
-                    url,
+                    // 配置文件里的中心地址可能是域名合并前的旧值，加载时对齐当前身份。
+                    url: crate::account::migrate_legacy_center_url(&url),
                     token: String::new(),
                     key,
                     account: Some(account),

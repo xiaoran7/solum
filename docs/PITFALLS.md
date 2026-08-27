@@ -4,6 +4,12 @@
 >
 > 插入规则（2026-08-21 定）：新条目插在本行下方、保持全文件新→旧；**不要追加到文件尾部**——历史上尾部追加造成时序错乱（2026-08-21 已修正归位）。
 
+## 2026-08-27 域名迁移只改一处默认值会被 E2E 绑定校验拦下：中心地址是「字段簇」不是单点
+
+- **现象**：把 `SOLUM_CENTER_URL` 切到新域名后，保留旧数据的模拟器上加密云备份报「端到端密钥与当前账号或服务端不匹配」，备份链路被整体拦停。
+- **根因**：中心地址同时持久化在 `solum-account.json` 和 profile 内的 `solum-sync.json`，而 `backup_master_key` 要求两者与当前 `server_url` 完全一致（fail-closed 的账号绑定设计本身正确）；只改前端默认值 = 只救了新装用户，存量用户反而因会话先一步迁移、密钥配置滞后而被校验拒绝。
+- **解决/避免**：core 新增单点映射 `migrate_legacy_center_url`，两处加载路径统一调用，旧域名加载时透明对齐；迁移任何持久化身份前先 grep 出**所有落盘该 URL 的字段**列清单，并且验证必须在保留旧数据的设备上进行——清空数据后测只能证明"新装路径"，恰恰漏掉这次的真实故障面。
+
 ## 2026-08-27 VPS 宿主机残留游离 `/www/sites`：按单一路径读配置会拿到过时副本
 
 - **现象**：排查 solumsync 反代上游时，宿主机 `cat /www/sites/solumsync/proxy/*.conf` 读到 `proxy_pass http://172.18.0.5:18080`（探测为死 IP），但线上 `/v1/health` 一直 200、access log 显示 upstream 是 `127.0.0.1:18083`；同一时刻宿主机 `ls /www/sites/solum.tannerlab.xyz/index` 又报不存在。两种读法互相矛盾。
@@ -34,7 +40,7 @@
 
 - **Android 构建/打包/真机**：08-23 listener 白名单分 profile 但 spool 仍写根目录 · 08-19 restart 只退出进程 · 08-14 JNI 预编译跳过注入 / `Os.flock` 不存在 · 08-13 ndk 相对路径 / Release 输出被占用 · 08-12 Kotlin daemon 跨盘 · 08-11 arm64 flavor 配对 / vivo ADB 断连 / CSP nonce 拒内联 style · 07-21 打包三连坑（native-tls / 改名遗留生成文件 / PERL5LIB）· 07-20 改名两坑 · 07-14 构建五连坑 / AlarmManager 三连坑 · 07-12 Health Connect Kotlin 三连坑 · 07-07 Tauri Android 首建三连坑 / app_data_dir
 - **前端验证量具**：08-20 错误脱敏不只账号页 · 07-27 未显示面板零视口 · 07-20 details 几何失效 / offsetParent 对 fixed 恒真 / 后台标签冻结动画 / px 字号不随根字号 / 滚动量具视图切走失效 / 删节点遗留脚本调用 / 连续改状态再采样 · 07-19 hidden 被 display 压过 / harness 集合形状 / data URL 被拒 / 16×16 窗口 · 07-15 重构验证两坑
-- **同步/迁移/SQLite**：08-25 装箱重写丢游标推进（测试空转像构建卡死）· 08-21 push 侧毒丸（pull 侧 07-19 条目的孪生）/ 整仓搬迁后 target 缓存引用旧绝对路径 · 08-14 无快照增量不能靠留存回收 · 08-12 服务器隔离了客户端仍可能混库 · 07-20 加列漏触发器 payload / 迁移不在事务撞唯一索引 / 标量列 LWW 吃掉一半 / FK 级联不触发子表触发器 / 不同步表更易漏导出 / 未来表名占位符 · 07-19 合并循环 return Err = 同步永久卡死
+- **同步/迁移/SQLite**：08-27 域名合并的身份字段簇（solum-sync.json 同步跟随）· 08-25 装箱重写丢游标推进（测试空转像构建卡死）· 08-21 push 侧毒丸（pull 侧 07-19 条目的孪生）/ 整仓搬迁后 target 缓存引用旧绝对路径 · 08-14 无快照增量不能靠留存回收 · 08-12 服务器隔离了客户端仍可能混库 · 07-20 加列漏触发器 payload / 迁移不在事务撞唯一索引 / 标量列 LWW 吃掉一半 / FK 级联不触发子表触发器 / 不同步表更易漏导出 / 未来表名占位符 · 07-19 合并循环 return Err = 同步永久卡死
 - **服务端/账号/PostgreSQL**：08-27 宿主游离 /www/sites 化石副本骗过单文件读 · 08-23 自托管 Actions 镜像/service 网络假设 / generation 不是同代单写者权限 · 08-22 solumsync 灰云误判与橙云四项验收 / 生产迁移海外 VPS 核实 / 恢复演练要预建 solum_api·solum_runtime 角色 / 业务表不在 public schema / 空 crontab 下管道式安装会静默失败 · 08-14 集成测试要全新空库 / 密码裁剪语义不可猜升级 / 限流键无限+同步 KDF 自成 DoS / 注册成功与本机初始化的部分成功 / 进程内 Mutex 护不了跨进程会话文件 · 08-13 FOR UPDATE 需表级 UPDATE 权限 / git archive CRLF / Node 测试并行 socket 假失败 / 并行测试改环境变量互相覆盖 · 08-12 relay 仪表盘 CORS
 - **安全审核修复期教训（07-21 系列）**：宽松断言给缺陷让路 · 跨进程共享可变文件要换数据结构 · 计数器加锁/rename 都不够 · spool 改造自己丢数据 · 复审打回六条 · 修复期五连坑 · 幂等 receipt 配按龄清理等于重开洞 · 把状态误当事件
 - **Windows/PowerShell/工具链**：08-12 PowerShell 5.1 UTF-8 与 JSON 编码 · 07-21 演示视频三坑 · 07-18 PowerShell round-trip 乱码 · 07-06 link.exe/cl.exe 不在 PATH
