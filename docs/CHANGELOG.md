@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+- **域名决策：solumsync.tannerlab.xyz 进入废弃流程（2026-08-27，未发布）**：站长拍板该域名已经没有存在必要，最终将不再是 Solum Center 的对外身份；本文档先行留痕，运行时配置本批次一律不动。当前真实链路不变：客户端 → CF 橙云边缘 ：443 → 海外 VPS openresty :8443 → solum-cloud（0.6.4），阿里云 `8.148.11.79` 的主机 nginx vhost（`sites-enabled/solumsync-cn-relay.conf`）+ 容器中转只剩手工切灰云时的备胎角色。**废弃的硬前置**：`crates/solum-app/dist/app.js` 的 `SOLUM_CENTER_URL` 与登录页 `accountServer` 输入框默认值仍硬编码该域名，存量安装继续用它注册与鉴权，因此必须先定替代域名并走完整条迁移链（见 TODO 同日新增项），兼容窗口收口之前不得删 CF 记录或下线服务端路由。
+
 - **Android 模拟器全量链路 E2E 走查与运行时修复（2026-08-27，未发布）**：使用 `Medium_Phone_API_36.1`（Android 16 / API 36 / x86_64）完成 Android 客户端全量自动化与运行时走查。
   1. **构建与打包门禁**：修复 `NotificationPipelineService.kt` 缺失的 `ensureChannel()` / `buildNotification()` 方法；通过 `cargo ndk` + `SOLUM_PREBUILT_JNILIBS=1` 编译 x86_64 原生库，打出 debug APK 并通过 `verify-android-release.mjs` 签名校验（v2 签名有效，`AlarmReceiver`、`BootReceiver`、`SolumNotificationListener` 三大静态接收器全部合规存在）。
   2. **CSP 与 WebView 容器**：真机 CDP 探针确认 WebView 成功加载 `app.js`，严格 `script-src 'self'` 下 21 个视图正常渲染、无任何 CSP 违规报错；隐私政策 v3 门禁交互与同意状态持久化正常。

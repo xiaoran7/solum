@@ -32,6 +32,7 @@
 - [ ] **退役独立 Rust/SQLite 中继与服务端 SQLite 入口。** 从 Cargo workspace、构建/测试/部署链和文档删除 `crates/solum-sync-server`；迁移完成后删除 `server/src/server.js`、`npm run start:sqlite` 及双实现契约分支。一次性只读迁移器和归档说明可以保留，不得继续暴露第二套可写服务器。
 - [ ] **移除网页端与网页登录入口。** 删除 PostgreSQL 入口 `server/src/postgres-server.js` 当前使用的 `server/src/dashboard.html` 及其 `GET /` HTML；旧 SQLite 入口 `server/src/server.js` 本来就没有 Dashboard 或 `GET /`，无需虚构删除项。根路径改为 404、204 或无用户功能的机器响应。注册、登录、备份和恢复只在移动客户端 UI 提供，并收紧 Origin/CORS。若未来要求证明官方安装包身份，另立设备密钥、mTLS 或平台 App Attestation 设计，不能靠 User-Agent。
 - [ ] **统一域名、接口与产品术语。** 所有移动端只保存一个 `server_url`，供 `/v1/auth/*`、`/v1/ai/*`、`/v1/backups/*`、`/v1/keys/*` 共用。`solumsync.tannerlab.xyz` 只作迁移期兼容别名，最终不再代表独立同步系统；把产品和文档中的“多设备同步 / Sync Server”改为“端到端加密云备份 / 换机恢复”。
+  - [ ] **退役 solumsync.tannerlab.xyz 域名（2026-08-27 决策，替换域名待定）。** 站长已判定该域名无用，最终下线前依次完成：①确定替代域名（tannerlab.cn 家族候选）并在服务端挂好同等链路（CF DNS + VPS openresty :8443 → solum-cloud），按 PITFALLS 2026-08-22 的四项验收证明可用；②发布客户端更新，切换 `crates/solum-app/dist/app.js` 的 `SOLUM_CENTER_URL` 与 index.html `accountServer` 默认值；③旧域名保留兼容窗口直至存量安装基本迁完；④清理阿里云 `8.148.11.79` 备胎 vhost `/etc/nginx/sites-enabled/solumsync-cn-relay.conf` 与 CF 旧记录，并在部署文档标注退役日期。兼容窗口收口前不得删 DNS 或停路由。
 
 ### 备份地基之后的移动端核心优化
 
