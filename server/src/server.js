@@ -45,6 +45,19 @@ function json(res, status, value) {
   res.end(body);
 }
 
+const DASHBOARD = fs.readFileSync(path.join(__dirname, 'dashboard.html'));
+
+function html(res, body) {
+  res.writeHead(200, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Length': body.length,
+    'Cache-Control': 'no-cache',
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+  });
+  res.end(body);
+}
+
 function parseAllowedOrigins(value) {
   const origins = Array.isArray(value) ? value : String(value || '').split(',');
   return new Set(origins.map((item) => item.trim()).filter(Boolean).map((item) => {
@@ -488,6 +501,16 @@ function createPaServer(overrides = {}) {
     }
     if (req.method === 'GET' && req.url === '/v1/health') {
       return json(res, 200, { status: 'ok', storage: 'sqlite', version: SERVICE_VERSION });
+    }
+    if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
+      return html(res, DASHBOARD);
+    }
+    if (req.method === 'GET' && req.url === '/v1/meta') {
+      return json(res, 200, {
+        service: 'solum-cloud',
+        version: SERVICE_VERSION,
+        registration: config.registrationMode || 'open',
+      });
     }
 
     if (req.method === 'POST' && req.url === '/v1/auth/login') {
