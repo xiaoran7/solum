@@ -674,3 +674,21 @@ test('legacy importer rejects null values and missing required alert columns', (
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('OAuth configuration and endpoint routes exist in postgres server', () => {
+  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  assert.match(source, /oauthEnabled: process\.env\.SOLUM_OAUTH_ENABLED !== 'false'/);
+  assert.match(source, /oauthIssuer: process\.env\.SOLUM_OAUTH_ISSUER \|\| 'https:\/\/oauth\.tannerlab\.xyz'/);
+  assert.match(source, /oauthClientId: process\.env\.SOLUM_OAUTH_CLIENT_ID \|\| 'solum-center'/);
+  assert.match(source, /url\.pathname === '\/v1\/auth\/oauth\/config'/);
+  assert.match(source, /url\.pathname === '\/v1\/auth\/oauth\/exchange'/);
+
+  const config = buildConfig({
+    authSecret: '01234567890123456789012345678901',
+    adminUsername: 'admin',
+  });
+  assert.equal(config.oauthEnabled, true);
+  assert.equal(config.oauthIssuer, 'https://oauth.tannerlab.xyz');
+  assert.equal(config.oauthClientId, 'solum-center');
+});
+

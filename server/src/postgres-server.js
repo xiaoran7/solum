@@ -499,6 +499,10 @@ function buildConfig(overrides = {}) {
     adminUsername: process.env.SOLUM_ADMIN_USERNAME || '',
     adminPassword: process.env.SOLUM_ADMIN_PASSWORD || '',
     registrationMode: process.env.SOLUM_REGISTRATION_MODE || 'closed',
+    oauthEnabled: process.env.SOLUM_OAUTH_ENABLED !== 'false',
+    oauthIssuer: process.env.SOLUM_OAUTH_ISSUER || 'https://oauth.tannerlab.xyz',
+    oauthClientId: process.env.SOLUM_OAUTH_CLIENT_ID || 'solum-center',
+    oauthClientSecret: process.env.SOLUM_OAUTH_CLIENT_SECRET || '',
     mimoApiKey: process.env.SOLUM_LLM_API_KEY || process.env.MIMO_API_KEY || '',
     mimoBaseUrl: process.env.SOLUM_LLM_BASE_URL || process.env.MIMO_BASE_URL || 'http://100.79.74.121:8000/v1',
     defaultModel: process.env.SOLUM_DEFAULT_MODEL || 'qwen3.5-2b',
@@ -1400,6 +1404,138 @@ async function createPostgresServer(overrides = {}) {
       return json(res, 200, {
         status: 'ok', storage: 'postgres', version: SERVICE_VERSION, revision: config.buildRevision,
       });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/v1/auth/oauth/config') {
+      return json(res, 200, {
+        enabled: config.oauthEnabled,
+        issuer: config.oauthIssuer,
+        client_id: config.oauthClientId,
+      });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1/auth/oauth/exchange') {
+      if (!config.oauthEnabled) throw new HttpError(403, 'oauth_disabled');
+      const body = await readJson(req);
+      const code = requiredString(body.code, 'invalid_code', 2048);
+      const codeVerifier = requiredString(body.code_verifier, 'invalid_code_verifier', 256);
+      const redirectUri = optionalString(body.redirect_uri, 'invalid_redirect_uri', 2048) || '';
+
+      const tokenUrl = `${config.oauthIssuer.replace(/\/+$/, '')}/token`;
+      const userinfoUrl = `${config.oauthIssuer.replace(/\/+$/, '')}/userinfo`;
+
+      const formParams = new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        code_verifier: codeVerifier,
+        client_id: config.oauthClientId,
+      });
+      if (redirectUri) formParams.set('redirect_uri', redirectUri);
+      if (config.oauthClientSecret) formParams.set('client_secret', config.oauthClientSecret);
+
+      let tokenResponse;
+      try {
+        tokenResponse = await fetch(tokenUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json',
+          },
+          body: formParams.toString(),
+        });
+      } catch (err) {
+        throw new HttpError(502, 'oauth_provider_unreachable');
+      }
+
+      if (!tokenResponse.ok) {
+        throw new HttpError(401, 'oauth_exchange_failed');
+      }
+
+      const tokenData = await tokenResponse.json().catch(() => ({}));
+      const accessToken = tokenData.access_token;
+      if (!accessToken) throw new HttpError(401, 'oauth_token_missing');
+
+      let userinfoResponse;
+      try {
+        userinfoResponse = await fetch(userinfoUrl, {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Accept': 'application/json',
+          },
+        });
+      } catch (err) {
+        throw new HttpError(502, 'oauth_provider_unreachable');
+      }
+
+      if (!userinfoResponse.ok) {
+        throw new HttpError(401, 'oauth_userinfo_failed');
+      }
+
+      const userinfo = await userinfoResponse.json().catch(() => ({}));
+      const subject = userinfo.sub || userinfo.id;
+      if (!subject) throw new HttpError(401, 'oauth_subject_missing');
+
+      const email = userinfo.email || null;
+      const profileName = userinfo.name || userinfo.preferred_username || userinfo.username || email || subject;
+
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const existingIdentity = await client.query(
+          `select u.id, u.username, u.status from auth.oauth_identities oi
+           join auth.users u on u.id = oi.user_id
+           where oi.provider = $1 and oi.subject = $2`,
+          ['tg-oauth', String(subject)]
+        );
+
+        let user;
+        if (existingIdentity.rowCount === 1) {
+          user = existingIdentity.rows[0];
+          if (user.status !== 'active') throw new HttpError(403, 'user_disabled');
+          await client.query(
+            `update auth.oauth_identities set email = $1, profile_name = $2, updated_at = now()
+             where provider = $3 and subject = $4`,
+            [email, profileName, 'tg-oauth', String(subject)]
+          );
+        } else {
+          let usernameCandidate = String(profileName).replace(/[\u0000-\u001f\u007f]/g, '').trim();
+          if (!usernameCandidate || usernameCandidate.length > 120) {
+            usernameCandidate = `user_${String(subject).slice(0, 16)}`;
+          }
+          let finalUsername = usernameCandidate;
+          let suffix = 1;
+          while (true) {
+            const existingUser = await client.query(
+              'select id from auth.users where username = $1', [finalUsername]
+            );
+            if (existingUser.rowCount === 0) break;
+            finalUsername = `${usernameCandidate}_${suffix++}`;
+          }
+
+          const insertedUser = await client.query(
+            `insert into auth.users (username, status, password_version)
+             values ($1, 'active', 2)
+             returning id, username, status`,
+            [finalUsername]
+          );
+          user = insertedUser.rows[0];
+
+          await client.query(
+            `insert into auth.oauth_identities (user_id, provider, subject, email, profile_name)
+             values ($1, $2, $3, $4, $5)`,
+            [user.id, 'tg-oauth', String(subject), email, profileName]
+          );
+        }
+
+        const session = await issueSession(client, user, config.authSecret);
+        await client.query('commit');
+        return json(res, 200, session);
+      } catch (error) {
+        await client.query('rollback').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
     }
 
     if (req.method === 'POST' && url.pathname === '/v1/auth/register') {

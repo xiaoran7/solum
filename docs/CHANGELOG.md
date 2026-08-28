@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+- **接入 Tg-oauth 统一身份认证与 E2EE 恢复码解耦（2026-08-28，未发布）**：
+  1. **服务端认证与模型解耦**：PostgreSQL 中心库新增 `auth.oauth_identities` 表并给 `auth.users` 密码字段增加 nullable 支持；Solum Center 开放 `GET /v1/auth/oauth/config` 与 `POST /v1/auth/oauth/exchange` 端点，支持 PKCE S256 授权码安全换 Token、读取 `/userinfo` 与租户自动绑定/创建，并签发标准短期 JWT 与轮换 refresh token。
+  2. **E2EE 数据恢复码解耦**：OAuth 登录无需用户明文密码，端到端加密主密钥完全由 20 字符高熵数据恢复码（Crockford Base32 `XXXXX-XXXXX-XXXXX-XXXXX` + XChaCha20Poly1305）封装与解封；换机登录时若云端存在现有加密空间则要求输入恢复码，新开通用户自动生成随机主密钥并生成初始恢复信封。
+  3. **客户端与 UI**：Rust `solum-core` 新增 `generate_pkce`、`fetch_oauth_config` 与 `authenticate_via_oauth`；`solum-app` 暴露 `account_oauth_config_get`、`account_oauth_pkce_generate`、`account_oauth_login` Tauri 命令；首屏身份门 `accountGate` 与设置页登录区新增「使用 Tg-oauth 统一账号登录」按钮与流程交互。
+  4. **质量门禁**：Rust workspace 全量 476 项测试全绿、Clippy 严格告警零异常、fmt 零漂移；服务端 Node.js 47 项测试全绿，前端语法校验通过。
+
 - **本地 Qwen Agent 与通知静默接收收口（2026-08-28，未发布）**：中心默认上游切换为 Tailnet 内 `http://100.79.74.121:8000/v1` 的 `qwen3.5-2b`，客户端隐藏自定义端点；账号代理、Rust Reasoner 和 vLLM 响应链新增严格的 OpenAI `tools` / `tool_calls` 透传与解析，聊天动作仍只生成确认按钮，日程/组件结构继续走本机 schema 校验与 Guard 边界。Android 通知接收新增默认全应用、可切白名单的显式模式，后台前台服务关闭声音、震动和角标；Adaptive Icon 前景缩进到安全区。注册、管理员初始化和改密统一调整为至少 8 个 Unicode 字符。服务端数据库按本次开发环境确认结果单独记录，不以代码改动冒充已清理。
 
 - **Solum Center 最终域名改为已备案的 `solum.tannerlab.cn`（2026-08-27，未发布、生产路由待上线）**：客户端默认中心地址已从中间方案 `solum.tannerlab.xyz` 切到 `.cn`，core 的存量迁移映射同时覆盖最早的 `solumsync.tannerlab.xyz` 与中间的 `solum.tannerlab.xyz`，账号会话和 profile 内备份密钥配置继续共用同一映射，任意自定义端点保持不变。只读现网核验显示 Cloudflare 与 Google DoH 均返回 CF 边缘地址，`/cdn-cgi/trace` 命中边缘；但 VPS openresty 尚无 `.cn` vhost，公网 `/v1/health` 当前落入默认 TannerLab Authorization Server 并返回 401，不能算 Solum 健康。本次 workspace 全量测试、Clippy 严格告警、前端静态门禁及 server 测试（46 通过、4 个需 PostgreSQL 环境的用例跳过）均通过。生产容器还暴露出构建溯源异常：健康接口标称 `a2a6edb`，但容器内源码缺少该 Git 提交实际已有的 backup objects/commit 路由，也缺少后续 recovery-code/password 路由；上线必须从已验证 Git archive 重建，不得只相信 revision 标签。生产 vhost/证书、solum-cloud 升级和 vivo 裸蜂窝 rustls 验收仍待后续门禁，旧 `.xyz` 域名在兼容窗口内不得下线。

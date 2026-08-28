@@ -14,10 +14,13 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64_URL;
+use base64::Engine;
 #[cfg(not(target_os = "android"))]
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 #[cfg(target_os = "android")]
 use std::os::fd::AsRawFd;
@@ -543,6 +546,104 @@ pub fn register(
     model: &str,
 ) -> Result<AccountSession> {
     authenticate_via("register", "注册", server_url, username, password, model)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PkcePair {
+    pub code_verifier: String,
+    pub code_challenge: String,
+    pub code_challenge_method: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OAuthConfig {
+    pub enabled: bool,
+    pub issuer: String,
+    pub client_id: String,
+}
+
+/// Generate a cryptographically random PKCE code_verifier (32 bytes -> 43 chars base64url)
+/// and S256 code_challenge.
+pub fn generate_pkce() -> Result<PkcePair> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|e| CoreError::Invalid(format!("os rng error: {e}")))?;
+    let verifier = B64_URL.encode(bytes);
+    let mut hasher = Sha256::new();
+    hasher.update(verifier.as_bytes());
+    let challenge = B64_URL.encode(hasher.finalize());
+    Ok(PkcePair {
+        code_verifier: verifier,
+        code_challenge: challenge,
+        code_challenge_method: "S256".to_string(),
+    })
+}
+
+/// Fetch OAuth config from the server.
+pub fn fetch_oauth_config(server_url: &str) -> Result<OAuthConfig> {
+    let server = normalize_server_url(server_url)?;
+    let client = HttpAccountClient::new();
+    let response = client
+        .get_json(&format!("{server}/v1/auth/oauth/config"), "")
+        .map_err(|e| CoreError::Llm(format!("获取 OAuth 配置失败: {e}")))?;
+
+    let enabled = response
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let issuer = response
+        .get("issuer")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let client_id = response
+        .get("client_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    Ok(OAuthConfig {
+        enabled,
+        issuer,
+        client_id,
+    })
+}
+
+/// Exchange OAuth authorization code for an AccountSession with Solum Center.
+pub fn authenticate_via_oauth(
+    server_url: &str,
+    code: &str,
+    code_verifier: &str,
+    redirect_uri: &str,
+    model: &str,
+) -> Result<AccountSession> {
+    let server = normalize_server_url(server_url)?;
+    let model = normalize_cloud_model(model)?;
+    if code.trim().is_empty() || code_verifier.trim().is_empty() {
+        return Err(CoreError::Invalid("OAuth 授权参数不完整".into()));
+    }
+    let client = HttpAccountClient::new();
+    let response = client
+        .post_json(
+            &format!("{server}/v1/auth/oauth/exchange"),
+            None,
+            json!({
+                "code": code.trim(),
+                "code_verifier": code_verifier.trim(),
+                "redirect_uri": redirect_uri.trim()
+            }),
+        )
+        .map_err(|e| match e {
+            AccountHttpError::Unauthorized => CoreError::Llm("OAuth 授权已过期或无效".into()),
+            other => CoreError::Llm(format!("OAuth 登录失败: {other}")),
+        })?;
+    let session = parse_auth_response(&response, &server, "", &model)?;
+    if session.stable_user_id().is_none() {
+        return Err(CoreError::Llm(
+            "账号服务器版本过旧：OAuth 登录结果缺少不可变 user_id".into(),
+        ));
+    }
+    Ok(session)
 }
 
 /// Best-effort revocation without changing whichever local session is active.
@@ -1586,5 +1687,39 @@ mod tests {
         clear_session().unwrap();
         std::env::remove_var("SOLUM_ACCOUNT_CONFIG");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn generate_pkce_creates_valid_s256_challenge() {
+        let pkce = generate_pkce().unwrap();
+        assert_eq!(pkce.code_challenge_method, "S256");
+        assert_eq!(pkce.code_verifier.len(), 43);
+        assert_eq!(pkce.code_challenge.len(), 43);
+        assert!(!pkce.code_verifier.contains('='));
+        assert!(!pkce.code_challenge.contains('='));
+
+        let mut hasher = Sha256::new();
+        hasher.update(pkce.code_verifier.as_bytes());
+        let expected_challenge = B64_URL.encode(hasher.finalize());
+        assert_eq!(pkce.code_challenge, expected_challenge);
+    }
+
+    #[test]
+    fn parse_auth_response_handles_oauth_payload() {
+        let payload = json!({
+            "access_token": "oauth-access-token",
+            "refresh_token": "oauth-refresh-token",
+            "user": {
+                "id": "9d4df1be-9f7b-4a3a-b986-ec920d2df60e",
+                "username": "tg_user"
+            }
+        });
+        let session =
+            parse_auth_response(&payload, "https://solum.tannerlab.cn", "", "qwen3.5-2b").unwrap();
+        assert_eq!(session.server_url, "https://solum.tannerlab.cn");
+        assert_eq!(session.user_id, "9d4df1be-9f7b-4a3a-b986-ec920d2df60e");
+        assert_eq!(session.username, "tg_user");
+        assert_eq!(session.access_token, "oauth-access-token");
+        assert_eq!(session.refresh_token, "oauth-refresh-token");
     }
 }

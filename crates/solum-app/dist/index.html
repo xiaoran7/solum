@@ -2155,6 +2155,19 @@
   .account-gate-divider::before,
   .account-gate-divider::after { content: ""; height: 1px; background: var(--line); }
   .account-guest-btn { width: 100%; justify-content: center; }
+  .oauth-gate-btn {
+    width: 100%;
+    justify-content: center;
+    background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+    border: 1px solid var(--accent-line);
+    color: var(--ink);
+    font-weight: 650;
+    margin-top: 4px;
+  }
+  .oauth-gate-btn:hover {
+    background: color-mix(in srgb, var(--accent) 22%, var(--bg));
+    border-color: var(--accent);
+  }
   .account-gate-foot { margin: 14px 0 0; color: var(--muted); font-size: .75rem; line-height: 1.55; }
   .account-gate-open { overflow: hidden; }
   .account-ai-status {
@@ -2948,6 +2961,7 @@
           <div class="btnrow">
             <button class="btn primary" id="accountLoginBtn">登录</button>
             <button class="btn" id="accountRegisterBtn">注册</button>
+            <button class="btn" id="accountOAuthBtn">使用 Tg-oauth 统一账号登录</button>
             <button class="btn" id="accountModelBtn" hidden>保存模型</button>
             <button class="btn" id="accountLogoutBtn" hidden>退出登录</button>
           </div>
@@ -3138,6 +3152,7 @@
           <input type="password" id="accountGateConfirm" autocomplete="new-password" placeholder="再次输入密码" />
         </div>
         <button class="btn primary" id="accountGateSubmit" type="button">登录</button>
+        <button class="btn oauth-gate-btn" id="accountGateOAuthBtn" type="button">使用 Tg-oauth 统一账号登录</button>
         <p class="account-gate-status" id="accountGateStatus" role="alert" aria-live="polite"></p>
       </div>
       <div class="account-gate-divider"><span>或</span></div>

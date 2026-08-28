@@ -12,30 +12,46 @@ create schema if not exists ai;
 create table if not exists auth.users (
   id uuid primary key default gen_random_uuid(),
   username text not null unique,
-  password_hash text not null,
-  password_salt text not null,
-  password_version smallint not null default 2 constraint users_password_version_check
-    check (password_version in (1, 2)),
+  password_hash text,
+  password_salt text,
+  password_version smallint default 2 constraint users_password_version_check
+    check (password_version is null or password_version in (1, 2)),
   status text not null default 'active' check (status in ('active', 'disabled')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 alter table auth.users add column if not exists password_version smallint;
-update auth.users set password_version = 1 where password_version is null;
+alter table auth.users alter column password_hash drop not null;
+alter table auth.users alter column password_salt drop not null;
+update auth.users set password_version = 1 where password_version is null and password_hash is not null;
 alter table auth.users alter column password_version set default 2;
-alter table auth.users alter column password_version set not null;
 do $$
 begin
   if not exists (select 1 from pg_constraint
                  where conname = 'users_password_version_check'
                    and conrelid = 'auth.users'::regclass) then
     alter table auth.users add constraint users_password_version_check
-      check (password_version in (1, 2)) not valid;
+      check (password_version is null or password_version in (1, 2)) not valid;
   end if;
 end
 $$;
 alter table auth.users validate constraint users_password_version_check;
+
+create table if not exists auth.oauth_identities (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  provider text not null check (char_length(provider) between 1 and 64),
+  subject text not null check (char_length(subject) between 1 and 256),
+  email text check (email is null or char_length(email) <= 256),
+  profile_name text check (profile_name is null or char_length(profile_name) <= 256),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (provider, subject)
+);
+
+create index if not exists oauth_identities_user_idx
+  on auth.oauth_identities (user_id);
 
 create table if not exists auth.refresh_tokens (
   token_hash bytea primary key,
@@ -460,6 +476,7 @@ grant select, insert on auth.users to solum_api;
 -- Column-scoped: the explicit password change endpoint may only touch the
 -- credential columns, never identity or status.
 grant update (password_hash, password_salt, password_version) on auth.users to solum_api;
+grant select, insert, update, delete on auth.oauth_identities to solum_api;
 grant select, insert, update, delete on auth.refresh_tokens to solum_api;
 grant select, insert, update on sync.devices to solum_api;
 grant select, insert on sync.blobs to solum_api;

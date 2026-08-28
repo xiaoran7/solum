@@ -1154,6 +1154,148 @@ async fn account_register(
     account_auth(state, app, server_url, username, password, model, true).await
 }
 
+#[tauri::command]
+async fn account_oauth_config_get(
+    server_url: Option<String>,
+) -> CmdResult<solum_core::account::OAuthConfig> {
+    let server = server_url.unwrap_or_else(|| solum_core::account::SOLUM_CENTER_URL.to_string());
+    tauri::async_runtime::spawn_blocking(move || {
+        solum_core::account::fetch_oauth_config(&server).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("获取 OAuth 配置任务失败: {e}"))?
+}
+
+#[tauri::command]
+fn account_oauth_pkce_generate() -> CmdResult<solum_core::account::PkcePair> {
+    solum_core::account::generate_pkce().map_err(|e| e.to_string())
+}
+
+#[derive(Deserialize)]
+struct AccountOAuthLoginArgs {
+    server_url: String,
+    code: String,
+    code_verifier: String,
+    redirect_uri: String,
+    model: String,
+    recovery_code: Option<String>,
+}
+
+#[tauri::command]
+async fn account_oauth_login(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    args: AccountOAuthLoginArgs,
+) -> CmdResult<String> {
+    let _transition = AccountTransitionGuard::acquire(&state.account_transition)?;
+    *state
+        .backup_upload
+        .lock()
+        .map_err(|_| "备份上传会话状态异常".to_string())? = None;
+    *state
+        .backup_restore
+        .lock()
+        .map_err(|_| "备份恢复会话状态异常".to_string())? = None;
+
+    let session = tauri::async_runtime::spawn_blocking(move || {
+        let session = solum_core::account::authenticate_via_oauth(
+            &args.server_url,
+            &args.code,
+            &args.code_verifier,
+            &args.redirect_uri,
+            &args.model,
+        )
+        .map_err(|e| e.to_string())?;
+
+        let user_id = session
+            .stable_user_id()
+            .ok_or_else(|| "账号服务器未返回不可变 user_id".to_string())?;
+        let sync_path = solum_core::paths::account_profile_file(user_id, "solum-sync.json")
+            .ok_or_else(|| "无法创建账号专属同步配置目录".to_string())?;
+
+        // 1. Check if local sync config already exists for this user_id
+        if let Some(existing_config) = solum_core::sync::load_account_sync_config(&sync_path) {
+            let master_key = existing_config.key_bytes().map_err(|e| e.to_string())?;
+            if let Err(error) =
+                solum_core::sync::verify_account_sync_provision(&session, &master_key, &sync_path)
+            {
+                solum_core::account::revoke_remote(&session);
+                return Err(format!("本机加密空间初始化失败: {error}"));
+            }
+            return Ok::<_, String>(session);
+        }
+
+        // 2. Local config does not exist. Check if server has recovery code envelope.
+        let transport = solum_core::recovery_code::HttpRecoveryCodeTransport::new();
+        let envelope = transport
+            .get_envelope(&session)
+            .map_err(|e| e.to_string())?;
+
+        let master_key = if let Some(envelope) = envelope {
+            let norm_code = args
+                .recovery_code
+                .as_deref()
+                .map(solum_core::recovery_code::normalize_code)
+                .unwrap_or_default();
+            if norm_code.is_empty() {
+                solum_core::account::revoke_remote(&session);
+                return Err(
+                    "NEEDS_RECOVERY_CODE:此账号已有云端加密数据，请输入您的 20 字符恢复码以解密"
+                        .to_string(),
+                );
+            }
+            solum_core::recovery_code::unwrap_master_key(user_id, &norm_code, &envelope).map_err(
+                |e| {
+                    solum_core::account::revoke_remote(&session);
+                    format!("恢复码解密失败: {e}")
+                },
+            )?
+        } else {
+            let mut key_bytes = [0u8; 32];
+            getrandom::getrandom(&mut key_bytes).map_err(|e| format!("随机数错误: {e}"))?;
+            let issuance = solum_core::recovery_code::issue_recovery_code(user_id, &key_bytes)
+                .map_err(|e| e.to_string())?;
+            transport
+                .put_envelope(&session, &issuance.envelope, &issuance.verify_hash)
+                .map_err(|e| format!("保存初始恢复信封失败: {e}"))?;
+            key_bytes
+        };
+
+        solum_core::sync::save_account_sync_config_public(
+            &sync_path,
+            &session.server_url,
+            &master_key,
+        )
+        .map_err(|e| e.to_string())?;
+
+        if let Err(error) =
+            solum_core::sync::verify_account_sync_provision(&session, &master_key, &sync_path)
+        {
+            solum_core::account::revoke_remote(&session);
+            return Err(format!("加密空间准备失败: {error}"));
+        }
+
+        Ok::<_, String>(session)
+    })
+    .await
+    .map_err(|e| format!("OAuth 登录后台任务失败: {e}"))??;
+
+    let _sync_switch_guard = match state.sync_store.lock() {
+        Ok(guard) => guard,
+        Err(error) => {
+            let message = error.to_string();
+            schedule_pending_session_revoke(session);
+            return Err(message);
+        }
+    };
+    if let Err(error) = solum_core::account::publish_session(&session) {
+        drop(_sync_switch_guard);
+        schedule_pending_session_revoke(session);
+        return Err(error.to_string());
+    }
+    restart_account_app(&app)
+}
+
 /// Local sign-out first-class: best-effort server-side revocation, then restart
 /// into the offline guest profile. Legacy direct-key files never activate it.
 #[tauri::command]
@@ -5991,6 +6133,9 @@ pub fn run() {
             account_status_get,
             account_login,
             account_register,
+            account_oauth_config_get,
+            account_oauth_pkce_generate,
+            account_oauth_login,
             account_logout,
             account_model_save,
             account_change_password,

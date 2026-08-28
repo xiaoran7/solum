@@ -4834,6 +4834,8 @@ $("accountGateConfirm").addEventListener("keydown", (event) => {
   if (event.key === "Enter") { event.preventDefault(); submitAccountGate(); }
 });
 $("accountGateClose").addEventListener("click", closeAccountGate);
+$("accountGateOAuthBtn").addEventListener("click", startOAuthLogin);
+$("accountOAuthBtn").addEventListener("click", startOAuthLogin);
 $("accountGuestBtn").addEventListener("click", () => {
   try { localStorage.setItem(GUEST_CHOICE_KEY, "guest"); } catch (_) { }
   closeAccountGate();
@@ -4848,6 +4850,69 @@ $("mobileAccountBtn").addEventListener("click", () => {
   if (accountLoggedIn) showView("cloud");
   else openAccountGate("登录后连接所有设备与完整能力", { dismissible: true, allowGuest: false });
 });
+
+async function startOAuthLogin() {
+  if (accountAuthSubmitting) return;
+  const serverUrl = (typeof SOLUM_CENTER_URL !== 'undefined' ? SOLUM_CENTER_URL : "https://solum.tannerlab.cn");
+  try {
+    accountAuthSubmitting = true;
+    const cfg = await invoke("account_oauth_config_get", { serverUrl });
+    if (!cfg.enabled) {
+      toast("中心服务器未启用 OAuth 登录", "danger");
+      return;
+    }
+    const pkce = await invoke("account_oauth_pkce_generate");
+    const redirectUri = `${cfg.issuer.replace(/\/+$/, '')}/callback`;
+    const state = Math.random().toString(36).slice(2);
+    const authUrl = `${cfg.issuer.replace(/\/+$/, '')}/authorize?response_type=code&client_id=${encodeURIComponent(cfg.client_id)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=openid%20profile%20email&code_challenge=${encodeURIComponent(pkce.code_challenge)}&code_challenge_method=S256&state=${state}`;
+
+    window.open(authUrl, "_blank");
+
+    const code = window.prompt("已在浏览器打开 Tg-oauth 统一账号授权页面。\n完成授权后，请复制并在此粘贴授权码（code）：");
+    if (!code || !code.trim()) {
+      toast("已取消 OAuth 登录", "info");
+      return;
+    }
+
+    let recoveryCode = null;
+    let attempt = 0;
+    while (attempt < 2) {
+      attempt++;
+      try {
+        await invoke("account_oauth_login", {
+          args: {
+            server_url: serverUrl,
+            code: code.trim(),
+            code_verifier: pkce.code_verifier,
+            redirect_uri: redirectUri,
+            model: "qwen3.5-2b",
+            recovery_code: recoveryCode,
+          },
+        });
+        toast("使用 Tg-oauth 统一账号登录成功", "ok");
+        if (typeof closeAccountGate === 'function') closeAccountGate();
+        break;
+      } catch (e) {
+        const errStr = String(e);
+        if (errStr.includes("NEEDS_RECOVERY_CODE") || errStr.includes("恢复码")) {
+          recoveryCode = window.prompt("检测到该账号已有加密数据空间。\n请输入您的 20 字符数据恢复码（格式如 XXXXX-XXXXX-XXXXX-XXXXX）以解密：");
+          if (!recoveryCode || !recoveryCode.trim()) {
+            toast("未输入恢复码，无法解密现有数据空间", "danger");
+            break;
+          }
+          continue;
+        } else {
+          toast(safeUserError(e, "OAuth 登录失败，请重试。"), "danger");
+          break;
+        }
+      }
+    }
+  } catch (e) {
+    toast(safeUserError(e, "无法获取 OAuth 配置"), "danger");
+  } finally {
+    accountAuthSubmitting = false;
+  }
+}
 
 $("accountLoginBtn").addEventListener("click", async () => {
   await submitSettingsLogin();
