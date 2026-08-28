@@ -251,6 +251,8 @@ test('login, refresh rotation and fixed-upstream model proxy', async (t) => {
   let seenAuthorization = '';
   let seenModel = '';
   let seenStream = null;
+  let seenTools = null;
+  let seenToolChoice = null;
   const upstream = http.createServer(async (req, res) => {
     seenAuthorization = req.headers.authorization || '';
     const chunks = [];
@@ -258,6 +260,8 @@ test('login, refresh rotation and fixed-upstream model proxy', async (t) => {
     const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     seenModel = parsed.model;
     seenStream = parsed.stream;
+    seenTools = parsed.tools;
+    seenToolChoice = parsed.tool_choice;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }));
   });
@@ -328,6 +332,9 @@ test('login, refresh rotation and fixed-upstream model proxy', async (t) => {
     body: JSON.stringify({
       model: 'team/custom-model:v2',
       messages: [{ role: 'user', content: 'hello' }],
+      tools: [{ type: 'function', function: { name: 'ingest', strict: true,
+        parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } } }],
+      tool_choice: 'auto',
     }),
   });
   assert.equal(completion.status, 200);
@@ -336,6 +343,8 @@ test('login, refresh rotation and fixed-upstream model proxy', async (t) => {
   assert.equal(seenModel, 'team/custom-model:v2');
   // 客户端没要 stream 时，上游必须收到显式的 stream:false，而不是缺字段交给上游猜。
   assert.equal(seenStream, false);
+  assert.equal(seenTools[0].function.name, 'ingest');
+  assert.equal(seenToolChoice, 'auto');
 
   const refresh = await fetch(`${base}/v1/auth/refresh`, {
     method: 'POST',

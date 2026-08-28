@@ -25,8 +25,8 @@ use std::os::fd::AsRawFd;
 use crate::error::{CoreError, Result};
 use crate::extract::Reasoner;
 
-pub const DEFAULT_CLOUD_MODEL: &str = "mimo-v2.5";
-pub const CLOUD_MODEL_OPTIONS: &[&str] = &["mimo-v2.5", "mimo-v2.5-pro"];
+pub const DEFAULT_CLOUD_MODEL: &str = "qwen3.5-2b";
+pub const CLOUD_MODEL_OPTIONS: &[&str] = &["qwen3.5-2b"];
 
 /// Solum Center 当前对外身份（2026-08-27 切换到已备案的独立 `.cn` 域名）。
 pub const SOLUM_CENTER_URL: &str = "https://solum.tannerlab.cn";
@@ -801,6 +801,24 @@ impl AccountReasoner {
         })
     }
 
+    fn tool_chat_body(
+        session: &AccountSession,
+        system: &str,
+        user: &str,
+        tools: &[Value],
+    ) -> Value {
+        json!({
+            "model": session.model,
+            "stream": false,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user },
+            ],
+            "tools": tools,
+            "tool_choice": "auto",
+        })
+    }
+
     /// Non-streaming completion via the seam (unit-tested with a fake client).
     pub fn complete_with_client<T: AccountHttp>(
         client: &T,
@@ -839,6 +857,22 @@ impl Reasoner for AccountReasoner {
             .map_err(|_| CoreError::Llm("账号状态锁中毒".into()))?;
         let client = HttpAccountClient::new();
         Self::complete_with_client(&client, &mut session, system, user)
+    }
+
+    fn complete_with_tools(
+        &self,
+        system: &str,
+        user: &str,
+        tools: &[Value],
+    ) -> Result<crate::extract::ReasonerResponse> {
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| CoreError::Llm("账号状态锁中毒".into()))?;
+        let body = Self::tool_chat_body(&session, system, user, tools);
+        let client = HttpAccountClient::new();
+        let response = post_with_refresh(&client, &mut session, "/v1/ai/chat/completions", body)?;
+        crate::llm::parse_reasoner_response(&response)
     }
 
     /// Streaming with the same think-stripping guarantees as

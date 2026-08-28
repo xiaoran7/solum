@@ -684,8 +684,8 @@ pub fn change_account_password(
     let user_id = session
         .stable_user_id()
         .ok_or_else(|| CoreError::Invalid("账号缺少不可变 user_id".into()))?;
-    if new_password.chars().count() < 12 {
-        return Err(CoreError::Invalid("新密码至少需要 12 个字符".into()));
+    if new_password.chars().count() < 8 {
+        return Err(CoreError::Invalid("新密码至少需要 8 个字符".into()));
     }
     // Rewrap first: nothing changes remotely until the new envelope exists.
     let proposed = wrap_recovery_key(user_id, new_password, master_key)?;

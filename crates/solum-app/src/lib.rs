@@ -272,8 +272,8 @@ fn daily_brief_is_due(last_emitted: Option<NaiveDate>, today: NaiveDate) -> bool
 }
 
 /// The Android listener reads only this tiny local projection before appending
-/// an inbox line. Missing/unreadable means an empty whitelist (capture none),
-/// which is the safe default even during a concurrent settings write.
+/// an inbox line. Missing/unreadable remains fail-closed during a concurrent
+/// settings write; a valid policy defaults to all-app capture.
 fn write_notification_capture_policy(
     db_path: &str,
     config: &NotificationIntelligenceConfig,
@@ -282,7 +282,10 @@ fn write_notification_capture_policy(
         .parent()
         .ok_or_else(|| "数据库路径没有父目录，无法写通知白名单".to_string())?;
     let path = parent.join("notif-policy.json");
-    let projection = serde_json::json!({ "allowed_packages": config.allowed_packages });
+    let projection = serde_json::json!({
+        "capture_mode": config.capture_mode,
+        "allowed_packages": config.allowed_packages,
+    });
     // Atomic replacement, not truncate-then-write: the native listener reads
     // this file on every notification, and a torn read means it either keeps
     // capturing an app the user just revoked, or stops capturing entirely.
@@ -302,7 +305,11 @@ fn sync_notification_pipeline(
             .map_err(|e| e.to_string());
     }
     let relay_alerts_configured = solum_core::sync::SyncConfig::load().is_some();
-    if config.allowed_packages.is_empty() && !relay_alerts_configured {
+    if config.capture_mode
+        == solum_core::notification_intelligence::NotificationCaptureMode::Allowlist
+        && config.allowed_packages.is_empty()
+        && !relay_alerts_configured
+    {
         app.notif_access()
             .stop_pipeline()
             .map_err(|e| e.to_string())
@@ -324,7 +331,7 @@ struct AppInfo {
     active_generation: Option<String>,
     web_storage: WebStorageNames,
     system_now: String,
-    /// e.g. "https://… · mimo-v2.5 · key:…zju9"; `None` = offline mode.
+    /// e.g. "http://100.79.74.121:8000/v1 · qwen3.5-2b · no key"; `None` = offline mode.
     llm: Option<String>,
 }
 
@@ -1322,8 +1329,8 @@ async fn account_change_password(
     new_password: String,
 ) -> CmdResult<String> {
     tauri::async_runtime::spawn_blocking(move || {
-        if new_password.chars().count() < 12 {
-            return Err("新密码至少需要 12 个字符".to_string());
+        if new_password.chars().count() < 8 {
+            return Err("新密码至少需要 8 个字符".to_string());
         }
         if current_password.is_empty() || current_password == new_password {
             return Err("新密码不能与当前密码相同".into());
@@ -3925,6 +3932,28 @@ fn notif_intelligence_set_app(
     Ok(config)
 }
 
+#[tauri::command]
+fn notif_intelligence_set_capture_mode(
+    state: State<AppState>,
+    app: tauri::AppHandle,
+    mode: solum_core::notification_intelligence::NotificationCaptureMode,
+) -> CmdResult<NotificationIntelligenceConfig> {
+    require_full_account()?;
+    let target = {
+        let o = lock!(state);
+        let mut config = o.notification_intelligence_config().map_err(core_err)?;
+        config.capture_mode = mode;
+        config.normalized().map_err(core_err)?
+    };
+    write_notification_capture_policy(&state.db_path, &target)?;
+    let config = lock!(state)
+        .set_notification_capture_mode(mode)
+        .map_err(core_err)?;
+    write_notification_capture_policy(&state.db_path, &config)?;
+    sync_notification_pipeline(&app, &config)?;
+    Ok(config)
+}
+
 /// The **second** grant: this app may create calendar entries by itself.
 /// Deliberately a separate command from `notif_intelligence_set_app`, because
 /// it is a separate decision — see `auto_event_packages`.
@@ -5906,6 +5935,7 @@ pub fn run() {
             notif_intelligence_status,
             notif_intelligence_apps,
             notif_intelligence_set_app,
+            notif_intelligence_set_capture_mode,
             notif_intelligence_set_app_auto_event,
             notif_intelligence_acknowledge_losses,
             notif_intelligence_auto_event_counts,

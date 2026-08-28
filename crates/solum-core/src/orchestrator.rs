@@ -1548,8 +1548,8 @@ impl Orchestrator {
 
     // ---- F20 notification intelligence ------------------------------------
 
-    /// Device-local F20 configuration. The whitelist defaults to empty so an
-    /// app must be explicitly opted in before its notification is captured.
+    /// Device-local F20 configuration. All apps are captured by default; the
+    /// user may switch to an explicit allowlist.
     pub fn notification_intelligence_config(&self) -> Result<NotificationIntelligenceConfig> {
         self.store.notification_intelligence_config()
     }
@@ -1561,6 +1561,15 @@ impl Orchestrator {
         let config = config.normalized()?;
         self.store.save_notification_intelligence_config(&config)?;
         Ok(config)
+    }
+
+    pub fn set_notification_capture_mode(
+        &self,
+        mode: crate::notification_intelligence::NotificationCaptureMode,
+    ) -> Result<NotificationIntelligenceConfig> {
+        let mut config = self.store.notification_intelligence_config()?;
+        config.capture_mode = mode;
+        self.set_notification_intelligence_config(config)
     }
 
     /// Enable/disable one Android package. Enabling copies the documented
@@ -1611,7 +1620,11 @@ impl Orchestrator {
         }
         let mut config = self.store.notification_intelligence_config()?;
         if enabled {
-            if !config.allows(package_name) {
+            if !config
+                .allowed_packages
+                .iter()
+                .any(|package| package == package_name)
+            {
                 config.allowed_packages.push(package_name.to_string());
             }
             for rule in priority_presets(package_name) {
@@ -3852,6 +3865,10 @@ mod tests {
     #[test]
     fn auto_event_permission_requires_capture_permission() {
         let mut o = Orchestrator::in_memory().unwrap();
+        o.set_notification_capture_mode(
+            crate::notification_intelligence::NotificationCaptureMode::Allowlist,
+        )
+        .unwrap();
         assert!(o
             .set_notification_app_auto_event("com.not.allowed", true)
             .is_err());
@@ -5405,12 +5422,12 @@ mod tests {
             ],
         }));
         let mut seen = String::new();
-        // A chat-routed utterance whose (scripted) reply is a GenUI envelope:
-        // nothing streams visibly, but the envelope is still returned whole.
+        // A chat-routed utterance whose (scripted) reply is a legacy GenUI
+        // envelope: only its validated text summary is emitted once.
         let out = o
             .ingest_streaming("今天天气怎么样", now(), &mut |d| seen.push_str(d))
             .unwrap();
-        assert_eq!(seen, "", "envelope JSON must not stream visibly");
+        assert_eq!(seen, "记吗？");
         assert_eq!(out.message, "记吗？");
         assert!(out.ui.is_some());
     }
@@ -5737,8 +5754,12 @@ mod tests {
     }
 
     #[test]
-    fn notification_intelligence_is_opt_in_deduped_and_visible_offline() {
+    fn notification_allowlist_is_deduped_and_visible_offline() {
         let mut o = Orchestrator::in_memory().unwrap();
+        o.set_notification_capture_mode(
+            crate::notification_intelligence::NotificationCaptureMode::Allowlist,
+        )
+        .unwrap();
         let urgent = NotificationCapture {
             package_name: "com.tencent.mm".into(),
             title: "@我 明天下午3点在会议室开会".into(),

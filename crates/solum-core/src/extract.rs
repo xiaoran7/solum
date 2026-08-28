@@ -285,8 +285,38 @@ pub fn route_intent(text: &str, now: NaiveDateTime) -> Intent {
 /// ([`crate::llm`]) is responsible for assembling *minimal* context before
 /// calling this — the trait itself just performs one completion. `Send`
 /// because the orchestrator holding it is shared across threads by the shell.
+/// One OpenAI-compatible function call returned by a reasoner. Arguments stay
+/// data until the caller validates them against the relevant Solum schema.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReasonerToolCall {
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+/// A completion may contain prose, tool calls, or both.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReasonerResponse {
+    pub content: Option<String>,
+    pub tool_calls: Vec<ReasonerToolCall>,
+}
+
 pub trait Reasoner: Send {
     fn complete(&self, system: &str, user: &str) -> Result<String>;
+
+    /// OpenAI-compatible tool-calling seam. Offline/test reasoners retain a
+    /// text-only default, while network reasoners override this method and
+    /// send the supplied JSON Schema tools upstream.
+    fn complete_with_tools(
+        &self,
+        system: &str,
+        user: &str,
+        _tools: &[serde_json::Value],
+    ) -> Result<ReasonerResponse> {
+        Ok(ReasonerResponse {
+            content: Some(self.complete(system, user)?),
+            tool_calls: Vec::new(),
+        })
+    }
 
     /// Streaming completion (ARCHITECTURE.md §3.6 第 7 条). Invokes `on_token`
     /// with each visible content delta as it arrives and returns the full

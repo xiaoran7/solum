@@ -3129,6 +3129,7 @@ impl Store {
 
         let notification = &section.agent_settings.notification;
         self.save_notification_intelligence_config(&NotificationIntelligenceConfig {
+            capture_mode: crate::notification_intelligence::NotificationCaptureMode::All,
             allowed_packages: Vec::new(),
             auto_event_packages: Vec::new(),
             batch_interval_minutes: notification.batch_interval_minutes,

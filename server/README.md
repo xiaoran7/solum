@@ -22,8 +22,8 @@ Solum 的统一中心后端。产品只做移动端：Android 是当前主开发
 2. 分别生成：
    - 至少 32 字符的随机 `SOLUM_AUTH_SECRET`；
    - 两个不同的数据库强密码 `SOLUM_DB_OWNER_PASSWORD` / `SOLUM_DB_APP_PASSWORD`；
-   - 初始管理员账号与至少 12 字符的强密码。
-3. 将 MiMo Token Plan 密钥填入 `MIMO_API_KEY`。用 `SOLUM_DEFAULT_MODEL` 指定所有登录用户可直接使用且始终保留的默认模型，用逗号分隔的 `SOLUM_ALLOWED_MODELS` 指定其他可选模型；默认模型即使未写进列表也会自动加入。`SOLUM_STANDARD_MONTHLY_REQUEST_LIMIT` 是新账号默认月度请求额度。`SOLUM_AI_MAX_RESPONSE_BYTES` 限制非流式上游响应体（默认 8 MiB），`SOLUM_AI_PENDING_TIMEOUT_SECONDS` 决定进程异常退出后待处理调用多久按中断结算（默认 600 秒）。`SOLUM_TENANT_MAX_BLOB_BYTES` / `SOLUM_TENANT_MAX_BLOBS` / `SOLUM_TENANT_MAX_DEVICES` 分别限制迁移期同步的单租户密文总字节、blob 条数和设备数。备份另用 `SOLUM_BACKUP_*`：默认单对象 68 MiB、单版本 700 MiB、租户密文 2 GiB、64 对象、4 个 pending、10 个完整历史版本和 24 小时 pending TTL；对象/版本容量不得配置低于跨平台协议预算，完整历史不得低于 2。
+   - 初始管理员账号与至少 8 个字符的密码。
+3. `SOLUM_LLM_BASE_URL` 默认指向 Tailnet 内的 vLLM：`http://100.79.74.121:8000/v1`；无需鉴权时可将 `SOLUM_LLM_API_KEY` 留空。用 `SOLUM_DEFAULT_MODEL` 指定所有登录用户可直接使用且始终保留的默认模型（当前为 `qwen3.5-2b`），用逗号分隔的 `SOLUM_ALLOWED_MODELS` 指定其他可选模型；默认模型即使未写进列表也会自动加入。`SOLUM_STANDARD_MONTHLY_REQUEST_LIMIT` 是新账号默认月度请求额度。`SOLUM_AI_MAX_RESPONSE_BYTES` 限制非流式上游响应体（默认 8 MiB），`SOLUM_AI_PENDING_TIMEOUT_SECONDS` 决定进程异常退出后待处理调用多久按中断结算（默认 600 秒）。`SOLUM_TENANT_MAX_BLOB_BYTES` / `SOLUM_TENANT_MAX_BLOBS` / `SOLUM_TENANT_MAX_DEVICES` 分别限制迁移期同步的单租户密文总字节、blob 条数和设备数。备份另用 `SOLUM_BACKUP_*`：默认单对象 68 MiB、单版本 700 MiB、租户密文 2 GiB、64 对象、4 个 pending、10 个完整历史版本和 24 小时 pending TTL；对象/版本容量不得配置低于跨平台协议预算，完整历史不得低于 2。
 4. 启动：
 
 ```sh

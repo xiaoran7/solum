@@ -41,7 +41,7 @@ const BOOTSTRAP_FORMAT: &str = "solum-webview-bootstrap";
 const BOOTSTRAP_VERSION: u32 = 1;
 const MAX_BOOTSTRAP_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SPOOL_FILE_BYTES: u64 = 64 * 1024;
-const EMPTY_NOTIFICATION_POLICY: &str = "{\"allowed_packages\":[]}";
+const EMPTY_NOTIFICATION_POLICY: &str = "{\"capture_mode\":\"all\",\"allowed_packages\":[]}";
 pub const WEBVIEW_DOCUMENT_CHUNK_BYTES: usize = 512 * 1024;
 pub const RESTORE_HANDOFF_DIR: &str = "restore-handoff";
 const MAX_HANDOFF_ITEMS: usize = 10_000;
@@ -1060,6 +1060,7 @@ mod tests {
             .unwrap();
         source
             .save_notification_intelligence_config(&NotificationIntelligenceConfig {
+                capture_mode: crate::notification_intelligence::NotificationCaptureMode::Allowlist,
                 allowed_packages: vec!["com.example.calendar".into()],
                 auto_event_packages: vec!["com.example.calendar".into()],
                 batch_interval_minutes: 20,

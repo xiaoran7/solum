@@ -393,7 +393,7 @@ function validateModel(value, fallback) {
 }
 
 function parseModelCatalog(defaultModel, allowedModels) {
-  const fallback = validateModel(defaultModel, 'mimo-v2.5');
+  const fallback = validateModel(defaultModel, 'qwen3.5-2b');
   const models = [fallback];
   for (const candidate of String(allowedModels || '').split(',')) {
     const trimmed = candidate.trim();
@@ -434,11 +434,52 @@ function validateCompletionOptions(body) {
     (!Number.isInteger(body.max_tokens) || body.max_tokens < 1 || body.max_tokens > 32768)) {
     throw new HttpError(400, 'invalid_max_tokens');
   }
+  const tools = validateTools(body.tools);
+  const toolChoice = validateToolChoice(body.tool_choice, tools);
   return {
     stream: body.stream === true,
     temperature: body.temperature,
     maxTokens: body.max_tokens,
+    tools,
+    toolChoice,
   };
+}
+
+function validateTools(value) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 16 ||
+      JSON.stringify(value).length > 65536) throw new HttpError(400, 'invalid_tools');
+  return value.map((tool) => {
+    if (!tool || typeof tool !== 'object' || Array.isArray(tool) || tool.type !== 'function' ||
+        Object.keys(tool).some((key) => !['type', 'function'].includes(key))) {
+      throw new HttpError(400, 'invalid_tools');
+    }
+    const fn = tool.function;
+    if (!fn || typeof fn !== 'object' || Array.isArray(fn) ||
+        Object.keys(fn).some((key) => !['name', 'description', 'parameters', 'strict'].includes(key)) ||
+        typeof fn.name !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(fn.name) ||
+        (fn.description !== undefined && (typeof fn.description !== 'string' || fn.description.length > 1000)) ||
+        !fn.parameters || typeof fn.parameters !== 'object' || Array.isArray(fn.parameters) ||
+        (fn.strict !== undefined && typeof fn.strict !== 'boolean')) {
+      throw new HttpError(400, 'invalid_tools');
+    }
+    return { type: 'function', function: { ...fn } };
+  });
+}
+
+function validateToolChoice(value, tools) {
+  if (value === undefined) return undefined;
+  if (!tools) throw new HttpError(400, 'invalid_tool_choice');
+  if (['auto', 'none', 'required'].includes(value)) return value;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.type !== 'function' ||
+      Object.keys(value).some((key) => !['type', 'function'].includes(key)) ||
+      !value.function || typeof value.function !== 'object' || Array.isArray(value.function) ||
+      Object.keys(value.function).some((key) => key !== 'name') ||
+      typeof value.function.name !== 'string' ||
+      !tools.some((tool) => tool.function.name === value.function.name)) {
+    throw new HttpError(400, 'invalid_tool_choice');
+  }
+  return { type: 'function', function: { name: value.function.name } };
 }
 
 function parseAllowedOrigins(value) {
@@ -458,10 +499,10 @@ function buildConfig(overrides = {}) {
     adminUsername: process.env.SOLUM_ADMIN_USERNAME || '',
     adminPassword: process.env.SOLUM_ADMIN_PASSWORD || '',
     registrationMode: process.env.SOLUM_REGISTRATION_MODE || 'closed',
-    mimoApiKey: process.env.MIMO_API_KEY || '',
-    mimoBaseUrl: process.env.MIMO_BASE_URL || 'https://token-plan-cn.xiaomimimo.com/v1',
-    defaultModel: process.env.SOLUM_DEFAULT_MODEL || 'mimo-v2.5',
-    allowedModels: process.env.SOLUM_ALLOWED_MODELS || 'mimo-v2.5,mimo-v2.5-pro',
+    mimoApiKey: process.env.SOLUM_LLM_API_KEY || process.env.MIMO_API_KEY || '',
+    mimoBaseUrl: process.env.SOLUM_LLM_BASE_URL || process.env.MIMO_BASE_URL || 'http://100.79.74.121:8000/v1',
+    defaultModel: process.env.SOLUM_DEFAULT_MODEL || 'qwen3.5-2b',
+    allowedModels: process.env.SOLUM_ALLOWED_MODELS || 'qwen3.5-2b',
     standardPlan: process.env.SOLUM_STANDARD_PLAN || 'standard',
     standardMonthlyRequestLimit: Number(process.env.SOLUM_STANDARD_MONTHLY_REQUEST_LIMIT || 1000),
     aiMaxResponseBytes: Number(process.env.SOLUM_AI_MAX_RESPONSE_BYTES || DEFAULT_AI_RESPONSE_BYTES),
@@ -544,7 +585,7 @@ function buildConfig(overrides = {}) {
   if (config.buildRevision !== 'unknown' && !/^[0-9a-f]{7,40}$/.test(config.buildRevision)) {
     throw new Error('SOLUM_BUILD_REVISION must be unknown or a 7-40 character lowercase Git SHA');
   }
-  validateModel(config.defaultModel, 'mimo-v2.5');
+  validateModel(config.defaultModel, 'qwen3.5-2b');
   config.modelCatalog = parseModelCatalog(config.defaultModel, config.allowedModels);
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(config.standardPlan)) {
     throw new Error('SOLUM_STANDARD_PLAN must be a short identifier');
@@ -667,8 +708,8 @@ async function scryptBurnAsync(input) {
 async function bootstrapAdmin(pool, config) {
   const existing = await pool.query('select id,username from auth.users where username=$1', [config.adminUsername]);
   if (existing.rowCount > 0) return;
-  if (config.adminPassword.length < 12) {
-    throw new Error('SOLUM_ADMIN_PASSWORD must be at least 12 characters when bootstrapping');
+  if ([...config.adminPassword].length < 8) {
+    throw new Error('SOLUM_ADMIN_PASSWORD must be at least 8 characters when bootstrapping');
   }
   const salt = crypto.randomBytes(16).toString('hex');
   await pool.query(
@@ -1017,9 +1058,11 @@ async function requestUpstream(config, body, model, wantStream, req, res) {
   const startedAt = Date.now();
   const lifetime = requestSignal(req, res, wantStream ? 300000 : 60000);
   try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (config.mimoApiKey) headers.Authorization = `Bearer ${config.mimoApiKey}`;
     const response = await fetch(`${config.mimoBaseUrl.replace(/\/+$/, '')}/chat/completions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.mimoApiKey}` },
+      headers,
       body: JSON.stringify({ ...body, model }),
       signal: lifetime.signal,
     });
@@ -1096,7 +1139,6 @@ async function nextStreamChunk(reader) {
 }
 
 async function proxyCompletion(req, res, pool, tenantId, config) {
-  if (!config.mimoApiKey) throw new HttpError(503, 'ai_not_configured');
   const body = await readJson(req);
   const options = validateCompletionOptions(body);
   const wantStream = options.stream;
@@ -1107,6 +1149,8 @@ async function proxyCompletion(req, res, pool, tenantId, config) {
   };
   if (options.temperature !== undefined) upstreamBody.temperature = options.temperature;
   if (options.maxTokens !== undefined) upstreamBody.max_tokens = options.maxTokens;
+  if (options.tools !== undefined) upstreamBody.tools = options.tools;
+  if (options.toolChoice !== undefined) upstreamBody.tool_choice = options.toolChoice;
   const reservation = await reserveAiRequest(pool, tenantId, requestedModel, config);
   let effectiveModel = reservation.effectiveModel;
   let fallbackReason = reservation.fallbackReason;
@@ -1367,7 +1411,7 @@ async function createPostgresServer(overrides = {}) {
       const body = await readJson(req);
       const username = requiredString(body.username, 'invalid_credentials', 128);
       const password = requiredOpaqueString(body.password, 'invalid_credentials', 1024);
-      if (password.length < 12 || /[\u0000-\u001f\u007f]/.test(username)) {
+      if ([...password].length < 8 || /[\u0000-\u001f\u007f]/.test(username)) {
         throw new HttpError(400, 'invalid_credentials');
       }
       const salt = crypto.randomBytes(16).toString('hex');
@@ -1732,7 +1776,7 @@ async function createPostgresServer(overrides = {}) {
         if (!allowed.has(key)) throw new HttpError(400, 'invalid_request');
       }
       const newPassword = requiredOpaqueString(body.new_password, 'invalid_credentials', 1024);
-      if (newPassword.length < 12) throw new HttpError(400, 'invalid_credentials');
+      if ([...newPassword].length < 8) throw new HttpError(400, 'invalid_credentials');
       const oldPassword = typeof body.current_password === 'string' &&
         body.current_password.length > 0 ? body.current_password : null;
       const oldCodeDigest = typeof body.current_code_verify_hash === 'string' &&

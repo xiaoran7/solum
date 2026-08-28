@@ -257,8 +257,17 @@ class SolumNotificationListener : NotificationListenerService() {
             val policy = File(profileDir, "notif-policy.json")
             if (!policy.isFile) false
             else {
-                val packages = JSONObject(policy.readText()).optJSONArray("allowed_packages")
-                packages != null && (0 until packages.length()).any { packages.optString(it) == packageName }
+                val value = JSONObject(policy.readText())
+                when (value.optString("capture_mode")) {
+                    "all" -> true
+                    "allowlist" -> {
+                        val packages = value.optJSONArray("allowed_packages")
+                        packages != null && (0 until packages.length()).any {
+                            packages.optString(it) == packageName
+                        }
+                    }
+                    else -> false
+                }
             }
         } catch (_: Exception) {
             false

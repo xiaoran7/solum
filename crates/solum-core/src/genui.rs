@@ -316,7 +316,19 @@ pub fn validate_action(a: &UiAction, allowed: &[&str]) -> Result<(), String> {
             .ok_or_else(|| format!("动作 {} 缺少布尔参数 {k}", a.command))
     };
     match a.command.as_str() {
-        "ingest" | "checkin_answer" => need_str("text"),
+        "ingest" | "checkin_answer" => {
+            if args.len() != 1 {
+                return Err(format!("动作 {} 只允许 text 参数", a.command));
+            }
+            need_str("text")?;
+            if args["text"]
+                .as_str()
+                .is_some_and(|text| text.chars().count() > MAX_TEXT_LEN)
+            {
+                return Err(format!("动作 {} 的 text 过长", a.command));
+            }
+            Ok(())
+        }
         "reminder_dismiss" | "event_cancel" => need_int("id"),
         "event_reschedule" => {
             need_int("id")?;

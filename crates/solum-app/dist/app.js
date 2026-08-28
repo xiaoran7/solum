@@ -226,7 +226,7 @@ function safeUserError(error, fallback) {
   try { console.warn("[solum-ui]", raw); } catch (_) { /* logging is best effort */ }
   if (/state not managed|app_info/i.test(raw)) return "应用状态正在初始化，请重新打开应用。";
   if (/账号或密码|账号名已经存在|请填写账号和密码|注册密码|登录已过期|重新登录|服务器未开放注册|尝试太频繁/.test(raw)) {
-    return raw.replace(/^.*?(账号或密码不正确|该账号名已经存在|请填写账号和密码|注册密码至少需要 12 个字符。|登录已过期，请重新登录|账号服务器版本过旧：登录结果缺少不可变 user_id，请先升级 solum-cloud|服务器未开放注册或当前操作无权限|尝试太频繁，请稍后再试).*$/s, "$1");
+    return raw.replace(/^.*?(账号或密码不正确|该账号名已经存在|请填写账号和密码|注册密码至少需要 8 个字符。|登录已过期，请重新登录|账号服务器版本过旧：登录结果缺少不可变 user_id，请先升级 solum-cloud|服务器未开放注册或当前操作无权限|尝试太频繁，请稍后再试).*$/s, "$1");
   }
   if (/同步|sync|无法解密|留存窗口/i.test(raw)) return "同步暂时失败，已保留本地数据；请稍后重试。";
   if (/网络|network|transport|tls|ssl|errno|os error|连接|超时|timeout|dns|url|https?:\/\//i.test(raw)) {
@@ -3426,6 +3426,7 @@ function appNameForPackage(packageName) {
 function renderNotificationAppPicker(config) {
   const picker = $("notifAppPicker");
   picker.textContent = "";
+  if (!config || config.capture_mode !== "allowlist") return;
   const allowed = new Set((config && config.allowed_packages) || []);
   const query = $("notifAppSearch").value.trim().toLocaleLowerCase();
   const apps = notificationAppCatalog.filter((app) => !allowed.has(app.packageName)
@@ -3464,7 +3465,7 @@ function renderNotificationLedger(box, s) {
   const heading = el("div", { class: "block" }, [
     el("p", { class: "hint", style: "margin:0 0 10px;", text: captures.length
       ? "每条已捕获通知都在这里留下去向；过滤、判重和待处理均可回看。"
-      : "还没有已捕获通知。先在 设置 → 隐私 选择允许 息壤 处理的应用。" }),
+      : "还没有已捕获通知。授予 Android 通知访问后，息壤 会按设置的接收范围在后台静默整理。" }),
   ]);
   if (captures.length) {
     const rows = el("div", { class: "rows" });
@@ -3543,14 +3544,20 @@ async function renderNotificationIntelligenceSettings(s) {
       autoEventCounts[pkg] = n;
     }
   } catch (_) { /* 统计拿不到不影响授权界面本身 */ }
-  const config = s.config || { allowed_packages: [], filter_rules: [] };
+  const config = s.config || { capture_mode: "all", allowed_packages: [], auto_event_packages: [], filter_rules: [] };
+  const captureMode = config.capture_mode === "allowlist" ? "allowlist" : "all";
   notificationConfigForPicker = config;
+  $("notifCaptureMode").value = captureMode;
+  $("notifAllowlistControls").hidden = captureMode !== "allowlist";
+  $("notifCaptureModeHint").textContent = captureMode === "allowlist"
+    ? "只有白名单里的应用消息会进入本机处理管线。"
+    : "接收所有第三方应用消息；后台静默整理，需确认或明确开启的提醒才会提示。";
   $("notifBatchInterval").value = String(config.batch_interval_minutes || 15);
   apps.textContent = "";
   const allowed = config.allowed_packages || [];
   const selectedScope = scope.value;
   scope.textContent = "";
-  scope.appendChild(el("option", { value: "", text: "全局（所有已允许的应用）" }));
+  scope.appendChild(el("option", { value: "", text: "全局（所有已接收的应用）" }));
   for (const pkg of allowed) scope.appendChild(el("option", { value: pkg, text: appNameForPackage(pkg) }));
   scope.value = allowed.includes(selectedScope) ? selectedScope : "";
   // 采集丢失必须说出来。这两类都是「告诉过用户会捕获、实际没捕获」的通知，
@@ -3590,8 +3597,9 @@ async function renderNotificationIntelligenceSettings(s) {
   // 上面那句「选择后才允许读取该应用通知」授的是前者；自动建日程必须在这里
   // 逐个应用单独打开，默认关闭。
   const autoPkgs = config.auto_event_packages || [];
-  apps.appendChild(el("div", { class: "rows" }, allowed.length
-    ? allowed.map((pkg) => {
+  const managedPackages = captureMode === "allowlist" ? allowed : autoPkgs;
+  apps.appendChild(el("div", { class: "rows" }, managedPackages.length
+    ? managedPackages.map((pkg) => {
         const on = autoPkgs.includes(pkg);
         const made = (autoEventCounts[pkg] || 0);
         return el("div", { class: "row", style: "flex-wrap:wrap;gap:8px;" }, [
@@ -3609,10 +3617,14 @@ async function renderNotificationIntelligenceSettings(s) {
               : "单独授权：允许这个应用的通知在本地解析出确定时间时，直接创建日程和提醒",
             onclick: () => setNotificationAppAutoEvent(pkg, !on),
           }),
-          el("button", { class: "btn sm", text: "停止捕获", onclick: () => setNotificationApp(pkg, false) }),
+          captureMode === "allowlist"
+            ? el("button", { class: "btn sm", text: "移出白名单", onclick: () => setNotificationApp(pkg, false) })
+            : null,
         ]);
       })
-    : [el("div", { class: "hint", text: "尚未选择应用：息壤 不会读取任何第三方通知。" })]));
+    : [el("div", { class: "hint", text: captureMode === "all"
+      ? "当前接收所有第三方应用消息；自动建日程仍保持逐应用、默认关闭。切换到白名单后可管理逐应用授权。"
+      : "白名单为空：息壤 不会读取第三方应用消息。" })]));
   rules.textContent = "";
   const allRules = s.priority_rules || [];
   const filterRules = config.filter_rules || [];
@@ -3620,13 +3632,13 @@ async function renderNotificationIntelligenceSettings(s) {
   list.appendChild(el("div", { class: "hint", text: "重要路由规则（命中只影响分诊时机，不授权任何动作）：" }));
   if (!allRules.length) list.appendChild(el("div", { class: "hint", text: "未配置；允许应用时会加入可编辑的预设。" }));
   for (const rule of allRules) list.appendChild(el("div", { class: "row" }, [
-    el("span", { class: "grow", text: `${rule.pattern} · ${rule.package_name ? appNameForPackage(rule.package_name) : "所有已选择应用"} · ${rule.matcher === "regex" ? "正则" : "包含"}` }),
+    el("span", { class: "grow", text: `${rule.pattern} · ${rule.package_name ? appNameForPackage(rule.package_name) : "所有已接收应用"} · ${rule.matcher === "regex" ? "正则" : "包含"}` }),
     el("button", { class: "btn icon danger", title: "删除即时规则", "aria-label": "删除即时规则", onclick: () => removeNotificationPriorityRule(rule.id) }, icon("trash", 16)),
   ]));
   if (filterRules.length) {
     list.appendChild(el("div", { class: "hint", style: "margin-top:8px;", text: "已确认过滤规则（可撤销，已过滤通知仍在台账）：" }));
     for (const rule of filterRules) list.appendChild(el("div", { class: "row" }, [
-      el("span", { class: "grow", text: `${rule.pattern} · ${rule.package_name ? appNameForPackage(rule.package_name) : "所有已选择应用"}` }),
+      el("span", { class: "grow", text: `${rule.pattern} · ${rule.package_name ? appNameForPackage(rule.package_name) : "所有已接收应用"}` }),
       el("button", { class: "btn sm", text: "撤销", onclick: () => removeNotificationFilterRule(rule.id) }),
     ]));
   }
@@ -3670,6 +3682,13 @@ async function setNotificationApp(packageName, enabled) {
     toast(enabled ? `已允许接收「${appNameForPackage(packageName)}」的通知` : `已停止接收「${appNameForPackage(packageName)}」的通知`, "ok");
     refreshNotificationIntelligence(); refreshLedger();
   } catch (e) { toast(String(e), "danger"); }
+}
+async function setNotificationCaptureMode(mode) {
+  try {
+    await invoke("notif_intelligence_set_capture_mode", { mode });
+    toast(mode === "all" ? "已改为接收全应用消息" : "已改为仅接收白名单应用消息", "ok");
+    refreshNotificationIntelligence(); refreshLedger();
+  } catch (e) { toast(String(e), "danger"); refreshNotificationIntelligence(); }
 }
 // 第二种授权：允许该应用的通知自动创建日程。与「读取通知」分开，
 // 因为它是另一件事——读取是让 息壤 看见，这一步是让这个应用往你的日历里写。
@@ -3744,6 +3763,7 @@ async function removeNotificationFilterRule(id) {
 }
 
 $("notifAppSearch").addEventListener("input", () => renderNotificationAppPicker(notificationConfigForPicker));
+$("notifCaptureMode").addEventListener("change", (event) => setNotificationCaptureMode(event.target.value));
 $("notifBatchInterval").addEventListener("change", async (event) => {
   try { await invoke("notif_intelligence_set_batch_interval", { minutes: Number(event.currentTarget.value) }); toast("普通通知批量间隔已更新", "ok"); }
   catch (e) { toast(String(e), "danger"); refreshNotificationIntelligence(); }
@@ -3873,7 +3893,7 @@ function setPrivacyGateStatus(message, pending) {
   status.classList.toggle("pending", Boolean(pending));
 }
 $("privacyAccountBtn").addEventListener("click", () =>
-  requireAccount("登录后配置通知上云、应用白名单和端到端加密同步"));
+  requireAccount("登录后配置应用消息接收范围、通知上云和端到端加密同步"));
 
 function invokePrivacyCommand(command, timeoutMs) {
   let timer = null;
@@ -4340,34 +4360,11 @@ async function refreshToday() {
 }
 
 /* ============================== 云端接入（设置 → 云端） ============================== */
-// 厂商预设（调研见 docs/LLM-PROVIDERS.md，2026-07-15）。models 只是 datalist 建议，可自由改。
+// 直连配置暂时隐藏；保留单一迁移预设，避免旧配置回显为任意自定义厂商。
 const LLM_PRESETS = [
-  { id: "mimo-tp", label: "小米 MiMo · Token Plan", base: "https://token-plan-cn.xiaomimimo.com/v1",
-    models: ["mimo-v2.5", "mimo-v2.5-pro"], timeout: 30, temp: "default",
-    note: "套餐 key 形如 tp-…，与按量的 sk- key 不通用。" },
-  { id: "mimo-pay", label: "小米 MiMo · 按量付费", base: "https://api.xiaomimimo.com/v1",
-    models: ["mimo-v2.5", "mimo-v2.5-pro"], timeout: 30, temp: "default",
-    note: "按量 key 形如 sk-…，与 Token Plan 的 tp- key 不通用。" },
-  { id: "deepseek", label: "DeepSeek", base: "https://api.deepseek.com",
-    models: ["deepseek-v4-flash", "deepseek-v4-pro"], timeout: 60, temp: "default",
-    note: "旧模型名 deepseek-chat / deepseek-reasoner 将于 2026-07-24 停用，请用 v4 名称。" },
-  { id: "glm", label: "智谱 GLM", base: "https://open.bigmodel.cn/api/paas/v4",
-    models: ["glm-4.6", "glm-4.7-flash", "glm-5.2"], timeout: 60, temp: "default",
-    note: "glm-4.7-flash 长期免费。路径是 /api/paas/v4，不是 /v1。" },
-  { id: "kimi", label: "Kimi · 开放平台", base: "https://api.moonshot.cn/v1",
-    models: ["kimi-k2.6", "kimi-k2.5", "kimi-k2.7-code"], timeout: 60, temp: "default",
-    note: "Kimi 会员订阅（Coding Plan）的 key 只放行白名单 coding 工具，息壤 用不了；请用开放平台的按量 key。" },
-  { id: "qwen", label: "通义千问 · DashScope", base: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    models: ["qwen3.7-plus", "qwen3.7-max", "qwen-plus"], timeout: 60, temp: "default",
-    note: "Token Plan / Coding Plan 套餐要用控制台 API Keys 页给的专属 Base URL，不是这个公共地址。" },
-  { id: "openai", label: "OpenAI", base: "https://api.openai.com/v1",
-    models: ["gpt-5.6", "gpt-5-mini"], timeout: 60, temp: "omit",
-    note: "gpt-5 系列只接受默认温度，temperature 已自动切到「不发送」。" },
-  { id: "gemini", label: "Google Gemini", base: "https://generativelanguage.googleapis.com/v1beta/openai",
-    models: ["gemini-3.5-flash", "gemini-2.5-flash"], timeout: 60, temp: "default",
-    note: "官方 OpenAI 兼容层，API Key 直接填 Gemini key。" },
-  { id: "custom", label: "自定义端点", base: "", models: [], timeout: 30, temp: "default",
-    note: "任何 OpenAI 兼容 /chat/completions 端点均可。" },
+  { id: "solum-local", label: "Solum 本地 Agent", base: "http://100.79.74.121:8000/v1",
+    models: ["qwen3.5-2b"], timeout: 60, temp: "default",
+    note: "Solum 中心通过 Tailnet 连接本地 vLLM；自定义端点暂不开放。" },
 ];
 const SOLUM_CENTER_URL = "https://solum.tannerlab.cn";
 let llmKeyTail = "";   // 已保存密钥的尾巴（空 = 还没存过 key，保存时必填）
@@ -4730,7 +4727,7 @@ async function refreshAccount() {
   const modelSelect = $("accountModel");
   const currentValue = modelSelect.value;
   modelSelect.textContent = "";
-  const defaultModel = s.default_model || "mimo-v2.5";
+  const defaultModel = s.default_model || "qwen3.5-2b";
   const options = Array.from(new Set([defaultModel, ...(s.model_options || [])]));
   for (const model of options) modelSelect.appendChild(el("option", {
     value: model, text: model === defaultModel ? `${model}（默认）` : model,
@@ -4788,8 +4785,8 @@ async function submitAccountGate() {
     $("accountGateStatus").textContent = "请填写账号和密码。";
     return;
   }
-  if (registering && password.length < 12) {
-    $("accountGateStatus").textContent = "注册密码至少需要 12 个字符。";
+  if (registering && Array.from(password).length < 8) {
+    $("accountGateStatus").textContent = "注册密码至少需要 8 个字符。";
     return;
   }
   if (registering && password !== $("accountGateConfirm").value) {
@@ -4805,7 +4802,7 @@ async function submitAccountGate() {
       serverUrl: SOLUM_CENTER_URL,
       username,
       password,
-      model: "mimo-v2.5",
+      model: "qwen3.5-2b",
     });
     $("accountGatePass").value = "";
     $("accountGateConfirm").value = "";
@@ -4969,7 +4966,7 @@ $("accountChangePassSubmit").addEventListener("click", async () => {
   const currentPassword = $("accountCurrentPass").value;
   const newPassword = $("accountNewPass").value;
   if (!currentPassword) return toast("请输入当前密码", "danger");
-  if (newPassword.length < 12) return toast("新密码至少需要 12 个字符", "danger");
+  if (Array.from(newPassword).length < 8) return toast("新密码至少需要 8 个字符", "danger");
   btn.disabled = true;
   try {
     const message = await invoke("account_change_password", { currentPassword, newPassword });

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Keep the full Solum orbit inside Android's adaptive-icon safe zone. -->
+  <item
+    android:width="78dp"
+    android:height="78dp"
+    android:gravity="center"
+    android:drawable="@mipmap/ic_launcher_foreground" />
+</layer-list>

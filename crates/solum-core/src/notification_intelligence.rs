@@ -18,11 +18,25 @@ fn default_batch_interval_minutes() -> u16 {
     MIN_BATCH_INTERVAL_MINUTES
 }
 
-/// Device-local control plane for third-party notification capture. An empty
-/// whitelist is intentional: no app is captured until the user opts in.
+/// Which installed apps may enter the device-local notification pipeline.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationCaptureMode {
+    /// Capture every third-party app (the product default). Android's own
+    /// notification-access permission remains the outer, user-controlled gate.
+    #[default]
+    All,
+    /// Capture only packages explicitly listed in `allowed_packages`.
+    Allowlist,
+}
+
+/// Device-local control plane for third-party notification capture. Capture is
+/// all-apps by default; the user can switch to an explicit allowlist.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationIntelligenceConfig {
-    /// Apps whose notifications may be **read** at all.
+    #[serde(default)]
+    pub capture_mode: NotificationCaptureMode,
+    /// Apps whose notifications may be **read** in allowlist mode.
     #[serde(default)]
     pub allowed_packages: Vec<String>,
     /// Apps whose notifications may additionally **write to the calendar**
@@ -58,6 +72,7 @@ pub const MAX_AUTO_EVENTS_PER_APP_PER_DAY: usize = 20;
 impl Default for NotificationIntelligenceConfig {
     fn default() -> Self {
         Self {
+            capture_mode: NotificationCaptureMode::All,
             allowed_packages: Vec::new(),
             auto_event_packages: Vec::new(),
             batch_interval_minutes: default_batch_interval_minutes(),
@@ -87,8 +102,10 @@ impl NotificationIntelligenceConfig {
         // Auto-create implies capture: an app that cannot be read cannot write.
         // Enforced here rather than trusted from the caller, so a hand-edited
         // config or a stale UI cannot produce the nonsensical combination.
-        self.auto_event_packages
-            .retain(|pkg| self.allowed_packages.contains(pkg));
+        if self.capture_mode == NotificationCaptureMode::Allowlist {
+            self.auto_event_packages
+                .retain(|pkg| self.allowed_packages.contains(pkg));
+        }
         if !(MIN_BATCH_INTERVAL_MINUTES..=MAX_BATCH_INTERVAL_MINUTES)
             .contains(&self.batch_interval_minutes)
         {
@@ -106,15 +123,18 @@ impl NotificationIntelligenceConfig {
 
     /// May this app's notifications be read at all?
     pub fn allows(&self, package_name: &str) -> bool {
-        self.allowed_packages.iter().any(|pkg| pkg == package_name)
+        self.capture_mode == NotificationCaptureMode::All
+            || self.allowed_packages.iter().any(|pkg| pkg == package_name)
     }
 
     /// May this app's notifications create calendar entries without asking?
     /// Strictly narrower than [`Self::allows`].
     pub fn allows_auto_event(&self, package_name: &str) -> bool {
-        self.auto_event_packages
-            .iter()
-            .any(|pkg| pkg == package_name)
+        self.allows(package_name)
+            && self
+                .auto_event_packages
+                .iter()
+                .any(|pkg| pkg == package_name)
     }
 }
 
@@ -786,14 +806,26 @@ mod tests {
     }
 
     #[test]
-    fn whitelist_and_priority_route_before_any_llm() {
+    fn capture_defaults_to_all_and_allowlist_can_fail_closed() {
         let config = NotificationIntelligenceConfig::default();
+        assert!(matches!(
+            decide_intake(&capture("com.tencent.mm", "@我 开会"), &config, &[]),
+            IntakeDecision::Lane(CaptureLane::Batch)
+        ));
+
+        let config = NotificationIntelligenceConfig {
+            capture_mode: NotificationCaptureMode::Allowlist,
+            ..Default::default()
+        };
         assert_eq!(
             decide_intake(&capture("com.tencent.mm", "@我 开会"), &config, &[]),
             IntakeDecision::NotAllowed
         );
 
-        let mut config = NotificationIntelligenceConfig::default();
+        let mut config = NotificationIntelligenceConfig {
+            capture_mode: NotificationCaptureMode::Allowlist,
+            ..Default::default()
+        };
         config.allowed_packages.push("com.tencent.mm".into());
         let rules = priority_presets("com.tencent.mm");
         assert_eq!(

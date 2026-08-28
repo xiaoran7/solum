@@ -329,13 +329,24 @@ test('AI quota reservation is a conditional atomic update before the usage event
 test('AI completion options reject ambiguous or unbounded values', () => {
   assert.deepEqual(validateCompletionOptions({}), {
     stream: false, temperature: undefined, maxTokens: undefined,
+    tools: undefined, toolChoice: undefined,
   });
   assert.deepEqual(validateCompletionOptions({ stream: true, temperature: 0, max_tokens: 32768 }), {
     stream: true, temperature: 0, maxTokens: 32768,
+    tools: undefined, toolChoice: undefined,
+  });
+  const tool = { type: 'function', function: { name: 'ingest', description: 'confirm',
+    parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+    strict: true } };
+  assert.deepEqual(validateCompletionOptions({ tools: [tool], tool_choice: 'auto' }), {
+    stream: false, temperature: undefined, maxTokens: undefined,
+    tools: [tool], toolChoice: 'auto',
   });
   for (const input of [
     null, [], { stream: 'true' }, { temperature: Number.NaN }, { temperature: -0.1 },
     { temperature: 2.1 }, { max_tokens: 0 }, { max_tokens: 1.5 }, { max_tokens: 32769 },
+    { tools: [] }, { tools: [{ type: 'function', function: { name: 'bad name', parameters: {} } }] },
+    { tool_choice: 'auto' }, { tools: [tool], tool_choice: { type: 'function', function: { name: 'missing' } } },
   ]) assert.throws(() => validateCompletionOptions(input));
 });
 

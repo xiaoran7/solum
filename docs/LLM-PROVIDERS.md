@@ -7,7 +7,7 @@ Solum 的云端网关（ARCHITECTURE.md §3.6，`solum-core/src/llm.rs`）只说
 {
   "base_url": "…/v1",          // 必填，末尾不带 /chat/completions
   "api_key": "…",              // 必填
-  "model": "…",                // 选填，缺省 mimo-v2.5
+  "model": "…",                // 选填，缺省 qwen3.5-2b
   "temperature": 0.3,          // 选填；写 null 表示"不发送该字段"（OpenAI gpt-5 系必须）
   "max_tokens": 1024,          // 选填；缺省不发送
   "timeout_secs": 30           // 选填；思考类模型建议 60+
@@ -21,7 +21,9 @@ Solum 的云端网关（ARCHITECTURE.md §3.6，`solum-core/src/llm.rs`）只说
 
 ---
 
-## 1. 小米 MiMo（Token Plan，当前默认）
+> 2026-08-28 当前产品配置：Solum Center 经 Tailnet 访问 `http://100.79.74.121:8000/v1`，模型固定为 `qwen3.5-2b`；客户端自定义厂商入口暂时隐藏。下方厂商资料仅作历史兼容与后续评估参考。
+
+## 1. 小米 MiMo（历史兼容）
 
 | 项 | 值 |
 |---|---|

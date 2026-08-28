@@ -212,6 +212,7 @@ mod tests {
         let source = Store::open_in_memory().unwrap();
         source
             .save_notification_intelligence_config(&NotificationIntelligenceConfig {
+                capture_mode: crate::notification_intelligence::NotificationCaptureMode::Allowlist,
                 allowed_packages: vec!["com.example.calendar".into()],
                 auto_event_packages: vec!["com.example.calendar".into()],
                 batch_interval_minutes: 20,

@@ -83,8 +83,10 @@ class NotificationPipelineService : Service() {
             "Solum 通知处理",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "保持 Solum 在后台处理你已授权应用的通知"
+            description = "保持 Solum 在后台静默整理已接收的应用消息"
             setShowBadge(false)
+            setSound(null, null)
+            enableVibration(false)
         }
         manager.createNotificationChannel(channel)
         // 2026-07-20 改名决议的残留清理：渠道 ID 曾是 pa_notification_pipeline，
@@ -95,9 +97,12 @@ class NotificationPipelineService : Service() {
 
     private fun buildNotification(): Notification = NotificationCompat.Builder(this, CHANNEL_ID)
         .setSmallIcon(android.R.drawable.ic_dialog_info)
-        .setContentTitle("Solum 正在处理已授权通知")
-        .setContentText("重要通知即时处理，其余按设置定时整理")
+        .setContentTitle("Solum 在后台运行")
+        .setContentText("应用消息正在本机静默整理")
         .setOngoing(true)
+        .setOnlyAlertOnce(true)
+        .setSilent(true)
+        .setShowWhen(false)
         .setCategory(NotificationCompat.CATEGORY_SERVICE)
         .build()
 

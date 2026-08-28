@@ -2629,7 +2629,7 @@
         <h3>账号内隐私能力</h3>
         <div class="statusline">
           <span class="sdot"></span>
-          <span class="t">登录后配置通知上云、应用白名单和端到端加密同步。</span>
+          <span class="t">登录后配置应用消息接收范围、通知上云和端到端加密同步。</span>
           <button class="btn sm" type="button" id="privacyAccountBtn">登录或注册</button>
         </div>
       </div>
@@ -2644,14 +2644,19 @@
         <p class="hint" id="notifCloudState" style="margin:8px 0 0;"></p>
       </div>
       <details class="fold" open>
-        <summary>通知智能管线 <span class="bnote">应用白名单默认关闭</span></summary>
+        <summary>通知智能管线 <span class="bnote">默认接收全应用</span></summary>
         <div class="fold-body">
-        <p class="hint" style="margin:0 0 14px;max-width:66ch;">只有你选中的应用会被 息壤 捕获。重要模式即时分诊，普通通知按批处理；规则与云端不可用时仍保留本地回看，不会静默丢弃。</p>
+        <p class="hint" style="margin:0 0 14px;max-width:66ch;">默认接收所有第三方应用消息，并在后台静默整理；只有丢失、需要确认或你明确开启的提醒才会提示。Android 要求后台服务保留一条无声的常驻状态通知。</p>
         <div class="formcol">
+          <div class="field"><label for="notifCaptureMode">接收范围</label>
+            <select id="notifCaptureMode"><option value="all">全应用（默认）</option><option value="allowlist">仅白名单应用</option></select>
+            <span class="hint" id="notifCaptureModeHint">接收所有第三方应用消息；你仍可单独控制哪些内容允许上云或自动建日程。</span></div>
+          <div id="notifAllowlistControls" hidden>
           <div class="field"><label for="notifAppSearch">选择接收通知的应用</label>
             <input id="notifAppSearch" type="search" placeholder="搜索手机里的应用名称" autocomplete="off" />
             <span class="hint" id="notifAppHint">只会显示应用名称；选择后才允许 息壤 读取该应用通知。</span></div>
           <div id="notifAppPicker"></div>
+          </div>
           <div class="banner" id="notifIntakeLoss" hidden></div>
           <div id="notifIntelApps"></div>
           <div class="field"><label for="notifBatchInterval">普通通知批量间隔</label>
@@ -2677,13 +2682,13 @@
           </div>
           <div class="fieldrow">
             <div class="field"><label for="notifPriorityPackage">作用域</label>
-              <select id="notifPriorityPackage"><option value="">全局（所有已允许的应用）</option></select></div>
+              <select id="notifPriorityPackage"><option value="">全局（所有已接收的应用）</option></select></div>
             <div class="field"><label for="notifPriorityMatcher">匹配方式</label>
               <select id="notifPriorityMatcher"><option value="substring">包含文字</option><option value="regex">正则</option></select></div>
           </div>
           <div class="field">
             <div class="btnrow" style="margin:0;"><button class="btn" type="button" id="notifPriorityAddBtn">添加即时规则</button></div>
-            <span class="hint">默认全局匹配；要限定到某个已允许的应用，请在此处明确选择。预设仅作可编辑起点，不作为授权边界。</span>
+            <span class="hint">默认匹配所有已接收应用；白名单模式下可进一步限定应用。预设仅作可编辑起点，不作为授权边界。</span>
           </div>
           <div id="notifIntelRules"></div>
         </div>
@@ -2866,10 +2871,10 @@
     <section class="view" id="view-cloud"><div class="vwrap">
       <div class="vhead"><div class="vt">
         <h2>云端接入 <button class="qmark" type="button" aria-expanded="false" aria-controls="descCloud" aria-label="说明"></button></h2>
-        <p class="desc" id="descCloud" hidden>任何 OpenAI 兼容端点都能接（§3.6）。密钥只落本地配置文件，不入库、不进同步，界面永不回显完整密钥；云端不可用时自动回退离线规则路径（F16）。</p>
+        <p class="desc" id="descCloud" hidden>Solum 中心通过 Tailnet 连接本地 Qwen Agent；云端不可用时自动回退离线规则路径（F16）。自定义端点暂不开放。</p>
       </div></div>
-      <div id="cloudStatus" style="margin-bottom:18px;"></div>
-      <div class="block">
+      <div id="cloudStatus" style="margin-bottom:18px;" hidden></div>
+      <div class="block" id="llmDirectConfig" hidden>
         <h3>端点配置 <span class="bnote">厂商差异见 docs/LLM-PROVIDERS.md</span></h3>
         <div class="formcol">
           <div class="field"><label for="llmPreset">厂商预设</label>
@@ -2923,7 +2928,7 @@
             </div>
           </div>
           <div class="field"><label for="accountModel">云端模型</label>
-            <select id="accountModel"><option value="mimo-v2.5">mimo-v2.5（默认）</option></select></div>
+            <select id="accountModel"><option value="qwen3.5-2b">qwen3.5-2b（默认）</option></select></div>
           <p class="account-model-note" id="accountModelNote"></p>
           <div id="accountRecoverForm" hidden>
             <div class="fieldrow">
@@ -2963,8 +2968,8 @@
               <div class="fieldrow" style="margin-top:10px;">
                 <div class="field"><label for="accountCurrentPass">当前密码</label>
                   <input type="password" id="accountCurrentPass" autocomplete="off" /></div>
-                <div class="field"><label for="accountNewPass">新密码（至少 12 位）</label>
-                  <input type="password" id="accountNewPass" autocomplete="new-password" /></div>
+                <div class="field"><label for="accountNewPass">新密码（至少 8 个字符）</label>
+                  <input type="password" id="accountNewPass" minlength="8" autocomplete="new-password" /></div>
               </div>
               <div class="btnrow">
                 <button class="btn primary sm" id="accountChangePassSubmit">确认修改</button>
@@ -3127,7 +3132,7 @@
         <label for="accountGateUser">账号</label>
         <input type="text" id="accountGateUser" autocomplete="username" placeholder="输入账号" spellcheck="false" />
         <label for="accountGatePass">密码</label>
-        <input type="password" id="accountGatePass" autocomplete="current-password" placeholder="至少 12 个字符" />
+        <input type="password" id="accountGatePass" minlength="8" autocomplete="current-password" placeholder="至少 8 个字符" />
         <div id="accountGateConfirmField" hidden>
           <label for="accountGateConfirm">确认密码</label>
           <input type="password" id="accountGateConfirm" autocomplete="new-password" placeholder="再次输入密码" />

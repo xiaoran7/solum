@@ -254,7 +254,47 @@ function validateCompletionOptions(body) {
     (!Number.isInteger(body.max_tokens) || body.max_tokens < 1 || body.max_tokens > 32768)) {
     throw new HttpError(400, 'invalid_max_tokens');
   }
-  return { stream: body.stream === true, temperature: body.temperature, maxTokens: body.max_tokens };
+  const tools = validateTools(body.tools);
+  const toolChoice = validateToolChoice(body.tool_choice, tools);
+  return { stream: body.stream === true, temperature: body.temperature, maxTokens: body.max_tokens,
+    tools, toolChoice };
+}
+
+function validateTools(value) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 16 ||
+      JSON.stringify(value).length > 65536) throw new HttpError(400, 'invalid_tools');
+  return value.map((tool) => {
+    if (!tool || typeof tool !== 'object' || Array.isArray(tool) || tool.type !== 'function' ||
+        Object.keys(tool).some((key) => !['type', 'function'].includes(key))) {
+      throw new HttpError(400, 'invalid_tools');
+    }
+    const fn = tool.function;
+    if (!fn || typeof fn !== 'object' || Array.isArray(fn) ||
+        Object.keys(fn).some((key) => !['name', 'description', 'parameters', 'strict'].includes(key)) ||
+        typeof fn.name !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(fn.name) ||
+        (fn.description !== undefined && (typeof fn.description !== 'string' || fn.description.length > 1000)) ||
+        !fn.parameters || typeof fn.parameters !== 'object' || Array.isArray(fn.parameters) ||
+        (fn.strict !== undefined && typeof fn.strict !== 'boolean')) {
+      throw new HttpError(400, 'invalid_tools');
+    }
+    return { type: 'function', function: { ...fn } };
+  });
+}
+
+function validateToolChoice(value, tools) {
+  if (value === undefined) return undefined;
+  if (!tools) throw new HttpError(400, 'invalid_tool_choice');
+  if (['auto', 'none', 'required'].includes(value)) return value;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.type !== 'function' ||
+      Object.keys(value).some((key) => !['type', 'function'].includes(key)) ||
+      !value.function || typeof value.function !== 'object' || Array.isArray(value.function) ||
+      Object.keys(value.function).some((key) => key !== 'name') ||
+      typeof value.function.name !== 'string' ||
+      !tools.some((tool) => tool.function.name === value.function.name)) {
+    throw new HttpError(400, 'invalid_tool_choice');
+  }
+  return { type: 'function', function: { name: value.function.name } };
 }
 
 async function readResponseBodyLimited(response, maxBytes) {
@@ -283,9 +323,9 @@ function buildConfig(overrides = {}) {
     authSecret: process.env.SOLUM_AUTH_SECRET || process.env.PA_AUTH_SECRET || '',
     adminUsername: process.env.SOLUM_ADMIN_USERNAME || process.env.PA_ADMIN_USERNAME || '',
     adminPassword: process.env.SOLUM_ADMIN_PASSWORD || process.env.PA_ADMIN_PASSWORD || '',
-    mimoApiKey: process.env.MIMO_API_KEY || '',
-    mimoBaseUrl: process.env.MIMO_BASE_URL || 'https://token-plan-cn.xiaomimimo.com/v1',
-    defaultModel: process.env.SOLUM_DEFAULT_MODEL || process.env.PA_DEFAULT_MODEL || 'mimo-v2.5',
+    mimoApiKey: process.env.SOLUM_LLM_API_KEY || process.env.MIMO_API_KEY || '',
+    mimoBaseUrl: process.env.SOLUM_LLM_BASE_URL || process.env.MIMO_BASE_URL || 'http://100.79.74.121:8000/v1',
+    defaultModel: process.env.SOLUM_DEFAULT_MODEL || process.env.PA_DEFAULT_MODEL || 'qwen3.5-2b',
     allowedOrigins: process.env.SOLUM_ALLOWED_ORIGINS || '',
     trustProxy: process.env.SOLUM_TRUST_PROXY === 'true',
     aiMaxResponseBytes: Number(process.env.SOLUM_AI_MAX_RESPONSE_BYTES || DEFAULT_AI_RESPONSE_BYTES),
@@ -298,7 +338,7 @@ function buildConfig(overrides = {}) {
       /[\u0000-\u001f\u007f]/.test(config.adminUsername)) {
     throw new Error('SOLUM_ADMIN_USERNAME must be a valid username');
   }
-  validateModel(config.defaultModel, 'mimo-v2.5');
+  validateModel(config.defaultModel, 'qwen3.5-2b');
   if (!Number.isSafeInteger(config.aiMaxResponseBytes) ||
     config.aiMaxResponseBytes < 1024 || config.aiMaxResponseBytes > 64 * 1024 * 1024) {
     throw new Error('SOLUM_AI_MAX_RESPONSE_BYTES must be between 1024 and 67108864');
@@ -422,9 +462,9 @@ function openDatabase(config) {
   }
   const existing = db.prepare('SELECT id, username FROM users WHERE username = ?').get(config.adminUsername);
   if (!existing) {
-    if (config.adminPassword.length < 12) {
+    if ([...config.adminPassword].length < 8) {
       db.close();
-      throw new Error('SOLUM_ADMIN_PASSWORD must be at least 12 characters when bootstrapping');
+      throw new Error('SOLUM_ADMIN_PASSWORD must be at least 8 characters when bootstrapping');
     }
     const salt = crypto.randomBytes(16).toString('hex');
     db.prepare(
@@ -517,6 +557,7 @@ function createPaServer(overrides = {}) {
       const body = await readJson(req);
       const username = requiredString(body.username, 'invalid_credentials', 128);
       const password = requiredOpaqueString(body.password, 'invalid_credentials', 1024);
+      if ([...password].length < 8) throw new HttpError(400, 'invalid_credentials');
       const key = loginKey(req, username);
       const pairReservation = loginFailures.reserve(key.pair);
       if (!pairReservation) throw new HttpError(429, 'too_many_attempts');
@@ -665,7 +706,6 @@ function createPaServer(overrides = {}) {
 
     if (req.method === 'POST' && req.url === '/v1/ai/chat/completions') {
       authenticate(req);
-      if (!config.mimoApiKey) throw new HttpError(503, 'ai_not_configured');
       const body = await readJson(req);
       const options = validateCompletionOptions(body);
       const wantStream = options.stream;
@@ -676,15 +716,16 @@ function createPaServer(overrides = {}) {
       };
       if (options.temperature !== undefined) upstreamBody.temperature = options.temperature;
       if (options.maxTokens !== undefined) upstreamBody.max_tokens = options.maxTokens;
+      if (options.tools !== undefined) upstreamBody.tools = options.tools;
+      if (options.toolChoice !== undefined) upstreamBody.tool_choice = options.toolChoice;
       const lifetime = requestSignal(req, res, wantStream ? 300000 : 60000);
       let upstream;
       try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (config.mimoApiKey) headers.Authorization = `Bearer ${config.mimoApiKey}`;
         upstream = await fetch(`${config.mimoBaseUrl.replace(/\/+$/, '')}/chat/completions`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${config.mimoApiKey}`,
-          },
+          headers,
           body: JSON.stringify(upstreamBody),
           signal: lifetime.signal,
         });
@@ -693,7 +734,7 @@ function createPaServer(overrides = {}) {
         throw new HttpError(502, 'upstream_unavailable');
       }
       if (!upstream.ok) {
-        console.error(`MiMo upstream returned HTTP ${upstream.status}`);
+        console.error(`LLM upstream returned HTTP ${upstream.status}`);
         await upstream.body.cancel().catch(() => {});
         lifetime.release();
         throw new HttpError(502, 'upstream_unavailable');
@@ -722,7 +763,7 @@ function createPaServer(overrides = {}) {
           // 200 头已发出，没法再回 HTTP 错误——但绝不能把中断伪装成干净收尾：
           // 硬断连接让客户端看到异常结束，宁可失败也不交付截断的“完整回复”。
           if (lifetime.signal.reason?.message !== 'client_disconnected') {
-            console.error(`MiMo stream interrupted: ${error && error.name}`);
+            console.error(`LLM stream interrupted: ${error && error.name}`);
           }
           res.destroy();
           return undefined;

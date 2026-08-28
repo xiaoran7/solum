@@ -41,7 +41,7 @@
 | F17 *(2026-08-22 重定义)* | 端到端加密云备份与换机恢复 | 活跃移动端定期生成完整、版本化、平台无关的加密快照；服务器只存密文，可恢复到 Android、iOS 或 HarmonyOS。原“手机/电脑多设备双向同步”退出目标架构。 |
 | F18 *(补充)* | 交互式生成（Generative UI） | agent 回应可携带动态生成的可交互 UI（卡片/表单/按钮），用户操作回流给 agent 形成闭环；操作就地发生在对话流里，见 §3.9 |
 | F19 *(补充，Phase 11 第一、二步 ✅)* | 持久化自定义组件（Custom Widget） | 用户可用自然语言生成持久存在的功能小组件，确认预览后保存；固定「工作台 → 组件」二级入口提供组件记录的离线增删改查，并可追加可空字段。它与一次性对话内 GenUI（F18，对话即焚）分属两套渲染器。定义、字段与记录自 schema v13 起参与当前旧多设备同步；该实现只属迁移态，目标是随其余可移植数据进入新 F17 加密备份。 |
-| F20 *(补充，✅ Phase 10 完成)* | 通知智能管线（Notification Intelligence） | F1 升级：默认空的 App 白名单在 Android 捕获端总阀 → `dataSync` 前台处理服务守住 inbox → 双车道（规则命中的重要即时 / 15–30 分钟普通批量）→ 本地优先、只对不确定项做受「通知上云」门控的 LLM 分诊 → LLM 待确认过滤提议 → F12 可见回看、恢复/提升。LLM 不产 id、不执行既有记录动作，`LLM_ACTIONS` 不拓宽。 |
+| F20 *(补充，✅ Phase 10 完成)* | 通知智能管线（Notification Intelligence） | F1 升级：Android 默认接收全应用消息，用户可切换为显式 App 白名单；捕获端在读取正文前执行范围总阀 → `dataSync` 无声前台处理服务守住 inbox → 双车道（规则命中的重要即时 / 15–30 分钟普通批量）→ 本地优先、只对不确定项做受「通知上云」门控的 LLM 分诊 → LLM 待确认过滤提议 → F12 可见回看、恢复/提升。LLM 不产 id、不执行既有记录动作，`LLM_ACTIONS` 不拓宽。 |
 | F21 *(历史实现，Phase 12 首项已完成)* | 邮箱连接器 | 当前代码可手动连接 QQ、Gmail、Microsoft 365 / Outlook 及自定义 IMAP/SMTP，在本地查看、搜索、撰写并经 `sensitive` Guard 发送。2026-08-22 移动路线覆盖此方向：不再扩张完整邮件客户端，后续只建设高价值事件提取；现有桌面 loopback OAuth 必须经过移动原生回调与安全存储改造后才能算 Android 能力。 |
 | F22 *(2026-08-24 立项)* | 统一信息源与候选信息 | 通知、系统分享、日历、健康、邮箱和用户输入不各自直写业务表；先经过平台中立的来源注册、用途授权、候选事实/事件、证据引用、可信度、有效期及跨源去重，再由用户确认或已授权的确定性规则形成日程、提醒或记忆。 |
 
@@ -141,16 +141,17 @@
 
 - 所有云端调用的唯一出口，职责：
   1. 从 Local Memory Store 按需检索相关片段，组装"够用就好"的上下文，而不是整段行为日志打包发出去。
-  2. 支持切换 provider——接口按 OpenAI 兼容 `/chat/completions` 抽象，**当前接小米 MiMo token-plan（用户 2026-07-06 决定，见 MISC.md），Claude API 等可通过配置切换**。
+  2. 接口按 OpenAI 兼容 `/chat/completions` 抽象；**当前固定由 Solum Center 经 Tailnet 调用 `http://100.79.74.121:8000/v1` 的 `qwen3.5-2b` vLLM 服务**。客户端自定义 provider 入口暂时隐藏，旧直连配置仅作迁移材料。
   3. 云端返回结果落地本地后即视为本地数据，网关本身不持久化对话内容。
   4. *（已落地：`solum-core::llm`，凭据走 env/`solum-llm.json`（gitignored），每次调用只发当前一句话+当前时刻+所选会话最近 ≤ 4 轮。）*
-  5. 各厂商（小米 MiMo / DeepSeek / GLM / Kimi / Qwen / OpenAI / Gemini）的端点、模型名与参数怪癖调研见 **docs/LLM-PROVIDERS.md**（2026-07-15）；配置增加选填 `temperature`（可置 null 不发送，OpenAI gpt-5 系必需）、`max_tokens`、`timeout_secs`（思考类模型需 >30s）。
-  6. *（已落地：壳层「设置 → 云端」视图，厂商预设下拉 + 测试连接 + 保存热切换 reasoner；`solum-app` 命令 `llm_config_get/save/test`，get 永不回传完整密钥，save 写 `SOLUM_LLM_CONFIG` 指向的 JSON。）*
-  7. **流式输出（2026-07-19，聊天纯文本先行）**：网关抽象新增 `Reasoner::complete_streaming(system, user, on_token)`——OpenAI 兼容 `stream:true` + SSE 逐 token 回调，只读 `delta.content`（`reasoning_content` 天然不碰，前导 `<think>` 块过滤），返回同 `complete` 的 think-stripped 全文；默认实现回退到 `complete`（离线/测试 reasoner 无需改动）。聊天走 `llm::chat_reply_ui_streaming`：**输出以纯文本开头就逐 token 可见流式，以 JSON 信封开头就抑制可见流式、整包收完再走既有严格 `parse_envelope`**（§3.9 信封整包渲染不变）。上行内容不变（§3.6 第 1 条最小上下文照旧），流式只影响下行呈现方式。
+  5. 历史厂商兼容调研保留在 **docs/LLM-PROVIDERS.md**；当前产品面不暴露任意 URL、API Key 或自定义模型输入。
+  6. *（遗留直连命令 `llm_config_get/save/test` 暂为迁移兼容保留，设置页入口隐藏；完整账号只安装中心代理 reasoner。）*
+  7. **输出策略（2026-08-28 工具调用调整）**：纯文本接口仍支持 OpenAI SSE；需要工具的聊天统一使用非流式 `tools` / `tool_choice=auto` 请求，完整接收并校验 `tool_calls` 后一次显示安全正文和确认按钮，避免不同 vLLM 网关对工具增量格式的差异进入 UI。上行最小上下文边界不变。
   8. **统一账号身份（2026-08-12，由账号代理扩展；2026-08-14 会话加固）**：完整产品的云端唯一通路是登录统一 `server/`（solum-cloud）后请求 `{server}/v1/ai/chat/completions`，第三方 API Key 只存在服务端环境变量。`solum-core::account` 会话落 `solum-account.json`（gitignored，密码只用于登录请求与本地恢复信封解密、不落盘），访问令牌 15 分钟过期；PostgreSQL 对每个受保护请求重新检查账号 active 状态，因此管理员禁用账号后无需等待 token 自然过期。401 时客户端刷新并轮换 refresh token；后继 token 由服务端 HMAC 密钥和当前 token 哈希确定性派生，数据库仍只存哈希。服务端提交后若响应丢失，上一代 token 在 5 秒 grace 内可幂等取回同一个后继；跨代重放撤销整族，桌面和 Android 只对传输/JSON 异常重试一次。该访问令牌同时是 §3.8 同源同步接口的租户身份证明：服务端验签后只以令牌 `sub` 选择租户，拒绝客户端自报用户名。**身份关联不等于解密权**：同步主密钥随机生成并只在客户端解封/保存，账号服务与同步服务均拿不到同步明文。无账号会话时壳层不得安装直连 API Key reasoner，也不得从旧 token 配置启动同步或福利告警；已有 `solum-llm.json` 仅保留为迁移材料，不再构成访客云端旁路。退出登录后回到纯本地 guest profile。
   9. **账号默认模型与受控选择（2026-08-13）**：登录用户无需另配第三方密钥即可使用中心提供的默认模型。模型目录由中心的 `SOLUM_DEFAULT_MODEL` 与 `SOLUM_ALLOWED_MODELS` 决定；默认模型必须始终包含在目录中且不可被用户删除。客户端只能选择目录内的模型标识，不接受用户提交任意上游 URL 或 API Key。请求的非默认模型在上游响应尚未提交时失败，中心会再尝试一次默认模型，并在响应头和用量事件中同时记录 requested/effective model、回退标志与原因；默认模型自身失败则直接返回错误。流式响应一旦写出响应头或首个字节就不得重启另一条流，避免把两个模型的输出拼接成一条回复。
   10. **订阅权益与用量权威（2026-08-13）**：调用链固定为 `客户端 → Solum Center → 上游 Agent/LLM → Solum Center → 客户端`，回程不能绕过中心，否则无法可靠完成鉴权、额度控制、回退、流式转发与统计。中心在联系上游前，以 `(tenant_id, period_start)` 为边界在 PostgreSQL 事务内原子预留一次请求额度；并发请求不能超额。一次已预留的上游尝试无论成功、失败或发生回退都计入请求次数，同时单独记录成功/失败、回退次数、请求/实际模型、上游延迟和可获得的 token 数。`GET /v1/ai/models` 返回中心允许的模型与默认项，`GET /v1/ai/usage` 返回当前套餐、周期上限、已用/剩余和重置时间；客户端展示这些服务端权威值，不在本机自行计数。当前只交付 entitlement/quota 基础，不等同于已接入支付渠道；以后支付回调只能更新权益表，不能直接改用量事件。
   11. **代理资源与中断边界（solum-cloud 0.6.1，2026-08-13）**：流式上游先读取首块再向客户端提交 200；非默认模型若在首块前返回空流或断开，仍只回退一次默认模型。响应开始后逐块转发并等待 Node `drain`，慢客户端不会无限堆积发送缓冲；客户端断开会取消仍在执行的上游请求。非流式响应由 `SOLUM_AI_MAX_RESPONSE_BYTES` 约束，`stream` / `temperature` / `max_tokens` 严格校验，不把歧义值静默透传。进程崩溃遗留的 `pending` 用量事件按 `SOLUM_AI_PENDING_TIMEOUT_SECONDS` 在该租户下一次读取/调用时幂等结算为 `interrupted`；恢复继续使用租户事务和强制 RLS，不在启动或后台面向全部账号做线性扫描。
+  12. **工具调用协议 `solum-tools/v1`（2026-08-28）**：`Reasoner::complete_with_tools`、直连兼容网关和账号代理均支持 OpenAI `tools` / `tool_choice` / `message.tool_calls`。当前稳定工具为聊天 `ingest`、`checkin_answer`，日程抽取 `create_event`，组件定义 `create_widget_definition`；每次只把当前阶段的最小子集交给模型。服务端限制 16 个工具和 64 KiB schema，客户端限制单次最多 4 个调用并严格解析 arguments。工具调用只是结构化请求：聊天动作必须生成用户确认按钮，通知正文不能进入此动作源，危险动作仍只能经 §3.3 Guard。完整 schema、微调格式与正反例见 **docs/AGENT-TOOLS.md**。
 
 ### 3.7 Wearable Adapter
 
@@ -193,7 +194,7 @@
 | `notif-spool/*.json`、`notif-spool/failed/*.json` 与升级遗留 notification inbox | 可移植 | Android 适配器在 Orchestrator 锁内冻结完整文件名集合、限制预读尺寸并只读提交；恢复仍只进待处理区，快照不消费源文件。 |
 | LLM 的非秘密 provider/base URL/model 选择 | 可移植 Agent 设置 | Android 配置适配器已严格读取并只投影非秘密字段；存在但损坏的配置使整次快照失败，`api_key` 不在目标类型中。 |
 | `notification_intelligence.filter_rules` 与批处理间隔 | 可移植设置 | v3 builder 已从 Store 拆出规则/间隔，并把 allowed/auto-event package 只放恢复意图，避免顺带授予权限。 |
-| `notif_cloud`、通知 app 白名单、auto-event app 白名单、邮箱/Soulous 连接、健康数据源与后台提醒 | 仅恢复意图 | Android v3 适配器已投影非秘密事实；新设备默认仍关闭，核对已安装 app 与提供商后由用户重新授权，OS 权限和系统闹钟依据已恢复日程重新注册。 |
+| 通知接收范围、`notif_cloud`、auto-event app 白名单、邮箱/Soulous 连接、健康数据源与后台提醒 | 仅恢复意图 | Android v3 适配器已投影非秘密事实；通知接收范围在新设备默认恢复为全应用，`notif_cloud`、自动建事件和外部连接仍默认关闭，核对已安装 app 与提供商后由用户重新授权，OS 权限和系统闹钟依据已恢复日程重新注册。 |
 | 邮箱/Soulous 的非秘密账户标识与 provider 配置 | 条件可移植，待提供商审计 | 只有提供商条款允许且新隐私政策明确覆盖时才进入版本化 credential 区；否则只恢复重新连接意图。恢复后必须验证凭据是否过期或撤销。 |
 | `meta.device_id` / HLC / overflow 与 drop 计数、`sync_oplog`、`sync_quarantine`、`sync_bad_blobs`、`sync_push_holds`、`capture_loss_receipts`、overflow marker、Android alert cursor | 永不备份 | 设备身份、迁移态传输队列、游标和故障收据不是用户业务状态；新设备重新建立，不能重放旧同步内部状态。 |
 | `notif-policy.json` | 永不备份 | 由已确认的通知配置投影给原生 listener，恢复设置并重新授权后再生成，不能作为第二份权威。 |
@@ -520,8 +521,8 @@ webview/documents/<sha256(document-id)>.blob
 generation-manifest.json                 # seal 最后生成
 ```
 
-`notif-policy.json` 必须精确写 `{\"allowed_packages\":[]}`，恢复包中的 app 白名单与 auto-event 白名单只保留
-为重新授权意图，不得借恢复重新开启原生通知正文采集。pending notification 按 `received_at` 转 epoch
+`notif-policy.json` 必须精确写 `{\"capture_mode\":\"all\",\"allowed_packages\":[]}`；恢复后的接收范围采用产品默认全应用，
+而源设备的 app 白名单与 auto-event 白名单只保留为重新授权意图，不得借恢复获得逐应用自动写日程授权。pending notification 按 `received_at` 转 epoch
 milliseconds，单文件为 listener/ticker 现用的 `{ts,pkg,title,text}` 紧凑 JSON 加换行；源 `failed=true`
 直接进入 `failed/`，其余进入待处理目录。文件名只使用 v3 已验证的 stable id，不包含通知正文或 app 标题。
 
@@ -831,10 +832,10 @@ LLM/邮箱/Soulous token、OS 权限和硬件密钥永不进入普通备份。�
 - **登录即恢复的密钥模型（2026-08-12 定案；2026-08-14 删去伪能力）**：用户同步主密钥由首台已登录设备用系统随机源生成；中心库只保存 `recovery-xchacha20poly1305` 密钥信封。客户端以账号密码和不可变 `user_id` 经 PBKDF2-HMAC-SHA256（600,000 轮）导出恢复包装密钥，再以绑定协议版本、`user_id` 与 key version 的 AAD 包装同步主密钥；密码、恢复包装密钥和同步主密钥均不上传。新设备登录成功后用本次输入的密码解开信封，自动恢复同账号设置、画像和其他同步数据。新注册账号的密码从服务端校验到端侧 KDF 都保留精确输入；旧账号统一标为 `password_version=1`，因为已发布注册路径曾保存裁剪哈希，而旧 bootstrap 管理员又可能保存精确哈希。服务端因此先校验精确输入，只在输入含首尾空白且精确校验失败时回退裁剪校验；成功登录仍保持 v1，直到显式改密流程能同时重包恢复信封，不能凭一次登录猜测并升级密码语义。若本机密钥与信封解出的密钥冲突，必须停止并显式报错，绝不静默覆盖；若账号密码将来支持修改，改密事务必须先重包信封。access token 与数据库权限只决定能读取哪个租户的信封，不能解密它。设备公钥批准/通用设备信封尚无完成的信任、撤销和客户端协议，相关公开 API 已删除，不能把数据库预留列写成已实现能力。未来跨用户共享使用独立 `workspace + membership + workspace key envelope`，不得通过关闭 tenant RLS 实现。
 - **身份与密钥分离（2026-08-12 修订并加固）**：传输走 TLS，租户身份来自 solum-cloud 签发的短期账号 access token；token `sub` 是账号创建时生成且永不随用户名改变的 UUID，用户名只用于登录/展示，relay 拒绝非 UUID 的账号 `sub`。同步内容仍以设备本地 32 字节主密钥做 XChaCha20-Poly1305 加密。账号 token 只决定“能访问哪个租户分区”，同步密钥只决定“能否解开该分区内的 blob”，两者不可互相替代。设备撤销只阻断该设备 ID 的 push/pull，不等于撤销账号 refresh 会话；账号退出使用当前 refresh token 单独撤销。同步密钥疑似泄露时仍须换密钥并重新播种。旧 `SOLUM_SYNC_SERVER_TOKEN` 只作为 `legacy` 租户迁移入口，不得访问任何账号租户。
 - **恢复码包装与显式改密（2026-08-25）**：密码之外提供用户自行保存的恢复码，作为忘记密码时的第二把钥匙。恢复码由客户端用系统随机源生成：Crockford Base32 20 字符（100 位熵），展示为 `XXXXX-XXXXX-XXXXX-XXXXX` 四组；输入端归一化只做去分隔符、大写和 `I/L→1`、`O→0` 映射，不做校验位。包装与密码信封同构但域独立：PBKDF2-HMAC-SHA256（600,000 轮）从恢复码派生包装密钥，随机 16 字节盐保存在信封内（`salt‖nonce‖ciphertext` 自包含），XChaCha20-Poly1305 的 AAD 绑定独立域 `solum-sync-recovery-code-v1`、不可变 `user_id` 与协议版本；两把信封包的是同一把同步主密钥。服务端新增单行表 `vault.recovery_codes`（每租户一行，同租户 RLS/强制 RLS）：保存信封和一个 scrypt 校验哈希——校验哈希只用于在线验证“知道恢复码”以签发会话，既不能解开信封也不能反推恢复码；恢复码明文永不上传。`POST /v1/auth/recover` 用用户名+恢复码换发正常会话（复用登录的 pair/IP 失败窗口与认证 KDF 并发闸，无码账号走等时哑验证防枚举），成功后客户端仍须用本次输入的恢复码解开信封取得主密钥；该路径不修改也不升级密码语义。显式改密 `POST /v1/account/password` 凭当前密码或当前恢复码验证后，在单个事务内完成三件事：更新 `auth.users` 为新密码的精确 scrypt 哈希（`password_version=2`，列级 UPDATE 授权）、用客户端预先重包好的新密码信封原子替换 `vault.key_envelopes` 里的密码信封（列级 UPDATE 授权）、撤销除当前会话外的全部 refresh 会话；恢复码信封与主密钥无关，改密不需要重包它。“新密码已生效但信封仍是旧密码包装”这一锁死状态在协议上不可达——客户端先本地重包、服务端单事务提交，任一步失败整体回滚。恢复码为惰性发放：注册不自动生成，设置页由用户主动生成或重新生成（重新生成在同一事务内原子替换信封与校验哈希，旧码即刻失效）；密码与恢复码都丢失时服务端确实无法解密备份，界面如实告知，不提供任何找回通道。
-- **客户端账号隔离（2026-08-12；2026-08-14 并发加固；2026-08-19 移动端重启修复）**：设备级 `solum-account.json` 只保存当前会话；登录账号的数据根为 `profiles/<user_uuid>/`，其中 SQLite、直连 LLM、同步、邮箱、Soulous 与通知白名单配置分别独立，桌面壳和 CLI 使用同一 active-profile 解析器。WebView 的聊天历史、UI 状态与资料 IndexedDB 也以同一 UUID 加后缀分区；Android 后台告警读取该 UUID 下的同步配置并以 UUID 隔离游标，原生通知监听器读取该 UUID 下的白名单，不再旁路回 guest 根目录，也不得把账号 bearer token 发往账号中心 origin 之外的 URL。未登录使用 `guest` 分区。登录/退出不会热换一部分状态，而是重启进程，先关闭旧 SQLite 连接、缓存、后台同步与内存对话，再打开目标 profile；桌面沿用 Tauri 可执行文件重启，Android 由 `MainActivity` 创建新的启动任务后退出当前 Activity 进程。旧会话缺 UUID 时必须重新登录，不能刷新或解锁账号能力。GUI/CLI 对会话的发布、模型更新、refresh 轮换和删除共用独立 `.lock` 文件的 OS 排他锁；Android Kotlin 用 Java `FileChannel.lock()` 的 POSIX 记录锁，Rust Android 用 Linux OFD 锁，使同一进程内的两套运行时也会真实互斥。网络刷新不持锁，返回后再比较当前身份/令牌并提交，已退出或已切换身份的旧请求只能失败，不能复活会话。现有未登录本地库保持为 guest，不自动迁入账号，避免在没有用户确认时改变数据归属。账号会话、隐私同意与 Android 系统闹钟镜像是设备级控制状态，刻意不随账号复制；运维显式提供的路径/凭据环境变量仍优先。
+- **客户端账号隔离（2026-08-12；2026-08-14 并发加固；2026-08-19 移动端重启修复）**：设备级 `solum-account.json` 只保存当前会话；登录账号的数据根为 `profiles/<user_uuid>/`，其中 SQLite、直连 LLM、同步、邮箱、Soulous 与通知接收策略分别独立，桌面壳和 CLI 使用同一 active-profile 解析器。WebView 的聊天历史、UI 状态与资料 IndexedDB 也以同一 UUID 加后缀分区；Android 后台告警读取该 UUID 下的同步配置并以 UUID 隔离游标，原生通知监听器读取该 UUID 下的接收模式与白名单，不再旁路回 guest 根目录，也不得把账号 bearer token 发往账号中心 origin 之外的 URL。未登录使用 `guest` 分区。登录/退出不会热换一部分状态，而是重启进程，先关闭旧 SQLite 连接、缓存、后台同步与内存对话，再打开目标 profile；桌面沿用 Tauri 可执行文件重启，Android 由 `MainActivity` 创建新的启动任务后退出当前 Activity 进程。旧会话缺 UUID 时必须重新登录，不能刷新或解锁账号能力。GUI/CLI 对会话的发布、模型更新、refresh 轮换和删除共用独立 `.lock` 文件的 OS 排他锁；Android Kotlin 用 Java `FileChannel.lock()` 的 POSIX 记录锁，Rust Android 用 Linux OFD 锁，使同一进程内的两套运行时也会真实互斥。网络刷新不持锁，返回后再比较当前身份/令牌并提交，已退出或已切换身份的旧请求只能失败，不能复活会话。现有未登录本地库保持为 guest，不自动迁入账号，避免在没有用户确认时改变数据归属。账号会话、隐私同意与 Android 系统闹钟镜像是设备级控制状态，刻意不随账号复制；运维显式提供的路径/凭据环境变量仍优先。
 
 - **同步历史与容量（2026-08-14）**：中心 `sync.blobs` 保存的是不可从剩余行重建的增量操作，不是缓存；在没有端侧快照/服务端压缩协议前禁止按时间删除。此前 30 天清理会让长期离线设备静默漏数据，且全局 identity 序列无法表达单租户“已删除到哪里”。当前改为永久保留历史并以每租户 1 GiB / 100,000 blob / 32 设备的默认硬上限拒绝新写入；运维可显式调高，但不能用静默清理换容量。告警仍按 7 天清理。
-- **通知捕获同步（schema v10，Phase 9/10 + 2026-07-19 解耦）**：第三方通知的 raw input 及其派生事件、提醒**无条件参与多设备同步**，不受任何开关控制。理由见下方「为什么同步与上云解耦」。Phase 10 的 `notification_captures`、过滤提议和 Rust 已解析但仍待确认的动作提议只是本机 F12 分诊回看元数据，**不新增同步 payload**；远端设备只获得 raw input 与派生数据。App 白名单和 `notif_cloud` 都是设备本地设置，不走 meta LWW 同步；重要路由规则复用既有 `RuleTable` 配置。
+- **通知捕获同步（schema v10，Phase 9/10 + 2026-07-19 解耦）**：第三方通知的 raw input 及其派生事件、提醒**无条件参与多设备同步**，不受任何开关控制。理由见下方「为什么同步与上云解耦」。Phase 10 的 `notification_captures`、过滤提议和 Rust 已解析但仍待确认的动作提议只是本机 F12 分诊回看元数据，**不新增同步 payload**；远端设备只获得 raw input 与派生数据。接收范围（默认全应用或显式白名单）和 `notif_cloud` 都是设备本地设置，不走 meta LWW 同步；重要路由规则复用既有 `RuleTable` 配置。
 - **为什么同步与上云解耦（2026-07-19 用户拍板）**：`local_only` 此前同时是「不发云端 LLM」和「不参与同步」两件事的条件，但两者风险量级完全不同——发 LLM 是**明文**交给用户自配的第三方厂商（小米/DeepSeek/OpenAI…），同步是**端到端加密 blob** 发往统一中心或旧版自建 relay（服务端解不开同步正文，本节第一条）。捆在一个开关上导致「想要设备间同步通知、但别喂给 LLM」这个合理诉求无法表达。现拆开：**同步永远开，`notif_cloud` 只管 LLM**。
 - **`local_only` 语义收窄（schema v10）**：该列现在**只表示「不得作为云端 LLM 上下文」**，与同步无关（旧语义"本地专属"已不准确，保留列名是为避免大范围迁移，读代码时以本条为准）。捕获时按开关盖戳，此后不可变（PRIVACY.md §2）。
 - **戳随 payload 跨设备传播**：`raw_inputs`/`events` 的同步 payload 新增 `local_only` 字段，接收端直接采用捕获设备的原始判定，使同一条记录在所有设备上的 LLM 资格一致。**缺失该字段的旧版本 payload 保守回退**为「按 `[通知·` 前缀判定为排除」。接收端的 recall 仍额外 AND 上**本机**的 `notif_cloud` 开关（双重门：捕获时同意 + 本机当前设置都放行才可上行）。
@@ -858,11 +859,11 @@ LLM/邮箱/Soulous token、OS 权限和硬件密钥永不进入普通备份。�
 **四条硬原则（与既有护栏同级，实现不得放松）**：
 1. **UI 描述是数据，不是代码**。LLM 只输出受目录约束的 JSON 组件树，渲染器只认目录内组件；不生成/不执行任何脚本。
 2. **生成的 UI 只能"请求"动作，无权执行**。按钮/表单只能绑定 command 白名单（见下），Rust 侧校验动作名 + 参数 schema 后才执行；`dangerous` 动作照走 §3.3 Guard 完整确认流程——生成的确认按钮只是入口，不是令牌。
-3. **校验不过就降级纯文本，对话永不失败**（F16 精神）。解析复用 §3.6 抽取兜底的防御模式：剥代码围栏 → serde 严格反序列化 → 目录/白名单/参数校验，任何一步不合格整包丢弃、退回纯文本回复。
+3. **校验不过就降级纯文本，对话永不失败**（F16 精神）。在线模型优先通过 `solum-tools/v1` 的结构化工具调用返回意图：工具名白名单 → 参数 JSON object → 参数 schema/业务校验，任何一步不合格都丢弃该调用并退回安全纯文本；旧版正文 JSON 仅保留有限兼容路径。
 4. **UI 描述不持久化**（对话即焚）。它是持久数据在当下的一次性渲染，回放即过期且有重复执行动作的风险；留痕的是动作结果——业务数据落既有表、动作走既有审计/台账，不新增同步表。取舍论证见 MISC.md 当日条目。
 
 **分层**：
-- **协议层（`solum-core::genui`）**：定义组件目录（Rust 类型 + serde schema）、动作白名单、校验器。产出 `UiEnvelope { version, components }`。离线时由规则引擎按意图选预置模板（事件卡片、建议卡片本来就是模板的雏形），云端在线时由 LLM 自由组装——**渲染器只认协议不认来源**，两条路共用。
+- **协议层（`solum-core::genui`）**：定义组件目录（Rust 类型 + serde schema）、动作白名单、校验器。产出 `UiEnvelope { version, components }`。离线时由规则引擎按意图选预置模板；在线时模型只调用 `solum-tools/v1` 目录中的工具，Rust 将已校验参数映射为同一 UI 协议——**渲染器只认协议不认来源**，两条路共用，模型不能自由注入组件或动作。
 - **渲染层（`solum-app` 前端）**：vanilla JS 目录内渲染器（JSON → DOM），随对话气泡内联渲染；不引入前端框架/npm。
 - **回传层（既有 Tauri command）**：组件动作 = `{ command, args }`，前端只是把「用户点了」这一事实传回，与 `guard_confirm` 的"传声筒"设计同构。
 
@@ -1032,7 +1033,7 @@ proposed_action / state
 | 客户端框架 | Mobile-only，当前 Tauri 2 Android | Android 先复用现有 Rust 核心与静态 UI；iOS/HarmonyOS 后续通过平台适配层接入，同享领域协议和备份夹具，不要求三端必须使用相同 UI 壳技术 |
 | 本地结构化存储 | SQLite | 成熟、零运维、Tauri 生态支持好 |
 | 本地语义检索 | sqlite-vec 或本地向量库 | 避免额外起一个向量数据库服务，保持"本地优先"的轻量原则 |
-| 云端推理 | OpenAI 兼容网关（当前小米 MiMo；可配置切换 Claude API 等） | 用户提供 MiMo token-plan；接口不绑厂商，换 provider 只改配置（2026-07-06 变更，原定默认 Claude API） |
+| 云端推理 | Solum Center → Tailnet → OpenAI 兼容 vLLM | 默认 `http://100.79.74.121:8000/v1` / `qwen3.5-2b`；客户端自定义入口暂时隐藏 |
 | 加密云备份 | `solum-cloud` + PostgreSQL 中心库 | Android 生成版本化逻辑快照并端到端加密；中心库只保存密文与恢复元数据，RLS 隔离租户 |
 | 换机恢复 | 临时库导入 + 完整性检查 + 原子切换 | 单写者不需要 CRDT/LWW；跨 schema 恢复失败不得破坏本机或最后一个可用备份 |
 
@@ -1040,7 +1041,7 @@ proposed_action / state
 
 **Phase 1（Web/Desktop demo，验证核心闭环）** — ✅ 核心已实现（headless CLI，2026-07-06）
 - ✅ 聊天输入 → 事件抽取 → 日程写入 → 分级提前通知（离线规则版；✅ OS 系统通知渠道已接，2026-07-06 桌面壳常驻 ticker）
-- ✅ 本地 SQLite；✅ 云端推理已接真实网关（2026-07-06，`solum-core::llm`，OpenAI 兼容/当前 MiMo：闲聊回复 + 抽取兜底，云端失败自动降级离线）
+- ✅ 本地 SQLite；✅ 云端推理使用 OpenAI 兼容网关（当前 Qwen 3.5 2B vLLM：闲聊、原生工具调用与抽取兜底，云端失败自动降级离线）
 - ✅ HITL Guard 已搭好并端到端测试（用模拟高危工具 `demo_delete` 演示，尚无真实 dangerous 操作接入）
 - ✅ 记忆台账雏形（`ledger`：分层展示原始输入/事件/通知，可级联删除）
 - ✅ 图形前端 / Tauri 壳（2026-07-06，`crates/solum-app`：Tauri 2 + 静态前端，8 视图覆盖对话/日程/提醒/台账/复盘/规则/主动度/护栏，已真机屏幕自动化验证）
@@ -1098,8 +1099,8 @@ proposed_action / state
 **Phase 12（邮箱连接器，F21，✅ 2026-07-20 首项完成）**：已交付 QQ / Gmail / Microsoft 365 / Outlook / 自定义 IMAP-SMTP 的手动连接、收件箱/文件夹/详情/搜索和受 Guard 保护的发送；凭据、refresh token 与邮件正文均不落 SQLite，不同步、不导出、不进入 LLM。OAuth 使用本机 loopback + PKCE，QQ 使用邮箱授权码；v1 不做附件、后台拉取、自动转日程或自动发送，完整边界见 §3.14。
 
 **Phase 10（F20 通知智能管线，✅ 2026-07-19 完成）**——依赖 Phase 9 的 capture-time scope，已按两部分落地：
-- **10a（Rust 双车道分诊）**：App 白名单默认空且在 Android listener 读取 extras 前做总阀；白名单内通知写可逆的 F12 `notification_capture` 回看。`RuleTable` 的包范围子串/正则重要规则（允许 App 时填充可编辑预设）把通知路由到即时或普通车道；同 App + 规范化内容 hash 的 10 分钟确定性去重。普通队列以最多 24 条批量分诊，间隔 15/20/30 分钟；规则先抽取，只有不确定项且「通知上云」开启才调一次 LLM。过滤结果、判重与离线失败均可回看/恢复；对捕获时已标 `local_only` 的行，“恢复”只会重跑确定性本地抽取，绝不改变逐行戳或触发 LLM，并必须以不同的可读理由说明结果。LLM 过滤规则必须用户确认后才固化；已确认的既有日程动作把源通知标为独立的已处理终态，不复用“待回看”。
-- **10b（Android 保活）**：白名单非空才启动低优先级 `dataSync` 前台服务，配置 `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_DATA_SYNC` / 电池优化豁免权限；普通批次由宿主内部定时器运行，刻意不引 WorkManager。设置页提供电池优化与应用后台设置入口，并如实提示国产 ROM 仍可能需要人工放行。
+- **10a（Rust 双车道分诊）**：默认接收全应用，用户可切到显式白名单；Android listener 在读取 extras 前按 `capture_mode` 做总阀。已接收通知写可逆的 F12 `notification_capture` 回看。`RuleTable` 的包范围子串/正则重要规则把通知路由到即时或普通车道；同 App + 规范化内容 hash 的 10 分钟确定性去重。普通队列以最多 24 条批量分诊，间隔 15/20/30 分钟；规则先抽取，只有不确定项且「通知上云」开启才调一次 LLM。过滤结果、判重与离线失败均可回看/恢复；对捕获时已标 `local_only` 的行，“恢复”只会重跑确定性本地抽取，绝不改变逐行戳或触发 LLM。LLM 过滤规则必须用户确认后才固化。
+- **10b（Android 保活）**：全应用模式或非空白名单时启动低优先级 `dataSync` 前台服务，配置 `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_DATA_SYNC` / 电池优化豁免权限；渠道关闭声音、震动和角标，只保留 Android 强制要求的常驻状态通知。普通批次由宿主内部定时器运行，刻意不引 WorkManager。设置页提供电池优化与应用后台设置入口，并如实提示国产 ROM 仍可能需要人工放行。
 - 护栏未放宽：开关关闭即纯本地、零 LLM/零外发；LLM 可产生新事件、待确认过滤提议，或不含 id 的「取消/改期某标题」意图。对已有记录，Rust 必须先唯一匹配本机 event id，再在 F12 提供确认/忽略，确认前不执行；`LLM_ACTIONS` 不扩张，通知来源只作分诊信号而非授权。取舍见 MISC 2026-07-19「Phase 10 实现取舍」。
 
 **Phase 11（F19 持久化自定义组件，✅ 第一、二步完成）**：
