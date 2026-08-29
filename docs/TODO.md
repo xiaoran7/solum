@@ -1,145 +1,30 @@
-# TODO 待办
+# Solum 待办
 
-> 状态约定：`待验证` 尚未在目标环境跑通；`已通过` 已有可复查证据；`已复现` 已稳定观察到缺陷；`受阻` 受设备、权限或外部环境限制。Android 真机测试的最终 Center 目标是 `https://solum.tannerlab.cn`；在生产路由与新包上线前保留已安装客户端和旧域名会话原状，不得卸载应用、清空数据或删除用户内容。
+更新：2026-08-28。只保留未完成工作；线上状态执行前重验。
 
-## 2026-08-22 Mobile-only、Android-first + 加密云备份架构收口（用户拍板）
+## P0：Android 发布正确性
 
-> 最终定案：Solum 只做移动端，不再把桌面端或网页端作为产品；移动平台范围包括 Android、iOS、HarmonyOS，当前主开发和首发 Android，项目成熟后补齐 iOS 与鸿蒙。现有多设备双向同步退出目标架构，改为“当前活跃手机作为单一权威数据源 → 端到端加密版本化云备份 → 同平台或跨平台换机恢复”。服务端仍只有一个 `solum-cloud + PostgreSQL`。当前桌面与 push/pull 代码只是迁移态，在备份/恢复闭环验收前不得先删到无法保护现有数据。
+- [ ] 从当前源码重建 Release，确认 alarm receiver/service、通知监听、前台 data sync 和所需权限都在最终 manifest。
+- [ ] 在在线 Android 真机验证 rustls 到当前生产域名，覆盖 DNS/SNI/TLS、登录、AI、同步、断网恢复。
+- [ ] 验证锁屏、进程回收和设备重启后的 reminder 重建与到点通知；禁止用 force-stop 代替正常回收。
+- [ ] 走保留数据升级与干净安装，确认 guest/账号隔离和版本迁移。
 
-- [ ] **先设计并实现跨平台加密备份格式。** 复用现有逻辑导出能力生成与 SQLite/relationalStore 等具体数据库无关、带 schema/protocol 版本的规范化快照，覆盖所有可移植用户数据（含日程、提醒、记忆、人格、行为、通知结果、健康、组件、完整对话、Agent 设置，以及提供商允许迁移的邮箱账户配置/凭据）；压缩后以客户端主密钥做 AEAD 加密，AAD 绑定用户 UUID、设备代次、备份版本、创建时间和格式版本。必须支持未来 Android ↔ iOS ↔ HarmonyOS 恢复，禁止直接把 Android SQLite 文件当作长期备份协议。
-  - [x] **备份协议与 core codec 地基（2026-08-23）**：`solum-backup` protocol v1 已定义精确 framing/header/AAD 字节，使用纯 Rust zlib-DEFLATE level 6 后再做 XChaCha20-Poly1305；core 支持 `Value`/JSON 字节规范化、生产随机 nonce、严格字段/算法/版本/尺寸/认证校验、受限解压和 `plan_import`，且 codec 本身不写 Store。公开固定 key/nonce 的合成夹具供未来三端做逐字节互通。
-  - [x] **数据覆盖审计（2026-08-23）**：已逐项登记 24 张 SQLite 表、WebView 会话/草稿、IndexedDB 资料、尚未入库的通知 spool、端侧配置/会话/凭据与原生能力，明确可移植、仅恢复意图、按字段拆分和永不备份；core 测试会在新增 SQLite 表未选择备份语义时失败。审计确认不能靠给 v2 多塞字段冒充完成：无 guid 台账、append-only 审计、会话一致快照和最大 600 MiB 的附件都需要独立恢复设计。
-  - [x] **`solum-export` v3 core 契约与恢复计划（2026-08-23）**：新增严格 `_portable`，覆盖通知台账/审计稳定身份、完整会话/草稿 schema、资料 manifest、待入库通知、非秘密 Agent 设置和重新授权意图；排队 capture 恢复为 `needs_review`，待确认动作强制 `stale`。`plan_import` 可验证 v2/v3，旧 Store importer 对 v3 在任何写入前拒绝部分恢复；backup-v1 同时支持 v2/v3 并保留两套固定字节夹具。
-  - [x] **Android v3 主载荷快照适配（2026-08-23，内部 seam）**：WebView 强制保存并冻结当前 profile 的会话/草稿，以单个 IndexedDB readonly transaction 读取资料并按 Blob 原始字节计算 manifest SHA-256；Rust 在 Orchestrator 锁内只读采集 active/failed/legacy notification spool、严格读取非秘密配置与恢复意图，并在前后校验 profile。损坏/超限/切号均不产出文件，通知正文和凭据不进错误；现有 v2 手动导出/导入保持可恢复配对，v3 尚不替换 UI 入口。
-  - [x] **附件分块密文协议与 core codec（2026-08-23）**：新增 `solum-attachment` protocol v1；每件资料以 HKDF-SHA256 从主密钥和隐藏 binding 派生独立子密钥，使用 1 MiB 生产分块与逐块随机 XChaCha20-Poly1305 nonce。AAD 精确绑定账号、device generation、backup、附件 id、manifest 尺寸/摘要、块序号/offset/尺寸及原始协议头；服务端可见容器不含账号、backup/附件身份或内容摘要，但 framing/密文长度仍会暴露字节长度。读取端先完整校验 framing、块数/顺序/nonce 唯一性和全部 tag，再核对总长/SHA-256，失败不返回部分明文；公开三块固定夹具供未来三端逐字节互通。
-  - [x] **v3 临时恢复事务 core 地基（2026-08-23）**：新增两段式 prepare/restore API；先重跑 v3 全部 schema/稳定 id/引用校验并要求附件明文集合与 manifest 的 id、数量、尺寸、SHA-256 精确相等，再只向全新空 Store 写入。`_restore`、通知台账、append-only 审计和非权限通知设置共用一个最外层 SQLite 事务，任何漏行、隔离、重复 guid、引用/隐私 scope 或 SQL 失败均整体回滚；成功后才返回会话、资料、待处理通知、非秘密 LLM 设置与重新授权意图的平台交接包。
-  - [x] **Android profile generation 发布地基（2026-08-23）**：core 新增 staging → seal → generation rename → durable 单一指针的崩溃安全状态机，seal 对 SQLite 做 checkpoint/quick-check 并拒绝 WAL/SHM，manifest 严格约束路径、文件数、总尺寸与 SHA-256；启动时指针缺失才使用旧 profile，指针存在但损坏则 fail closed，不回退到空库。Android Rust 与原生通知 listener 共用 profile 根跨进程锁，保证 pointer → policy → spool 在同一 generation；账号会话、主密钥和 OAuth/API token 等设备凭据仍留在 profile 根目录，不进入可恢复 generation。
-  - [x] **sealed portable generation 组装（2026-08-23）**：core 直接消费不可伪造的 `PreparedPortableRestore`，在随机 staging 中恢复全新 SQLite，并落盘 WebView bootstrap、按 id 摘要命名的附件、live-compatible pending/failed notification spool 与强制空白名单；逐项重读复核后 checkpoint/关闭 Store，再由 generation seal 对全目录做最终 manifest。任一步失败都不返回 sealed handle、不写 active pointer、不覆盖现有 generation；本阶段保持平台中立，便于未来三端复用同一镜像组装规则。
-  - [x] **Android WebView inactive generation hydrate seam（2026-08-23）**：core 只从 sealed staging 重验 generation manifest/bootstrap，并以最多 512 KiB 的有界块读取 manifest 声明的附件；Android IPC 为单一 generation 建立内存 session。WebView 按账号 + generation 精确隔离 chat/UI localStorage 与 IndexedDB，清空 inactive DB 后逐件写入，按 Blob 原始字节重算 SHA-256、完整重读 metadata/localStorage，并提交精确有序 receipt；未通过前不写 Store、不发布 active pointer，崩溃后必须重新 hydrate。
-  - [x] **Android 恢复发布协调器（2026-08-23，内部 seam）**：发布前在 Orchestrator → sync Store → profile generation 锁序下冻结旧数据，要求 hydrate ready，并以一次性随机 token 绑定当前 SQLite 逻辑快照和 WebView localStorage/IndexedDB 精确摘要；确认时全部重读，不一致即在 pointer 前拒绝。锁内将旧 generation 的 normal/failed/legacy 通知与 overflow 标记复制进 content-addressed durable handoff，再提交 active pointer；pointer 后合并可幂等续传，旧进程永久拒绝写入并整进程重启，新进程在打开 Store/ticker 前先完成 handoff。当前只提供未来恢复 UI 调用的 preview/confirm seam，未增加下载入口。
-  - [x] **Android 加密备份上传 seam（2026-08-23，未开放 UI/调度）**：WebView 以最多 512 KiB 的规范 base64 IPC 块按冻结 manifest 顺序发送资料；core 先验证 v3 与 generation，再分别生成随机 `solum-backup` / `solum-attachment` 密文并只把密文写入随机 staging。计划前逐件重验密文尺寸/SHA-256，随后固定执行 plan → main → manifest 顺序附件 → commit；401 只刷新并持久化一次会话，传输错误只重试一次且始终复用相同密文/ID。旧设备不会自动追随更高 generation，切号/取消会清理会话；当前函数没有可见按钮或后台定时调用。
-  - [x] **Android 云端下载与 inactive generation 组装 seam（2026-08-23，未开放 UI）**：修正上传对象映射为 master key + 随机 backup id + manifest attachment id 经规范 HKDF-SHA256 派生 UUID v8，服务端仍无法读取或跨版本链接资料 id；固定向量纳入跨平台夹具。core 严格校验 complete-only 列表、尺寸/计数/顺序和传输摘要，main-first 完成 backup AEAD 与认证元数据交叉核对，再要求派生附件集合一一对应并逐件解密；全部通过后才准备 v3 并组装 sealed inactive generation，任何失败均不写 active pointer、不接管 generation。Android 壳仅注册内部列表/组装命令，没有前端调用。
-  - [x] **Android 手动备份/恢复中心与 generation takeover（2026-08-23）**：设置二级页提供手动加密封缄、complete 历史与安全元数据；恢复固定执行下载认证 → sealed inactive generation → WebView hydrate 回读 → 现有数据预览 → 最终红色确认。服务端以随机 writer UUID 原子认领 generation 1，所有上传写路径同时校验 generation/writer；durable takeover journal 以固定 takeover/writer UUID 幂等推进并轮换云端权限、持久化本机代次，再在锁内重验一次性预览并发布 active pointer。响应丢失/进程重启可续作，pointer 已提交时启动会清理日志；列表以服务端 `committed_at` 判断最近封缄，错误经安全文案边界。隐私政策升至 v3 并重征同意，Rust 备份命令也强制校验；本轮无后台调度、无云端删除入口。
-  - [x] **受保护的云端备份删除（2026-08-24）**：备份中心为每个非恢复中 complete 版本提供独立红色删除入口；Dangerous Tool 预览展示提交时间、密文量和对象数，一次性 Guard 令牌绑定 backup id、隐藏 plan ETag 与完整预览元数据。执行前重新拉取严格目录核对，服务端再在租户锁内以 `If-Match` 原子比较；陈旧预览、缺失版本、stage/hydrate 候选、待续 takeover、隐私未重新同意或账号切换均在删除前拒绝，结果与拒绝写脱敏审计。本机和其他版本不受影响。
-  - [ ] **HarmonyOS F17 适配与跨端互通**：当前兄弟仓 `../harmony`（Gitea `solum-harmony`）只有旧 `/v1/push|pull` 加密同步及通用 XChaCha20-Poly1305 原语，尚未实现 `solum-backup` v1、`solum-attachment` v1、`solum-export` v3、备份 API、generation takeover 或手动备份/恢复中心。需按主仓规范实现 relationalStore/本地文件到 v3 可移植载荷的映射，逐字节读取两套 backup 与附件/派生 ID 固定夹具，并完成 Android → HarmonyOS、HarmonyOS → Android 的真机恢复、篡改拒绝、超限拒绝和写库前失败验证；不得把“算法相同”记作“备份协议已对齐”。
-  - [ ] **仍缺可交付的备份/换机闭环**：顶层项保持未完成；还需 600 MiB 内存/磁盘压力真机审计、后台调度策略、恢复码包装、生产对象存储/灾备，以及 Android↔iOS↔HarmonyOS 固定夹具与真机互通。当前真机仅允许非破坏性验收到最终接管确认前；旧 `/v1/push|pull` 与同步调度在这些能力验收前继续作为迁移态保留。
-- [x] **唯一服务端备份 API v1（2026-08-23）**：同一 `solum-cloud` origin 已增加严格 plan → 原始密文对象 → 原子 commit 的上传协议，以及 complete-only 列表/下载和 `If-Match` 整版删除；租户只来自 access token 不可变 `sub`，三张表全部强制 RLS。canonical plan、对象字节和 commit 均可幂等重试，半包不可见；默认 68 MiB/对象、700 MiB/版本、2 GiB/租户、10 个完整历史版本和 24 小时 pending TTL，裁剪结果显式返回。active generation 以 advisory lock 做幂等 compare-and-increment，旧代不能创建/提交。当前 PostgreSQL `bytea` 是有界首版后端，生产大附件对象存储、客户端下载/恢复 UI 和真实灾备仍属后续，不能据此宣称云备份闭环完成。
-- [ ] **实现安全换机与跨平台恢复闭环。** 新手机登录后在本地解开恢复信封，校验认证标签、哈希、格式版本、容量和 schema 迁移可行性，再导入平台自己的临时数据存储并做完整性检查，最后原子切换；本机已有数据时必须预览并明确选择。除密码包装外提供用户自行保存的恢复码包装，改密必须重包；密码与恢复码都丢失时如实告知服务器无法解密。Android 首先完成闭环，随后 iOS/HarmonyOS 必须用同一套规范化夹具做交叉恢复测试。
-  - [x] **恢复码包装 + 显式改密（2026-08-25）**：端侧生成 Crockford Base32 恢复码（100 位熵、明文永不上传），PBKDF2 从随机盐+归一化码派生包装密钥（不混 user_id 以支持认证前算摘要），AAD 绑定独立域+user_id；服务端 `vault.recovery_codes` 单行表存信封+SHA-256 校验哈希（同租户 RLS），challenge/recover 两段式在线验证带防枚举哑盐与时序拉平；`PUT /v1/account/recovery-code` 原子轮换；`POST /v1/account/password` 凭旧密码或旧码验证后单事务换 scrypt 哈希+原子替换密码信封（客户端预重包）+撤销其他会话，锁死态不可达。设置页提供生成/重生成（一次性展示）、改密表单与"忘记密码？用恢复码登录"。顶层项保持未完成：真机 E2E（真实服务器签发→换机解封）、iOS/HarmonyOS 交叉夹具仍待做。
-- [ ] **区分可移植数据与平台绑定能力。** 用户数据原则上全部进入加密备份；Android/iOS/HarmonyOS 的权限授予、系统闹钟注册、硬件密钥句柄、失效 OAuth 会话和本机路径不能伪装成可直接恢复，只备份可移植配置/意图并在目标系统重新授权或绑定。各平台适配器负责把同一领域配置映射到通知、健康、后台与安全存储能力，并如实展示平台差异。
-- [ ] **停止桌面产品开发，建立移动平台路线。** 不再发布 Windows/macOS/Linux 安装包，也不为桌面端新增功能或修复非共享核心问题。Android 是当前唯一开发/验收目标；核心协议、领域模型、备份夹具和 UI 语义从一开始保持移动平台中立，成熟后依次补 iOS 与 HarmonyOS。Tauri 可继续承载 Android/iOS；鸿蒙若需独立原生壳，也必须复用同一服务端契约与备份规范。CLI 仅作核心回归/迁移工具。
-- [ ] **备份验收后退役多主同步。** 先盘点生产账号与 `legacy` 租户，生成最后一个可验证备份并保留旧库只读；随后删除客户端 `/v1/push|pull|stats` 调度、`sync_oplog`/LWW/游标/隔离区/毒丸等只为多主同步存在的复杂度，以及服务端 `sync.blobs`/设备同步路由。不得在用户仍只有旧增量历史、尚无可恢复快照时关闭或删除远端数据。
-- [ ] **退役独立 Rust/SQLite 中继与服务端 SQLite 入口。** 从 Cargo workspace、构建/测试/部署链和文档删除 `crates/solum-sync-server`；迁移完成后删除 `server/src/server.js`、`npm run start:sqlite` 及双实现契约分支。一次性只读迁移器和归档说明可以保留，不得继续暴露第二套可写服务器。
-- [ ] **移除网页端与网页登录入口。** 删除 PostgreSQL 入口 `server/src/postgres-server.js` 当前使用的 `server/src/dashboard.html` 及其 `GET /` HTML；旧 SQLite 入口 `server/src/server.js` 本来就没有 Dashboard 或 `GET /`，无需虚构删除项。根路径改为 404、204 或无用户功能的机器响应。注册、登录、备份和恢复只在移动客户端 UI 提供，并收紧 Origin/CORS。若未来要求证明官方安装包身份，另立设备密钥、mTLS 或平台 App Attestation 设计，不能靠 User-Agent。
-- [ ] **统一域名、接口与产品术语。** 所有移动端只保存一个 `server_url`，供 `/v1/auth/*`、`/v1/ai/*`、`/v1/backups/*`、`/v1/keys/*` 共用。`solumsync.tannerlab.xyz` 只作迁移期兼容别名，最终不再代表独立同步系统；把产品和文档中的“多设备同步 / Sync Server”改为“端到端加密云备份 / 换机恢复”。
-  - [ ] **退役 `.xyz` Center 域名（2026-08-27 最终决策：改用已备案的 `solum.tannerlab.cn`）。** 上线顺序与现状：①✅ 新域名两家 DoH 均返回 CF 边缘，公网 `/cdn-cgi/trace` 命中边缘；⚠️ 海外 VPS openresty 尚无 `.cn` vhost，公网 `/v1/health` 当前落到默认 TannerLab Authorization Server 并返回 401，因此服务端路由仍待备份、证书/Host 核对、`nginx -t` 与 reload 后验收。②✅ 客户端源码默认值已切到 `.cn`，存量映射同时覆盖 `solumsync.tannerlab.xyz` 和中间域名 `solum.tannerlab.xyz`，账号会话与备份配置共用迁移规则，workspace 全量测试、Clippy、前端门禁与 server 单测均通过，代码已推送 Gitea `main`；待生产路由就绪后打正式 release，不能拿此前 `.xyz` 模拟器结果冒充 `.cn` 通过。③生产容器健康接口虽标称 `a2a6edb`，容器内源码却缺少该 Git 提交已有的 backup objects/commit，并缺后续 recovery-code/password 路由，属于构建溯源不一致；必须从已验证 commit 的 Git archive 全新重建并核对镜像 digest/容器源码，不能只按 revision 字段判断版本。④vivo V2405A 当前 ADB 未连接；生产链路就绪后必须在联通 5G 裸网用实际 rustls 验证 `.cn`，这一步才证明绕开 `tannerlab.xyz` SNI 过滤。⑤两个 `.xyz` 域名保留兼容窗口直至存量安装基本迁完；之后再清理 CF 记录和阿里云 `8.148.11.79` 的旧中转 vhost，并明确 `.cn` 是否保留等价国内备胎。兼容窗口收口前不得删 DNS 或停旧路由。
+## P1：跨平台与账号
 
-### 备份地基之后的移动端核心优化
+- [ ] Android↔HarmonyOS 真机双向加密备份恢复：错误密钥、篡改、超限、断网续传、已有数据预览与受保护删除。
+- [ ] 恢复码签发/换机解封、显式改密、其他会话撤销与恢复信封重包的生产闭环。
+- [ ] 两设备 A/B 账号验证租户、profile、同步密钥和云端隔离。
+- [ ] 注入 history gap、永久 push 拒绝、超大记录泊车，确认拉取与本机数据不被破坏。
 
-- [ ] **信息源注册表 + 平台能力矩阵。** 统一声明通知、分享、日历、健康、邮箱、位置等来源在 Android/iOS/HarmonyOS 的支持状态、授权、最后成功时间、错误、AI/记忆/备份资格与删除入口；UI 如实显示平台差异，不伪造三端能力一致。
-  - [x] **F22 第一批（2026-08-24）**：core 固定八个稳定来源 id，输出 Android/iOS/HarmonyOS 能力矩阵、默认敏感度与 AI/记忆/备份用途；设置页合并运行时授权/配置、待确认数、已采用数、最近成功和脱敏错误。尚缺各来源统一删除入口与 iOS/HarmonyOS 原生适配，故顶层保持未完成。
-- [ ] **统一候选信息与来源追溯。** 定义平台中立的 source/external id、发生/采集时间、原始证据引用、敏感级别、可信度、有效期、用途许可和候选动作；原始证据、派生事实与执行动作分层，AI 推测不得冒充来源事实。
-  - [x] **F22 内存候选与落库来源（2026-08-24）**：待确认项具备 external/evidence id、发生/采集时间、敏感度、0..1000 置信度、7 天有效期、用途许可、候选动作与状态；过期自动清理，采用前可编辑，采用后 `raw_inputs.source_id/external_id` 随 v16 迁移、导出/加密同步和记忆台账保留。长期候选状态史与原始证据独立存储仍未做，故顶层保持未完成。
-- [ ] **跨来源去重与关联。** 用稳定 ID、内容指纹、时间邻近和实体匹配合并日历、邮件、通知和用户输入的同一事件；默认可信度为用户确认 > 权威结构化来源 > 原始邮件/订单 > 通知 > AI 推测，冲突必须可见。
-  - [x] **F22 第一层去重（2026-08-24）**：48 小时内规范化正文相同的候选跨来源合并并保留 `also_seen_from`；同 source/external id 已采用记录再次提交时复用原 raw/event，不重复建日程。时间邻近的非同文、实体匹配与冲突 UI 仍未做。
-- [ ] **优先补系统分享与日历，并重做移动邮箱授权边界。** Android 先交付“分享给 Solum”和系统日历只读，再做经确认的日历写入；随后以同一领域契约适配 iOS/HarmonyOS。邮箱方向收窄为高价值事件提取，不继续扩张完整邮件客户端；现有 F21 来自桌面壳的 loopback + PKCE，不能直接视为移动端已成熟，Android/iOS/HarmonyOS 必须分别完成系统浏览器返回、原生应用 OAuth redirect、凭据安全存储和后台限制验收。
-  - [x] **Android 分享 + 日历最小闭环（2026-08-24）**：Manifest 注册 text/plain/text/html ACTION_SEND，原生仅以 20 条/4000 字符 RAM 队列交给待确认区；系统日历只申请 READ_CALENDAR、未来窗口最多读 100 条进候选，写回不申请 WRITE_CALENDAR，只打开 Android 系统新增日程界面由用户再次保存。移动邮箱 OAuth 边界与真机权限/生命周期验收尚未完成。
-- [ ] **记忆质量闭环。** 长期记忆增加来源、可信度、最后验证时间、有效期和纠错入口；区分确认事实、来源信息、Agent 推测、建议和待确认动作。用户纠错可形成待确认来源规则，短生命周期信息自动过期，健康原始采样优先转本地趋势摘要。
-  - [x] **F22 第一批（2026-08-24）**：候选显示置信度/有效期/用途，编辑后再发送即为确认纠错；记忆台账显示稳定来源，日历/健康/邮箱/通知/Soulous 默认禁止云端 AI 兜底。最后验证时间、纠错规则与健康趋势摘要仍未完成。
-- [ ] **移动首页与状态文案收口。** 保持“今天 / 记忆 / 计划 / 搜索”四根入口；今天页按“现在 → 需要确认 → 接下来 → 今日观察 → 快速输入”组织，信息源进入设置，正常备份只显示最近成功时间。逐步删除 push/pull/blob/seq/relay 等实现词和桌面表格/侧栏心智。
-- [ ] **冻结非核心扩张。** 在 Android 备份恢复、信息源和 Agent 质量达到 `MOBILE-ROADMAP.md` 成熟门槛前，不新增桌面功能、实时同步、福利监控、BloomXP 双向能力、复杂组件/GenUI 类型、完整邮件客户端或新的高敏感来源，也不提前展开 iOS/HarmonyOS 实现。
+## P2：平台能力与合规
 
-## 2026-08-21 全仓优化审计行动清单
+- [ ] 通知白名单端到端捕获；不使用真实私人通知作为测试数据。
+- [ ] Health Connect 授权/拒绝/撤销路径；不擅自读取真实健康明细。
+- [ ] 生产福利告警 `status=test` 的租户、幂等、7 天清理和真机通知。
+- [ ] 权限/隐私清单、签名、升级回滚、商店材料和法务文本复核。
+- [ ] 建立可重复的 Release 真机证据包与脱敏规则。
 
-> 2026-08-21 会话对全仓做了七维度并行审计（Rust 核心 / 前端 / Node 云服务 / 同步加密 / Android / CI 发布 / 文档流程），每条发现经独立核查员对照代码与已拍板红线复核（证据不实杀掉、打分不当修正），同步维度由会话逐条抽查源码确认。以下为收敛后的行动清单，均未开工（标注 ✅ 的为当批已完成部分）；完整证据行号见当次会话记录。
+## 后续
 
-### P0 立即项
-
-- [x] **已解决（2026-08-22）：真机同步 TLS `unexpected EOF`——服务器侧链路最终恢复。** 期间曾发生“文档称橙云、Cloudflare 权威 DNS 实际仍灰云指向阿里云 `8.148.11.79`”的误判；随后又短暂灰云直指海外 VPS `34.104.162.153`，导致公网 `:443` 落到 TannerLab Authorization Server、`/v1/health` 返回 401，而正确 Solum Center 只在 `:8443` 返回 200。用户最终启用橙云后，Cloudflare 与 Google DoH 均返回边缘 IP `104.21.64.111` / `172.67.182.236`，独立公网 HTTPS trace 命中 CF 边缘，`/v1/health` 返回 `0.6.4 / 11c1e246…` 200。现链路才真正是客户端 → CF 边缘 :443 → VPS openresty :8443 → solum-cloud；阿里云 TLS 指纹过滤已退出主链路。详见 PITFALLS 同日最新条目。
-- [ ] **待验证：vivo 上用现有生产数据复测 CF 后的 Rust 同步。** 服务器侧前提已满足，但不能用浏览器、远端抓取或主机 curl 代替 rustls 真机结果。设备可用后等待 DNS TTL、重连网络/VPN，再执行一次登录态 push/pull 并保存状态码/错误链；不得卸载、清数据或删除用户内容。若仍失败，先比较设备解析结果与 CF 边缘响应，避免把本地 DNS/SNI 缓存误判为生产回退灰云。
-- [x] **已做：push 侧毒丸防护（2026-08-21）。** 永久拒绝（507/403/429/400/413）只作废 push 半轮、继续 pull，原因持久化 `meta.sync_push_blocked`（下次成功推送自动清除）；单条超 7 MiB 的 op 暂存 `sync_push_holds`（只存 oplog 指针），游标照常前进；瞬时失败同样只跳过 push 半轮。设计取舍见 MISC 2026-08-21，ARCHITECTURE §3.8 已补条目。**遗留**：pull 侧 403（设备撤销同样阻断 pull）是否也要跳过半轮+持久标记，见下方新增条目。
-- [x] **已做：SQLite 双连接补 `busy_timeout=5000ms`（2026-08-21）。** `Store::open` 一处覆盖 orch 与 sync_store；PRAGMA 断言测试钉住。CoreError::Storage 抹掉 rusqlite 错误码仍是小项（见小项打包）。
-- [x] **已处理：公开仓泄露本机路径（仓库内容侧）。** 根 README 与后续文档复核发现的本机盘符路径已改为相对描述或脱敏占位，tauri command 计数改为「100+」。**收尾（2026-08-22 用户拍板）：GitHub 公开仓暂停维护、专心做 gitea**；AGENTS.md 远端政策已更新，本地 remote `origin` 更名 `github-paused`，公开边界清单条款保留备将来恢复。注意 remote 改名本身不会改分支级上游，裸 `git push` 的剩余缺口见下一项。
-- [x] **已解决（2026-08-24）：本机 `main` 上游与默认 push remote 均锁定 Gitea。** `branch.main.remote=gitea`、`branch.main.merge=refs/heads/main`、`branch.main.pushRemote=gitea` 且 `remote.pushDefault=gitea`；`git status -sb` / `git branch -vv` 均显示跟踪 `gitea/main`，裸 `git push --dry-run` 只检查 Gitea 并返回 up-to-date。该项只记录当前工作站的本地 Git 配置，不代表未来任意 push 获得授权。
-- [x] **已做（仓库侧）：CI 补到真实开发路径（2026-08-21）。** 新增 `.gitea/workflows/ci.yml`（rust 三门含 Tauri Linux 依赖 + web-and-cloud 挂 postgres service，集成测试防静默 skip 有显式断言）；`.github/workflows/ci.yml` 加 android-manifest 门禁（gradle 仅跑到 manifest 合并 + aapt 断言三组件）并升级 web-and-cloud；配套 `scripts/gen-android-ci-settings.mjs` 解决 `tauri.settings.gradle` 为 gitignore 绝对路径生成文件、裸 checkout 无法跑 gradle 的问题（已验证与 tauri CLI 产物一致）。**边界**：Gitea 侧需服务器安装并注册 act_runner（ubuntu-latest 标签、docker 模式）才实际生效；Android job 依赖 GitHub 托管 runner 预装 SDK，自建 runner 需先补 sdkmanager 步骤。
-
-### 结构性（排期）
-
-- [ ] **拆分 `store.rs` / `orchestrator.rs` 两个超大模块。** 2026-08-22 复核分别为 6104 / 5747 行；数字会继续变化，不再把旧行数当稳定锚点。分节注释完整即天然拆分线；Rust 多 impl 块机制下零 API 破坏，测试耦合已验证极低。每步独立提交三绿再进下一步；拆到哪节补哪节测试（email/soulous/notification_intelligence/store-sync 段测试密度与风险不成比例）。
-- [x] **已被 2026-08-22“单服务器架构收口”取代：不再收敛双实现。** PostgreSQL `postgres-server.js` 保留为唯一服务实现；SQLite `server.js` 在迁移完成后直接退役，不再为两入口抽公共层或继续投入功能建设。
-- [x] **发布核对脚本化（2026-08-24）**：`scripts/verify-android-release.mjs` 对显式指定的 APK 执行 aapt badging、ZIP 中央目录、apksigner v2、manifest 三组件和 native ABI/so 断言，并核对 tauri.conf version/versionCode、Cargo workspace version 与 APK 实际值；成功后输出 CHANGELOG 可粘贴证据块，CI 至少持续做脚本语法门禁。Android alarm plugin 启动即以 `PackageManager.getReceiverInfo` 缓存检查 AlarmReceiver/BootReceiver，缺失时拒绝同步、写 P1 log，并在设置页显示红色告警；同时展示精确调度降级与系统通知关闭状态。
-- [x] **已被 2026-08-22“加密云备份取代多主同步”取消：不再设计 sync_oplog 压实。** oplog 在新备份/恢复闭环验收前仅维持现状以保护迁移；随后整体退役，不再为其增加长期维护机制。
-- [x] **已被 2026-08-22“退役独立中继”取代：不再扩建 Rust 中继清扫。** PostgreSQL 同步历史在快照/压缩协议出现前继续永久保留并以租户硬配额拒绝新写入；旧 Rust 中继只完成迁移和下线，不再增加定时清扫、统计或水位线能力。
-- [x] **已完成（2026-08-25）**：`memory_ledger_page(layer, limit, cursor)` 按层 keyset 分页（`created_at DESC, id ASC` + 游标 `(created_at|id)`，每层 `LIMIT+1` 探测截断），九张源表补齐 `(created_at, id)` 索引；前端台账首屏改为每层各拉 50 条合并显示，"加载更多"逐层续拉，全量版 `memory_ledger()` 仅保留给导出/测试。
-- [x] **已完成（2026-08-26）**：294KB 内联脚本拆为 `dist/app.js`（`<script src>` 相对引用，不违反无框架/无 npm 铁律），CSP `script-src` 去掉 `'unsafe-inline'`（`style-src` 维持现状——内联 style 属性迁移是另一批次）。`check-frontend.mjs` 同步改为校验 app.js 并新增防回退断言：index.html 出现任何内联 `<script>`、或 CSP 重新引入 script `'unsafe-inline'` 都直接失败；六个按内容断言前端的 Rust 测试改读 app.js。真浏览器验证外部脚本加载执行正常、21 视图渲染、无 CSP 拦截报错。
-- [x] **云服务小加固打包（2026-08-25）**：/v1/auth/refresh|logout 补每 IP 失败窗口（15 分钟 100 次，失败才计数）；ai.usage_events 增加保留期清理（默认 90 天，`SOLUM_USAGE_EVENT_RETENTION_DAYS` 可调 30–3650，随 6 小时周期保留任务执行；月度聚合继续承担配额判定）。~~compose 增加 pg_dump 备份编排 + 恢复演练~~ ✅ **已做（2026-08-22）**：每日 UTC 03:23 自动 pg_dump（保留 14 份，`/opt/1panel/backup/solum-cloud/`），全新容器恢复演练通过（10 表行数比对一致、0 错误，手册 RESTORE.md 同目录）；recovery envelope 与 /v1/devices 补运行时集成测试（现仅 contract 正则断言，create-only 语义测不出来）——运行时集成测试仍待做。
-- [x] **已完成：文档检索层**（本批）：PITFALLS/MISC 尾部时序错乱修正 + 头部主题索引与插入规则；CHANGELOG 版本速查索引；docs/README.md 导航升级；ARCHITECTURE 状态句与 §6 标题更正。详见 CHANGELOG 当日条目。
-
-### 小项打包
-
-- [x] **已被 2026-08-22“加密云备份取代多主同步”取消：不再扩展 pull 侧 403 语义。** 当前错误保持显式可见直到迁移；资源投入转向备份坏包防护、设备代次接管和换机恢复。
-- [x] **已完成（2026-08-25）**：`orchestrator.rs` 三处多步写已全部包进 `with_transaction`（`persist_event_with_scope` 事件+提醒计划一个单元；`fire_due` 标记 fired 与行为台账一条记录；`set_importance_rule` 每个事件的删旧+重排一个单元），并补「注入 `insert_notification`/`insert_behavior` 故障 → 断言整体回滚」回归测试 3 项。
-- [x] **已完成（2026-08-25）**：`CoreError::From<rusqlite::Error>` 现在把 SQLite 错误码带进文案前缀（`[ConstraintViolation] …`、`[DatabaseBusy] …`），变体保持 `Storage(String)` 不破坏既有匹配；`events.people_json` 与 `notifications.channels_json` 两个 row mapper 对损坏 JSON 改为 eprintln 带行 id + 解析错误后回退空值（一行坏数据不再无痕消失，也不会拖垮整个台账列表）。回归测试 3 项。
-- [x] **已完成（2026-08-25，`5a42346`）**：push 装箱改为按实测大小装箱——每条 op 只序列化一次累加长度、整批只加密一次；保守估算（含逗号与 AEAD 帧）保证不越过 7 MiB 上限。单条超限滞留语义不变（`sync_push_holds` + 游标推进）。
-- [x] **已完成（2026-08-26）**：`output/`、两版演示视频与截图、脚本、`.playwright-cli/` 共约 35MB 未跟踪产物已移出仓库，归档在 `Backups/solum-repo-artifacts-20260826/`；根目录 `solum.sqlite*` 按刻意保留决定未动。
-- [x] **已完成（2026-08-27）**：通知渠道 ID `pa_notification_pipeline` 改名残留已在 `NotificationPipelineService.kt` 内完成迁移：`ensureChannel` 创建新渠道 `solum_notification_pipeline` 并删除旧渠道 `pa_notification_pipeline`，模拟器安装后 dumpsys notification 证实仅存在新通道且前台服务正常常驻。
-- [x] **已完成（2026-08-27 模拟器全量 E2E 验证）**：在 Android 16 (API 36 / x86_64) 模拟器上通过 CDP 与 ADB 自动化完成端到端运行时走查：
-  - 生产服务端（`https://solumsync.tannerlab.xyz`）账号注册、鉴权（`logged_in: true`）、1000 次用量额度下发与 `profiles/<uuid>` 目录创建、Activity 重启全部通过。
-  - 创建合成 QA 事件与 30m 提前量提醒，dumpsys alarm 证实成功注册 `*walarm*:dev.solum.alarm.FIRE` 精确唤醒闹钟。
-  - 调用 Debug 设置页“模拟后台回收”（`debug_simulate_process_death`）杀进程，确认 AlarmManager 闹钟完好保留。
-  - 验证系统分享 `ACTION_SEND` 文本注入 RAM 候选队列、系统日历 `READ_CALENDAR` 权限与 `calendar_candidates_import` 候选提取。
-  - 验证 F22 信息源注册表 8 来源能力矩阵在 Android 上的状态输出与 F12 记忆台账 3 层数据 keyset 分页（`ledger_page`）加载。
-  - 确认生产 VPS 当前运行 `solum-cloud 0.6.4`，因此 F26 恢复码和 F17 备份接口（0.7.0）待后续服务端发布上线后再行闭环。
-- [ ] CHANGELOG 全史切版：大量粗体顶层条目仍堆在唯一 `[Unreleased]` 下，并存在千字级单行；条目数和最长行会随文档提交变化，不再用易过时数字描述。需逐条定版本归属，属专门批次；当前以头部版本速查索引缓解。
-
-## 2026-08-20 验收回修
-
-- [x] **已修复/P1：通知、捕获、息壤和邮件页面的 raw exception 展示。** 生产可见状态、空状态和错误卡统一经过 `safeUserError`；前端语法检查拒绝高风险 `String(e)` 文本渲染。
-- [ ] **待验证：新 0.2.8/1018 APK 的 vivo 覆盖安装与提醒 E2E。** 新包的 manifest、签名、ABI 和 `AlarmReceiver` 已核对；设备当前 ADB `device not found`，不能把旧包安装证据或 dumpsys alarm 当作本轮通过。
-
-## Android 生产链路审计（2026-08-19）
-
-### 已复现缺陷与 UX 问题
-
-- [x] **P1 / 已修复：网络失败时账号注册不再暴露传输层内部错误。** Android UI 统一映射为可重试提示，详细错误只进控制台诊断日志。
-- [x] **P1 / 已修复：破坏性确认弹窗改用用户可理解的操作名称。** Guard 的一次性令牌、人工确认、审计和返回键取消保持不变。
-- [x] **P2 / 已修复：记忆台账来源改为用户语言并保留可追溯分类。** 不再渲染 `intent=ingest_event`、`event#1` 等实现标识。
-- [x] **P2 / 已修复：guest 首页示例统一显示“示例”标记。** 离线演示输入仍可用且不会写入真实数据。
-- [x] **P1 / 已修复构建输入：Android Release 版本、构建号、签名与 ABI 在构建前后统一核对。** 新包版本为 0.2.8 / versionCode 1018，实际 APK 元数据仍需构建环境复核。
-- [x] **P1 / 已修复源码：`app_info` 由 setup 管理的 `AppState` 提供。** 新包安装后仍需在 vivo V2405A 冷启动复核无 `state not managed`。
-- [x] **P1 / 已修复：24 小时数字时间使用数字邻接保护。** `今天22:08开会` 不再触发 09:00 默认值，并新增中文、英文、日期后缀和无效时间回归测试。
-- [x] **P1 / 已修复构建输入：Android 项目重新生成后合并 manifest 必须包含 `dev.solum.alarm.AlarmReceiver`。** 设备进程外到点通知仍待新包真机复测。
-
-### 真机补测矩阵
-
-- [ ] **待验证：生产账号会话。** 确认当前 `0.2.6 (1016)` 是 guest、已登录或会话过期；只通过应用 UI 登录/注册，不读取或输出用户密码、token。
-- [ ] **待验证：登录后 Activity 重启。** 验证成功鉴权会重启到新 profile，而不是窗口消失、白屏或继续使用旧 guest 数据。
-- [ ] **待验证：生产 AI。** 验证模型目录、用量显示和至少一条最小化测试问答；记录模型/HTTP 结果但不记录账号秘密或私人对话。
-- [ ] **待验证：端到端加密同步。** 检查同步状态、设备标识和手动同步结果，确认账号数据与 guest profile 不混用；不删除或覆盖现有远端数据。
-- [ ] **待验证：本地事件与系统提醒。** 创建可识别的合成 QA 日程，检查本地入库、提前量与精确 `RTC_WAKEUP` alarm；测试后不删除用户既有事件。
-- [ ] **待验证：后台进程回收后的提醒。** 优先用 Debug 设置页“模拟后台回收”（或 `am kill`）只杀进程，确认 alarm 保留并在到点时通知；不得用“强行停止”替代，因为 Android 会主动取消/阻断 alarm。固定步骤见 `docs/ANDROID-RELEASE-QA.md`。
-- [ ] **待验证：通知监听权限与前台处理服务。** 检查系统授权、应用白名单、`dataSync` 前台服务和 OEM 后台限制；仅在现有授权允许时用另一应用发送可控测试通知。
-- [ ] **待验证：电池与自启动策略。** 检查电池优化白名单、后台高耗电、自启动/关联启动设置是否会中断 Solum；不擅自改变用户的 OEM 系统策略。
-- [ ] **待验证：生产福利告警。** 已有安全、租户隔离、幂等且 7 天自然清理的 `status=test` 入口和固定 QA 配方；待在线 Android 设备用同一 QA 账号验证 `/v1/alerts` 到“福利监控测试”通知，不得使用真实用户令牌或敏感正文。
-- [ ] **待验证：Health Connect。** 检查系统可用性与当前授权状态；未经用户明确操作不新增健康权限，不读取或记录真实健康明细。
-- [ ] **待验证：退出登录隔离。** 确认退出后回到 guest profile，账号数据不出现在 guest；不以清数据方式验证。
-- [x] **已通过：同机生产 AI 最小问答。** 真机现有 `xiaorana` 会话读取到模型 `mimo-v2.5`、权益 `standard 1000`，发送 `OK` 后收到“收到！有什么我能帮你的吗？”。默认输入法临时切换到已安装 ADB 键盘仅用于注入，随后已恢复讯飞输入法。
-- [x] **历史对照已保留、当时归因已被后续探针推翻。** 真机 Chrome 曾打开 `https://solumsync.tannerlab.xyz/v1/health` 得到 `status=ok`、`0.6.4 / 11c1e246`，同机 Solum Rust `/v1/pull` 报 TLS `unexpected end of file`。后续 TLS 指纹矩阵证明当时是阿里云侧按 SNI + ClientHello 过滤，并非客户端 fake-IP；2026-08-22 橙云最终启用后服务器侧路径已更换，仍需按上方新项做 vivo rustls 复测。
-- [x] **已通过：通知监听授权状态。** `enabled_notification_listeners` 与 `dumpsys notification` 均包含 `dev.solum.app.SolumNotificationListener`；当前通知白名单仍为空，应用页正确显示“还没有已捕获通知”。
-- [x] **已通过：Health Connect 权限页可达，未授权真实数据。** “穿戴 → 去授权”打开系统 Health Connect 权限页，列出步数、睡眠、心率；按隐私边界未点击“允许”，所以真实健康读取仍未验证。
-- [ ] **受阻：通知监听端到端捕获。** 权限已存在，但当前应用白名单为空；为了不改变用户隐私设置，未擅自加入 QQ/其他应用，也未读取个人通知正文。
-
-### 已有验证基线
-
-- [x] **已通过：模拟器本地核心闭环。** `0.2.7 (1017)` x86_64 Release 已验证隐私门、同意后通知权限请求、guest、英文事件摄取、30 分钟提醒、精确 AlarmManager 注册、进程重启后的事件/alarm 保留、计划/记忆/搜索/设置入口和 Guard 返回键取消。
-- [x] **已通过：生产服务主机侧最小链路。** `https://solumsync.tannerlab.xyz` 的注册、登录、模型目录、用量、AI completion、pull、alerts 与测试会话 logout 均返回成功；该结果只证明服务端链路，不替代 Android 真机验证。
-- [x] **已通过：真机安装状态。** vivo V2405A（Android 16 / API 36）当前安装 `dev.solum.app` `0.2.6 (1016)`，通知、网络、精确 alarm、开机恢复、前台 data sync 与 wake lock 权限已授予；应用数据保持原样。
-- [x] **已通过：干净 target 的 workspace 测试基线（2026-08-21 解决）。** 根因是整仓搬迁时把 23.8 GiB 旧 `target/` 原样拷来，3000 个文件引用旧绝对路径，tauri build script 读不存在的权限文件即挂；`cargo clean` 全删重建后基线 **353 项全绿**（截至 2026-08-24 现为 444 项，见 CHANGELOG 对应 F22 条目）。教训记入 PITFALLS 当日条目：target 永不随仓库迁移。
-- [x] **已通过：真机 QA 事件入库与 alarm 注册证据。** “今天晚上十点十分开会，QA真机提醒测试2” 写入事件 `2026-08-19 22:10`，生成 `21:40` 提前 30 分钟提醒；系统显示 exact `RTC_WAKEUP`、`exactAllowReason=policy_permission`。到点未产生通知，原因见上方生产 APK receiver 缺失。
-- [ ] **待验证：Debug 故障注入后的完整后台回收提醒。** 旧 `am kill dev.solum.app` 会被 `dataSync` 前台服务牵制；现已提供不改用户配置的 Debug 进程死亡入口，并继续禁止 force-stop。当前无在线 ADB 设备，尚无到点通知与重开收敛证据。
-
-### 证据
-
-- 审计记录：工作区外 `_scratch/solum-android-prod-audit-20260819.md`
-- 截图：工作区外 `_scratch/solum-027-*.png`
-- 当前代码基线：`088f184`（`main`，本地分支；生产服务版本需以实时只读检查为准）
+- [ ] 浏览器扩展、桌面 Agent 和 iOS 需独立立项，不扩大个人明文云端范围。
+- [ ] 新连接器先完成平台许可、数据来源和最小权限评估。
