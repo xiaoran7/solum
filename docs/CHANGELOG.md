@@ -4,6 +4,7 @@
 
 ## [Unreleased]
 
+- 2026-08-29：Solum Center 生产完成 Tg-oauth 统一身份接入发版（`solum-release-0a497cd`）；Postgres 迁移 `auth.oauth_identities` 表；支持 `/v1/auth/oauth/config` 与 `/v1/auth/oauth/exchange` 自动开户与 E2EE 恢复码解耦。
 - 2026-08-28：全仓文档按当前 `0.2.8/1018`、local-first 边界和真实待办重构；删除重复会话流水与过期生产断言。
 
 ## [0.2.8]
