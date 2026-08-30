@@ -34,6 +34,13 @@
                 <data android:mimeType="text/html" />
                 <data android:mimeType="image/*" />
             </intent-filter>
+            <!-- Seamless OAuth deep link callback -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="solum" android:host="oauth" android:pathPrefix="/callback" />
+            </intent-filter>
         </activity>
 
         <!-- F1: notification capture (user must grant notification access) -->

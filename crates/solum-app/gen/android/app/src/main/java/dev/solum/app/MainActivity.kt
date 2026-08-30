@@ -20,6 +20,7 @@ import org.json.JSONObject
 class MainActivity : TauriActivity() {
   private val shareInbox = ArrayDeque<JSONObject>()
   private val captureNotices = ArrayDeque<String>()
+  private val oauthCallbackInbox = ArrayDeque<JSONObject>()
 
   companion object {
     private const val VOICE_REQUEST = 2202
@@ -31,12 +32,40 @@ class MainActivity : TauriActivity() {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     captureShareIntent(intent)
+    captureOAuthIntent(intent)
   }
 
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     setIntent(intent)
     captureShareIntent(intent)
+    captureOAuthIntent(intent)
+  }
+
+  @Synchronized
+  private fun captureOAuthIntent(incoming: Intent?) {
+    if (incoming?.action != Intent.ACTION_VIEW) return
+    val data = incoming.data ?: return
+    if (data.scheme == "solum" && data.host == "oauth") {
+      val code = data.getQueryParameter("code")
+      val state = data.getQueryParameter("state")
+      val error = data.getQueryParameter("error")
+      if (!code.isNullOrEmpty() || !error.isNullOrEmpty()) {
+        oauthCallbackInbox.addLast(JSONObject().apply {
+          put("code", code ?: "")
+          put("state", state ?: "")
+          put("error", error ?: "")
+        })
+        while (oauthCallbackInbox.size > 5) oauthCallbackInbox.removeFirst()
+      }
+    }
+  }
+
+  @Synchronized
+  fun drainOAuthInboxJson(): String {
+    val items = JSONArray()
+    while (oauthCallbackInbox.isNotEmpty()) items.put(oauthCallbackInbox.removeFirst())
+    return JSONObject().put("items", items).toString()
   }
 
   /** Receiving a share is not consent to persist it; only bounded text enters RAM. */

@@ -172,6 +172,8 @@ const ICONS = {
   back:     '<path d="M19 12H5M11.5 5.5 5 12l6.5 6.5"/>',
   chev:     '<path d="m9 5 7 7-7 7"/>',
   lock:     '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3"/>',
+  eye:      '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
+  eye_off:  '<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/>',
   inbox:    '<path d="M3.5 13.5h4l1.5 3h6l1.5-3h4"/><path d="M5.8 4.5h12.4l2.3 9v4a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2v-4z"/>',
 };
 function icon(name, size) {
@@ -573,6 +575,7 @@ window.addEventListener("popstate", () => {
 
 /* ============================== 通用确认模态 ============================== */
 let modalAction = null;
+let modalDismiss = null;
 let modalOpener = null;
 function modalFocusable() {
   return Array.from($("modal").querySelectorAll(
@@ -591,6 +594,7 @@ function openModal(title, bodyNode, okLabel, action, opts) {
   // "primary" 用琥珀主按钮，别把「保存」渲染成要出事的样子。
   $("modalOk").className = "btn " + ((opts && opts.okStyle === "primary") ? "primary" : "danger-fill");
   modalAction = action;
+  modalDismiss = (opts && opts.onDismiss) || null;
   $("modalMask").classList.add("open");
   syncOverlayHistory();
   $("modalCancel").focus();
@@ -598,11 +602,16 @@ function openModal(title, bodyNode, okLabel, action, opts) {
 function closeModal() {
   if (!$("modalMask").classList.contains("open")) return;
   const opener = modalOpener;
+  const dismiss = modalDismiss;
   $("modalMask").classList.remove("open");
   modalAction = null;
+  modalDismiss = null;
   modalOpener = null;
   syncOverlayHistory();
   if (opener && document.contains(opener)) requestAnimationFrame(() => opener.focus());
+  if (dismiss) {
+    try { dismiss(); } catch (_) {}
+  }
 }
 $("modalCancel").addEventListener("click", closeModal);
 $("modalMask").addEventListener("click", (e) => { if (e.target === $("modalMask")) closeModal(); });
@@ -621,6 +630,7 @@ document.addEventListener("keydown", (e) => {
 });
 $("modalOk").addEventListener("click", async () => {
   const act = modalAction;
+  modalDismiss = null;
   closeModal();
   if (act) await act();
 });
@@ -953,9 +963,15 @@ function mdReplacePaired(input, marker) {
   }
   return out;
 }
-// 去掉行内标记，保留人真正要读的文字与链接目标。
+const MD_PLAIN_TEXT_CACHE_MAX = 256;
+const mdPlainTextCache = new Map();
+// 去掉行内标记，保留人真正要读的文字与链接目标。支持 LRU 缓存。
 function mdPlainText(input) {
-  let out = String(input);
+  const str = String(input);
+  if (!str) return "";
+  const cached = mdPlainTextCache.get(str);
+  if (cached !== undefined) return cached;
+  let out = str;
   out = out.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, "图片：$1");
   out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1（$2）");
   out = mdReplacePaired(out, "**");
@@ -963,7 +979,13 @@ function mdPlainText(input) {
   out = mdReplacePaired(out, "~~");
   out = mdReplacePaired(out, "`");
   out = out.replace(/\\([\\`*_[\]{}()#+\-.!>])/g, "$1");
-  return out.trim();
+  const res = out.trim();
+  if (mdPlainTextCache.size >= MD_PLAIN_TEXT_CACHE_MAX) {
+    const oldest = mdPlainTextCache.keys().next().value;
+    if (oldest !== undefined) mdPlainTextCache.delete(oldest);
+  }
+  mdPlainTextCache.set(str, res);
+  return res;
 }
 function mdIsRule(line) { return /^\s*(?:---+|\*\*\*+|___+)\s*$/.test(line); }
 function mdTableCells(line) {
@@ -984,9 +1006,15 @@ function mdStartsBlock(lines, i) {
     /^\s*[-*+]\s+/.test(line) || /^\s*\d+[.)]\s+/.test(line) || mdIsRule(line)) return true;
   return i + 1 < lines.length && mdTableCells(line).length > 0 && mdIsTableSeparator(lines[i + 1]);
 }
-// 常用 GFM 块级语法 → 展示模型；格式损坏时退回段落，绝不吞正文。
+const MD_PARSE_CACHE_MAX = 128;
+const mdParseCache = new Map();
+// 常用 GFM 块级语法 → 展示模型；格式损坏时退回段落，绝不吞正文。支持 LRU 缓存。
 function mdParse(input) {
-  const lines = String(input).replace(/\r\n?/g, "\n").split("\n");
+  const rawInput = String(input);
+  if (!rawInput) return [];
+  const cached = mdParseCache.get(rawInput);
+  if (cached !== undefined) return cached;
+  const lines = rawInput.replace(/\r\n?/g, "\n").split("\n");
   const blocks = [];
   let i = 0;
   while (i < lines.length) {
@@ -1035,6 +1063,11 @@ function mdParse(input) {
     while (i < lines.length && !mdStartsBlock(lines, i)) { paragraph.push(lines[i].trim()); i += 1; }
     blocks.push({ kind: "paragraph", text: mdPlainText(paragraph.join(" ")) });
   }
+  if (mdParseCache.size >= MD_PARSE_CACHE_MAX) {
+    const oldest = mdParseCache.keys().next().value;
+    if (oldest !== undefined) mdParseCache.delete(oldest);
+  }
+  mdParseCache.set(rawInput, blocks);
   return blocks;
 }
 // 助手散文 → DOM。纯段落沿用轻量 span（与旧渲染同形），出现结构才升级为块容器。
@@ -4822,6 +4855,27 @@ async function submitAccountGate() {
   }
 }
 
+function setupPasswordToggles() {
+  document.querySelectorAll(".password-wrap").forEach((wrap) => {
+    const input = wrap.querySelector("input");
+    const toggleBtn = wrap.querySelector(".btn-eye");
+    if (!input || !toggleBtn) return;
+    if (toggleBtn.dataset.bound === "true") return;
+    toggleBtn.dataset.bound = "true";
+    toggleBtn.replaceChildren(icon("eye", 16));
+    toggleBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const isPass = input.type === "password";
+      input.type = isPass ? "text" : "password";
+      toggleBtn.replaceChildren(icon(isPass ? "eye_off" : "eye", 16));
+      toggleBtn.setAttribute("aria-label", isPass ? "隐藏密码" : "显示密码");
+      toggleBtn.setAttribute("title", isPass ? "隐藏密码" : "显示密码");
+    });
+  });
+}
+setupPasswordToggles();
+
 $("accountGatePrivacyIcon").appendChild(icon("lock", 20));
 $("accountGateClose").appendChild(icon("x", 18));
 $("accountGateLoginTab").addEventListener("click", () => setAccountGateMode("login"));
@@ -4853,6 +4907,12 @@ $("mobileAccountBtn").addEventListener("click", () => {
 
 function promptModal(title, message, placeholder, defaultVal) {
   return new Promise((resolve) => {
+    let resolved = false;
+    const finish = (val) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(val);
+    };
     const input = el("input", {
       type: "text",
       class: "input",
@@ -4883,20 +4943,17 @@ function promptModal(title, message, placeholder, defaultVal) {
       title,
       body,
       "确认",
-      () => resolve(input.value.trim()),
-      { okStyle: "primary" }
+      () => finish(input.value.trim()),
+      {
+        okStyle: "primary",
+        onDismiss: () => finish(null),
+      }
     );
-    const prevCancel = $("modalCancel").onclick;
-    $("modalCancel").onclick = () => {
-      $("modalCancel").onclick = prevCancel;
-      closeModal();
-      resolve(null);
-    };
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
         closeModal();
-        resolve(input.value.trim());
+        finish(input.value.trim());
       }
     });
     setTimeout(() => input.focus(), 80);
@@ -4906,6 +4963,8 @@ function promptModal(title, message, placeholder, defaultVal) {
 async function startOAuthLogin() {
   if (accountAuthSubmitting) return;
   const serverUrl = (typeof SOLUM_CENTER_URL !== 'undefined' ? SOLUM_CENTER_URL : "https://tannerlab.cn");
+  let autoCheckTimer = null;
+  let onVisibilityChange = null;
   try {
     accountAuthSubmitting = true;
     toast("正在连接统一认证中心…", "info");
@@ -4925,11 +4984,59 @@ async function startOAuthLogin() {
       window.open(authUrl, "_blank");
     }
 
-    const code = await promptModal(
+    toast("已在浏览器打开授权页面，授权后将自动返回登录…", "info");
+
+    let codePromiseResolve = null;
+    const codePromise = new Promise((resolve) => {
+      codePromiseResolve = resolve;
+    });
+
+    const checkDeepLink = async () => {
+      try {
+        const items = await invoke("account_oauth_android_drain");
+        if (Array.isArray(items) && items.length > 0) {
+          const match = items.find((it) => it && (it.code || it.error));
+          if (match) {
+            if (match.error) {
+              toast(`OAuth 授权失败: ${match.error}`, "danger");
+              if (codePromiseResolve) codePromiseResolve(null);
+            } else if (match.code) {
+              if (codePromiseResolve) codePromiseResolve(match.code.trim());
+            }
+          }
+        }
+      } catch (_) {}
+    };
+
+    autoCheckTimer = setInterval(checkDeepLink, 800);
+    onVisibilityChange = () => {
+      if (document.visibilityState === "visible") checkDeepLink();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onVisibilityChange);
+
+    const modalPromptPromise = promptModal(
       "Tg-oauth 统一登录",
-      "已在系统外部浏览器打开授权页面。\n请在浏览器完成授权并复制授权码（Code），粘贴至下方：",
-      "在此粘贴授权码（Code）"
+      "已在系统外部浏览器打开授权页面。\n完成授权后将自动返回；如未自动跳转，可在此粘贴授权码：",
+      "授权后自动登录，或在此粘贴授权码（Code）"
     );
+
+    modalPromptPromise.then((manualCode) => {
+      if (manualCode && codePromiseResolve) {
+        codePromiseResolve(manualCode.trim());
+      }
+    });
+
+    const code = await Promise.race([codePromise, modalPromptPromise]);
+
+    if (autoCheckTimer) { clearInterval(autoCheckTimer); autoCheckTimer = null; }
+    if (onVisibilityChange) {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onVisibilityChange);
+      onVisibilityChange = null;
+    }
+    closeModal();
+
     if (!code || !code.trim()) {
       toast("已取消 OAuth 登录", "info");
       return;
@@ -4952,6 +5059,11 @@ async function startOAuthLogin() {
         });
         toast("使用 Tg-oauth 统一账号登录成功", "ok");
         if (typeof closeAccountGate === 'function') closeAccountGate();
+        accountFormSeeded = false;
+        await refreshAccount();
+        await refreshCloud();
+        await refreshSyncConfig();
+        await refreshSyncStatus();
         break;
       } catch (e) {
         const errStr = String(e);
@@ -4975,6 +5087,11 @@ async function startOAuthLogin() {
   } catch (e) {
     toast(safeUserError(e, "无法获取 OAuth 配置"), "danger");
   } finally {
+    if (autoCheckTimer) clearInterval(autoCheckTimer);
+    if (onVisibilityChange) {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onVisibilityChange);
+    }
     accountAuthSubmitting = false;
   }
 }

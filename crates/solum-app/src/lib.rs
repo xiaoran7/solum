@@ -1896,6 +1896,67 @@ struct AndroidShareDrainView {
     notices: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AndroidOAuthCallbackItem {
+    pub code: String,
+    pub state: String,
+    pub error: String,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Deserialize)]
+struct AndroidOAuthDrain {
+    #[serde(default)]
+    items: Vec<AndroidOAuthCallbackItem>,
+}
+
+#[tauri::command]
+async fn account_oauth_android_drain(
+    #[allow(unused_variables)] window: tauri::WebviewWindow,
+) -> CmdResult<Vec<AndroidOAuthCallbackItem>> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = window;
+        Ok(Vec::new())
+    }
+    #[cfg(target_os = "android")]
+    {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        window
+            .with_webview(move |webview| {
+                webview.jni_handle().exec(move |env, activity, _webview| {
+                    let result = (|| -> Result<String, String> {
+                        let value = env
+                            .call_method(
+                                activity,
+                                "drainOAuthInboxJson",
+                                "()Ljava/lang/String;",
+                                &[],
+                            )
+                            .map_err(|error| error.to_string())?;
+                        let object = value.l().map_err(|error| error.to_string())?;
+                        let java_string = jni::objects::JString::from(object);
+                        env.get_string(&java_string)
+                            .map(|value| value.into())
+                            .map_err(|error| error.to_string())
+                    })();
+                    let _ = sender.send(result);
+                });
+            })
+            .map_err(|error| error.to_string())?;
+        let raw = tauri::async_runtime::spawn_blocking(move || {
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .map_err(|_| "读取 OAuth 回调超时".to_string())?
+        })
+        .await
+        .map_err(|error| format!("读取 OAuth 回调失败：{error}"))??;
+        let drained: AndroidOAuthDrain =
+            serde_json::from_str(&raw).map_err(|error| format!("OAuth 回调格式无效：{error}"))?;
+        Ok(drained.items)
+    }
+}
+
 /// Drain Android's bounded, RAM-only ACTION_SEND queue into the ordinary
 /// candidate inbox. This is invoked on launch/focus rather than by a battery-
 /// consuming poll loop. Desktop returns an empty list.
@@ -6196,6 +6257,7 @@ pub fn run() {
             account_oauth_config_get,
             account_oauth_pkce_generate,
             account_oauth_login,
+            account_oauth_android_drain,
             open_external_url,
             account_logout,
             account_model_save,

@@ -341,6 +341,16 @@
     box-shadow: 0 0 0 3px var(--accent-soft);
   }
   input[type="number"] { font-variant-numeric: tabular-nums; }
+  .password-wrap { position: relative; display: flex; align-items: center; width: 100%; }
+  .password-wrap input { width: 100%; padding-right: 36px; }
+  .password-wrap .btn-eye {
+    position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; padding: 0; border: none; background: transparent;
+    color: var(--muted); cursor: pointer; border-radius: var(--r-sm);
+    transition: color var(--t-fast) ease, background var(--t-fast) ease;
+  }
+  .password-wrap .btn-eye:hover { color: var(--ink); background: var(--hover); }
   .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
   .field > label { font-size: .8125rem; font-weight: 550; color: var(--ink-2); }
   .hint { font-size: .8125rem; color: var(--muted); }
@@ -2937,7 +2947,11 @@
               <div class="field"><label for="accountUser">账号</label>
                 <input type="text" id="accountUser" autocomplete="off" spellcheck="false" /></div>
               <div class="field"><label for="accountPass">密码</label>
-                <input type="password" id="accountPass" autocomplete="off" /></div>
+                <div class="password-wrap">
+                  <input type="password" id="accountPass" autocomplete="off" />
+                  <button type="button" class="btn-eye" aria-label="显示密码" title="显示密码" tabindex="-1"></button>
+                </div>
+              </div>
             </div>
           </div>
           <div class="field"><label for="accountModel">云端模型</label>
@@ -2981,9 +2995,17 @@
             <div id="accountChangePassForm" hidden>
               <div class="fieldrow" style="margin-top:10px;">
                 <div class="field"><label for="accountCurrentPass">当前密码</label>
-                  <input type="password" id="accountCurrentPass" autocomplete="off" /></div>
+                  <div class="password-wrap">
+                    <input type="password" id="accountCurrentPass" autocomplete="off" />
+                    <button type="button" class="btn-eye" aria-label="显示密码" title="显示密码" tabindex="-1"></button>
+                  </div>
+                </div>
                 <div class="field"><label for="accountNewPass">新密码（至少 8 个字符）</label>
-                  <input type="password" id="accountNewPass" minlength="8" autocomplete="new-password" /></div>
+                  <div class="password-wrap">
+                    <input type="password" id="accountNewPass" minlength="8" autocomplete="new-password" />
+                    <button type="button" class="btn-eye" aria-label="显示密码" title="显示密码" tabindex="-1"></button>
+                  </div>
+                </div>
               </div>
               <div class="btnrow">
                 <button class="btn primary sm" id="accountChangePassSubmit">确认修改</button>
@@ -3146,10 +3168,16 @@
         <label for="accountGateUser">账号</label>
         <input type="text" id="accountGateUser" autocomplete="username" placeholder="输入账号" spellcheck="false" />
         <label for="accountGatePass">密码</label>
-        <input type="password" id="accountGatePass" minlength="8" autocomplete="current-password" placeholder="至少 8 个字符" />
+        <div class="password-wrap">
+          <input type="password" id="accountGatePass" minlength="8" autocomplete="current-password" placeholder="至少 8 个字符" />
+          <button type="button" class="btn-eye" aria-label="显示密码" title="显示密码" tabindex="-1"></button>
+        </div>
         <div id="accountGateConfirmField" hidden>
           <label for="accountGateConfirm">确认密码</label>
-          <input type="password" id="accountGateConfirm" autocomplete="new-password" placeholder="再次输入密码" />
+          <div class="password-wrap">
+            <input type="password" id="accountGateConfirm" autocomplete="new-password" placeholder="再次输入密码" />
+            <button type="button" class="btn-eye" aria-label="显示密码" title="显示密码" tabindex="-1"></button>
+          </div>
         </div>
         <button class="btn primary" id="accountGateSubmit" type="button">登录</button>
         <button class="btn oauth-gate-btn" id="accountGateOAuthBtn" type="button">使用 Tg-oauth 统一账号登录</button>
