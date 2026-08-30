@@ -1167,6 +1167,66 @@ async fn account_oauth_config_get(
 }
 
 #[tauri::command]
+async fn open_external_url(window: tauri::WebviewWindow, url: String) -> CmdResult<bool> {
+    #[cfg(target_os = "android")]
+    {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let url_clone = url.clone();
+        window
+            .with_webview(move |webview| {
+                webview.jni_handle().exec(move |env, activity, _webview| {
+                    let result = (|| -> Result<bool, String> {
+                        let jurl = env.new_string(&url_clone).map_err(|e| e.to_string())?;
+                        let url_obj = jni::objects::JObject::from(jurl);
+                        let args = [jni::objects::JValue::Object(&url_obj)];
+                        let value = env
+                            .call_method(activity, "openExternalUrl", "(Ljava/lang/String;)Z", &args)
+                            .map_err(|e| e.to_string())?;
+                        value.z().map_err(|e| e.to_string())
+                    })();
+                    let _ = sender.send(result);
+                });
+            })
+            .map_err(|e| e.to_string())?;
+        tauri::async_runtime::spawn_blocking(move || {
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .map_err(|_| "拉起系统浏览器超时".to_string())?
+        })
+        .await
+        .map_err(|e| format!("拉起系统浏览器失败: {e}"))?
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = window;
+        #[cfg(target_os = "windows")]
+        {
+            std::process::Command::new("cmd")
+                .args(["/C", "start", "", &url])
+                .spawn()
+                .map(|_| true)
+                .map_err(|e| e.to_string())
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg(&url)
+                .spawn()
+                .map(|_| true)
+                .map_err(|e| e.to_string())
+        }
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        {
+            std::process::Command::new("xdg-open")
+                .arg(&url)
+                .spawn()
+                .map(|_| true)
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
+#[tauri::command]
 fn account_oauth_pkce_generate() -> CmdResult<solum_core::account::PkcePair> {
     solum_core::account::generate_pkce().map_err(|e| e.to_string())
 }
@@ -6136,6 +6196,7 @@ pub fn run() {
             account_oauth_config_get,
             account_oauth_pkce_generate,
             account_oauth_login,
+            open_external_url,
             account_logout,
             account_model_save,
             account_change_password,

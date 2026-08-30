@@ -31,13 +31,14 @@ use crate::extract::Reasoner;
 pub const DEFAULT_CLOUD_MODEL: &str = "qwen3.5-2b";
 pub const CLOUD_MODEL_OPTIONS: &[&str] = &["qwen3.5-2b"];
 
-/// Solum Center 当前对外身份（2026-08-27 切换到已备案的独立 `.cn` 域名）。
-pub const SOLUM_CENTER_URL: &str = "https://solum.tannerlab.cn";
+/// Solum Center 当前对外身份（国内直连备案域名）。
+pub const SOLUM_CENTER_URL: &str = "https://tannerlab.cn";
 /// 已进入废弃流程的旧中心域名；存量会话读到其中任一个时透明改写为新身份
 /// （同一后端，token 不绑定 Host），兼容窗口内旧域名仍可用作别名。
 const LEGACY_CENTER_URLS: &[&str] = &[
     "https://solumsync.tannerlab.xyz",
     "https://solum.tannerlab.xyz",
+    "https://solum.tannerlab.cn",
 ];
 
 /// 域名合并映射：恰好等于旧中心域名（忽略末尾斜杠）时改写为当前身份，
@@ -1715,8 +1716,8 @@ mod tests {
             }
         });
         let session =
-            parse_auth_response(&payload, "https://solum.tannerlab.cn", "", "qwen3.5-2b").unwrap();
-        assert_eq!(session.server_url, "https://solum.tannerlab.cn");
+            parse_auth_response(&payload, "https://tannerlab.cn", "", "qwen3.5-2b").unwrap();
+        assert_eq!(session.server_url, SOLUM_CENTER_URL);
         assert_eq!(session.user_id, "9d4df1be-9f7b-4a3a-b986-ec920d2df60e");
         assert_eq!(session.username, "tg_user");
         assert_eq!(session.access_token, "oauth-access-token");

@@ -53,10 +53,10 @@
     --ease: cubic-bezier(.22, 1, .36, 1);
     --t-fast: 140ms; --t-med: 200ms;
 
-    /* z 语义层级：下拉 < 粘性 < 抽屉 < 遮罩 < 模态 < toast（模态必须能盖住抽屉里的高危确认） */
-    --z-sticky: 10; --z-drawer-mask: 29; --z-drawer: 30; --z-backdrop: 40; --z-modal: 41; --z-toast: 50;
+    /* z 语义层级：下拉 < 粘性 < 抽屉 < 账号门 < 遮罩 < 模态 < toast < 隐私门 */
+    --z-sticky: 10; --z-drawer-mask: 29; --z-drawer: 30; --z-account-gate: 60; --z-backdrop: 70; --z-modal: 71; --z-toast: 80;
     /* 首启隐私门盖住一切，含 toast：没同意之前不该有任何别的东西可交互 */
-    --z-privacy-gate: 60;
+    --z-privacy-gate: 90;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -2104,7 +2104,7 @@
   #accountGate {
     position: fixed;
     inset: 0;
-    z-index: 61;
+    z-index: var(--z-account-gate, 60);
     display: grid;
     place-items: center;
     padding: 24px;

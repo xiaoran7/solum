@@ -4366,7 +4366,7 @@ const LLM_PRESETS = [
     models: ["qwen3.5-2b"], timeout: 60, temp: "default",
     note: "Solum 中心通过 Tailnet 连接本地 vLLM；自定义端点暂不开放。" },
 ];
-const SOLUM_CENTER_URL = "https://solum.tannerlab.cn";
+const SOLUM_CENTER_URL = "https://tannerlab.cn";
 let llmKeyTail = "";   // 已保存密钥的尾巴（空 = 还没存过 key，保存时必填）
 let llmFormSeeded = false; // 表单只在首次加载/保存后回填，refreshAll 不许覆盖正在编辑的内容
 
@@ -4851,11 +4851,64 @@ $("mobileAccountBtn").addEventListener("click", () => {
   else openAccountGate("登录后连接所有设备与完整能力", { dismissible: true, allowGuest: false });
 });
 
+function promptModal(title, message, placeholder, defaultVal) {
+  return new Promise((resolve) => {
+    const input = el("input", {
+      type: "text",
+      class: "input",
+      placeholder: placeholder || "",
+      value: defaultVal || "",
+      style: "width:100%;margin-top:12px;box-sizing:border-box;",
+    });
+    const clipBtn = el("button", {
+      type: "button",
+      class: "btn ghost",
+      text: "读取剪贴板",
+      style: "margin-top:8px;font-size:12px;",
+      click: async () => {
+        try {
+          const text = await navigator.clipboard.readText();
+          if (text) input.value = text.trim();
+        } catch (_) {
+          toast("请长按输入框粘贴", "info");
+        }
+      }
+    });
+    const body = el("div", {}, [
+      el("p", { text: message, style: "white-space:pre-wrap;line-height:1.5;color:var(--text-muted);" }),
+      input,
+      el("div", { style: "display:flex;justify-content:flex-end;" }, [clipBtn])
+    ]);
+    openModal(
+      title,
+      body,
+      "确认",
+      () => resolve(input.value.trim()),
+      { okStyle: "primary" }
+    );
+    const prevCancel = $("modalCancel").onclick;
+    $("modalCancel").onclick = () => {
+      $("modalCancel").onclick = prevCancel;
+      closeModal();
+      resolve(null);
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        closeModal();
+        resolve(input.value.trim());
+      }
+    });
+    setTimeout(() => input.focus(), 80);
+  });
+}
+
 async function startOAuthLogin() {
   if (accountAuthSubmitting) return;
-  const serverUrl = (typeof SOLUM_CENTER_URL !== 'undefined' ? SOLUM_CENTER_URL : "https://solum.tannerlab.cn");
+  const serverUrl = (typeof SOLUM_CENTER_URL !== 'undefined' ? SOLUM_CENTER_URL : "https://tannerlab.cn");
   try {
     accountAuthSubmitting = true;
+    toast("正在连接统一认证中心…", "info");
     const cfg = await invoke("account_oauth_config_get", { serverUrl });
     if (!cfg.enabled) {
       toast("中心服务器未启用 OAuth 登录", "danger");
@@ -4866,9 +4919,17 @@ async function startOAuthLogin() {
     const state = Math.random().toString(36).slice(2);
     const authUrl = `${cfg.issuer.replace(/\/+$/, '')}/authorize?response_type=code&client_id=${encodeURIComponent(cfg.client_id)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=openid%20profile%20email&code_challenge=${encodeURIComponent(pkce.code_challenge)}&code_challenge_method=S256&state=${state}`;
 
-    window.open(authUrl, "_blank");
+    try {
+      await invoke("open_external_url", { url: authUrl });
+    } catch (_) {
+      window.open(authUrl, "_blank");
+    }
 
-    const code = window.prompt("已在浏览器打开 Tg-oauth 统一账号授权页面。\n完成授权后，请复制并在此粘贴授权码（code）：");
+    const code = await promptModal(
+      "Tg-oauth 统一登录",
+      "已在系统外部浏览器打开授权页面。\n请在浏览器完成授权并复制授权码（Code），粘贴至下方：",
+      "在此粘贴授权码（Code）"
+    );
     if (!code || !code.trim()) {
       toast("已取消 OAuth 登录", "info");
       return;
@@ -4895,7 +4956,11 @@ async function startOAuthLogin() {
       } catch (e) {
         const errStr = String(e);
         if (errStr.includes("NEEDS_RECOVERY_CODE") || errStr.includes("恢复码")) {
-          recoveryCode = window.prompt("检测到该账号已有加密数据空间。\n请输入您的 20 字符数据恢复码（格式如 XXXXX-XXXXX-XXXXX-XXXXX）以解密：");
+          recoveryCode = await promptModal(
+            "输入数据恢复码",
+            "检测到该账号已有加密数据空间。\n请输入您的 20 字符数据恢复码（格式如 XXXXX-XXXXX-XXXXX-XXXXX）以解密：",
+            "XXXXX-XXXXX-XXXXX-XXXXX"
+          );
           if (!recoveryCode || !recoveryCode.trim()) {
             toast("未输入恢复码，无法解密现有数据空间", "danger");
             break;

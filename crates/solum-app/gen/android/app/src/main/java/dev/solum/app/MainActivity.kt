@@ -258,6 +258,20 @@ class MainActivity : TauriActivity() {
     return true
   }
 
+  /** Open an external URL in the system browser (e.g. for OAuth 2.0 authorization). */
+  fun openExternalUrl(url: String): Boolean {
+    val parsed = try { Uri.parse(url) } catch (_: Exception) { return false }
+    val intent = Intent(Intent.ACTION_VIEW, parsed).apply {
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    return try {
+      startActivity(intent)
+      true
+    } catch (_: Exception) {
+      false
+    }
+  }
+
   /** Relaunch the Tauri process after an account/profile boundary change. */
   fun restartApp() {
     val launchIntent = packageManager.getLaunchIntentForPackage(packageName) ?: return

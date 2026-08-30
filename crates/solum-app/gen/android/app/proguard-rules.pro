@@ -1,21 +1,25 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# Keep all Solum activity, listener and plugin classes/methods called via JNI and reflection
+-keep class dev.solum.** {
+    public *;
+    protected *;
+}
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+-keep class dev.solum.app.MainActivity {
+    *;
+}
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+-keep class dev.solum.app.SolumNotificationListener {
+    *;
+}
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+-keep class dev.solum.alarm.** {
+    *;
+}
+
+-keep class dev.solum.healthconnect.** {
+    *;
+}
+
+-keep class dev.solum.notifaccess.** {
+    *;
+}
