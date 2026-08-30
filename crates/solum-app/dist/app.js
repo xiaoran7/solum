@@ -4233,7 +4233,7 @@ async function refreshAudit() {
     const rows = await invoke("audit");
     box.textContent = "";
     if (!rows.length) {
-      box.appendChild(emptyBox("shield", "审计日志为空", "所有高危操作的请求与结果都会 append-only 记录在此。"));
+      box.appendChild(emptyBox("shield", "暂无安全操作记录", "所有涉及敏感权限的操作与拦截结果都会安全记录在此。"));
       return;
     }
     box.appendChild(dataTable(["#", "时间", "风险", "操作", "结果", "详情"],
@@ -4262,7 +4262,7 @@ function openGuardConfirm(p, showFine) {
   const body = el("div", null, [
     el("div", null, ["操作：", el("span", { class: "title", text: humanToolLabel(p.tool) }), " ", tag(rk[0], rk[1])]),
     el("div", { class: "preview", text: "后果预览：" + p.preview }),
-    showFine ? el("div", { class: "fine", text: "确认后签发一次性令牌（5 分钟有效、绑定本操作、用后即焚）。" }) : null,
+    showFine ? el("div", { class: "fine", text: "确认后签发一次性授权凭证（5 分钟内有效，仅限本次操作）。" }) : null,
   ]);
   openModal("人工确认：将要执行的操作", body, "确认执行", async () => {
     try {
@@ -4661,11 +4661,351 @@ function requireAccount(reason) {
   return false;
 }
 
+
+/* =========================================================================
+   Solum Profile Customization & Feature Info System
+   ========================================================================= */
+const PROFILE_STORAGE_KEY = "solum.user-profile.v1";
+const DEFAULT_USER_PROFILE = {
+  nickname: "唐棠",
+  role: "本地空间",
+  bio: "专注当下，记录生活",
+  avatar: "唐",
+  avatarBg: "amber",
+};
+const AVATAR_COLOR_PALETTES = {
+  amber:   { bg: "var(--accent-soft)", ink: "var(--accent)", border: "var(--accent-line)", swatch: "#f0a824" },
+  emerald: { bg: "#dcfce7",            ink: "#16a34a",       border: "#86efac",            swatch: "#22c55e" },
+  indigo:  { bg: "#e0e7ff",            ink: "#4338ca",       border: "#a5b4fc",            swatch: "#6366f1" },
+  rose:    { bg: "#ffe4e6",            ink: "#e11d48",       border: "#fda4af",            swatch: "#f43f5e" },
+  violet:  { bg: "#ede9fe",            ink: "#7c3aed",       border: "#c4b5fd",            swatch: "#8b5cf6" },
+  cyan:    { bg: "#cffafe",            ink: "#0891b2",       border: "#67e8f9",            swatch: "#06b6d4" },
+  slate:   { bg: "#f1f5f9",            ink: "#334155",       border: "#cbd5e1",            swatch: "#64748b" },
+};
+const EMOJI_OPTIONS = ["🌱", "✨", "🚀", "🐱", "☕", "🦊", "🌸", "⚡", "💎", "🎨", "🌿", "🦉", "🪐", "🎯"];
+
+function loadUserProfile() {
+  try {
+    const raw = localStorage.getItem(PROFILE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { ...DEFAULT_USER_PROFILE, ...parsed };
+    }
+  } catch (_) { }
+  return { ...DEFAULT_USER_PROFILE };
+}
+
+function saveUserProfile(profile) {
+  try {
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
+  } catch (_) { }
+  applyUserProfile(profile);
+}
+
+function applyUserProfile(profile) {
+  const p = profile || loadUserProfile();
+  const palette = AVATAR_COLOR_PALETTES[p.avatarBg] || AVATAR_COLOR_PALETTES.amber;
+
+  const avatars = [
+    $("accountShellAvatar"),
+    $("accountShellAvatarM"),
+    $("profileSheetAvatar"),
+  ].filter(Boolean);
+
+  avatars.forEach((el) => {
+    el.textContent = p.avatar || "唐";
+    el.style.backgroundColor = palette.bg;
+    el.style.color = palette.ink;
+    el.style.borderColor = palette.border;
+  });
+
+  if ($("profileSheetRole")) $("profileSheetRole").textContent = p.role || "本地空间";
+  if ($("profileSheetBio")) $("profileSheetBio").textContent = p.bio || "专注当下，记录生活";
+  
+  if (!accountLoggedIn) {
+    if ($("accountShellLabel")) $("accountShellLabel").textContent = p.nickname || "唐棠";
+    if ($("mobileAccountLabel")) $("mobileAccountLabel").textContent = p.nickname || "唐棠";
+  }
+
+  document.querySelectorAll(".msg-row.user .msg-avatar").forEach((el) => {
+    el.textContent = p.avatar || "唐";
+    el.style.backgroundColor = palette.bg;
+    el.style.color = palette.ink;
+    el.style.borderColor = palette.border;
+  });
+}
+
+let editingProfileDraft = null;
+
+function openProfileEditor() {
+  closeMobileTools();
+  const current = loadUserProfile();
+  editingProfileDraft = { ...current };
+
+  const modal = $("profileEditorModal");
+  if (!modal) return;
+
+  if ($("profileInputName")) $("profileInputName").value = current.nickname || "";
+  if ($("profileInputRole")) $("profileInputRole").value = current.role || "";
+  if ($("profileInputBio")) $("profileInputBio").value = current.bio || "";
+  if ($("profileInputChar")) $("profileInputChar").value = "";
+
+  renderProfilePreview();
+  renderEmojiPicker();
+  renderColorPicker();
+
+  modal.hidden = false;
+  $("profileInputName")?.focus();
+}
+
+function closeProfileEditor() {
+  const modal = $("profileEditorModal");
+  if (modal) modal.hidden = true;
+}
+
+function renderProfilePreview() {
+  if (!editingProfileDraft) return;
+  const p = editingProfileDraft;
+  const palette = AVATAR_COLOR_PALETTES[p.avatarBg] || AVATAR_COLOR_PALETTES.amber;
+
+  const previewAvatar = $("profilePreviewAvatar");
+  if (previewAvatar) {
+    previewAvatar.textContent = p.avatar || "唐";
+    previewAvatar.style.backgroundColor = palette.bg;
+    previewAvatar.style.color = palette.ink;
+    previewAvatar.style.borderColor = palette.border;
+  }
+  if ($("profilePreviewName")) $("profilePreviewName").textContent = p.nickname || "唐棠";
+  if ($("profilePreviewRole")) $("profilePreviewRole").textContent = p.role || "本地空间";
+  if ($("profilePreviewBio")) $("profilePreviewBio").textContent = p.bio || "专注当下，记录生活";
+}
+
+function renderEmojiPicker() {
+  const box = $("avatarEmojiPicker");
+  if (!box) return;
+  box.textContent = "";
+  for (const emoji of EMOJI_OPTIONS) {
+    const btn = el("button", {
+      class: "avatar-emoji-btn" + (editingProfileDraft.avatar === emoji ? " selected" : ""),
+      type: "button",
+      text: emoji,
+      onclick: () => {
+        editingProfileDraft.avatar = emoji;
+        renderProfilePreview();
+        renderEmojiPicker();
+      },
+    });
+    box.appendChild(btn);
+  }
+}
+
+function renderColorPicker() {
+  const box = $("avatarColorPicker");
+  if (!box) return;
+  box.textContent = "";
+  for (const [key, val] of Object.entries(AVATAR_COLOR_PALETTES)) {
+    const swatch = el("button", {
+      class: "avatar-color-swatch" + (editingProfileDraft.avatarBg === key ? " selected" : ""),
+      type: "button",
+      title: key,
+      style: "background-color: " + val.swatch + ";",
+      onclick: () => {
+        editingProfileDraft.avatarBg = key;
+        renderProfilePreview();
+        renderColorPicker();
+      },
+    });
+    box.appendChild(swatch);
+  }
+}
+
+function setupProfileEditorEvents() {
+  $("profileCustomBtn")?.addEventListener("click", openProfileEditor);
+  $("profileSheetEditAvatarBtn")?.addEventListener("click", openProfileEditor);
+  $("profileEditorClose")?.addEventListener("click", closeProfileEditor);
+  $("profileEditorCancel")?.addEventListener("click", closeProfileEditor);
+
+  $("profileInputName")?.addEventListener("input", (e) => {
+    if (!editingProfileDraft) return;
+    editingProfileDraft.nickname = e.target.value.trim() || "唐棠";
+    renderProfilePreview();
+  });
+  $("profileInputRole")?.addEventListener("input", (e) => {
+    if (!editingProfileDraft) return;
+    editingProfileDraft.role = e.target.value.trim() || "本地空间";
+    renderProfilePreview();
+  });
+  $("profileInputBio")?.addEventListener("input", (e) => {
+    if (!editingProfileDraft) return;
+    editingProfileDraft.bio = e.target.value.trim() || "专注当下，记录生活";
+    renderProfilePreview();
+  });
+
+  $("profileApplyCharBtn")?.addEventListener("click", () => {
+    const char = $("profileInputChar")?.value.trim();
+    if (char && editingProfileDraft) {
+      editingProfileDraft.avatar = char.slice(0, 2);
+      renderProfilePreview();
+      renderEmojiPicker();
+    }
+  });
+
+  $("profileEditorSave")?.addEventListener("click", () => {
+    if (!editingProfileDraft) return;
+    saveUserProfile(editingProfileDraft);
+    closeProfileEditor();
+    toast("个人资料已更新", "ok");
+  });
+}
+
+const VIEW_FEATURE_DESCRIPTIONS = {
+  descAgenda: {
+    title: "日程安排",
+    desc: "通过自然语言对话智能抽取您的工作、会议与生活安排，按当前时间清晰呈现。\n\n• 支持按今天、明天与未来时间段分层归集\n• 到期后自动联动系统提醒与日历\n• 全程在本地安全离线存储",
+  },
+  descNotifs: {
+    title: "提醒与通知",
+    desc: "智能分级提醒与通知生命周期管理。\n\n• 待触发：到点前按设定规则发送弹窗与振动提醒\n• 已触发：历史通知归档可随时回看\n• 离线保障：即使未连接网络，系统底层闹钟仍准时送达",
+  },
+  descSuggest: {
+    title: "生活建议",
+    desc: "息壤结合您的作息规律与近期日程，在合适时刻给出的贴心建议。\n\n• 考试备考：提前规划复习备考节奏\n• 截止赶工：临近截止事项重点置顶\n• 早会早休：根据次日首个日程提示休息时间",
+  },
+  descJournal: {
+    title: "行为足迹",
+    desc: "自动汇总您的日常互动、打卡、问询与状态记录，形成温润的生活轨迹。\n\n• 记录每一步专注与生活足迹\n• 支持随时回顾与导出\n• 数据仅在本地保存",
+  },
+  descWearable: {
+    title: "健康趋势",
+    desc: "本地只读接入系统健康传感器，汇总心率、步数与睡眠 7 日趋势。\n\n• 纯本地计算，健康数据绝不上传云端\n• 辅助调整生活建议与作息提醒",
+  },
+  descReview: {
+    title: "复盘简报",
+    desc: "阶段性智能总结，助您轻松看清过去一段时间的节奏与成效。\n\n• 自动梳理已完成事件与待跟进事项\n• 契合您设定的助手风格口吻输出",
+  },
+  descLedger: {
+    title: "记忆库",
+    desc: "息壤为您沉淀的专属记忆网络。\n\n• 事实记忆：记住您的偏好、重要人物与习惯\n• 来源透明：每条记忆均清晰标注来源出处\n• 随时掌控：支持随时修改纠正或一键抹除",
+  },
+  descCaptures: {
+    title: "通知回看",
+    desc: "静默捕获的手机通知集中在此，智能分级过滤垃圾信息，提取出行、订单与待办。\n\n• 避免打扰：无需频繁亮屏看手机\n• 智能提炼：关键信息一键提取为日程",
+  },
+  descPersona: {
+    title: "数字人格",
+    desc: "定义息壤的对话口吻、称呼与表达性格。\n\n• 支持从日常聊天记录中安全导入表达习惯\n• 历史版本随时可一键回退",
+  },
+  descProactivity: {
+    title: "智能主动度",
+    desc: "调节息壤在不同维度的关怀与提醒频率。\n\n• 被动模式：仅在您询问时回答\n• 秘书模式：在关键节点适度提醒\n• 管家模式：主动跟进生活与工作事项",
+  },
+  descPrivacy: {
+    title: "隐私与数据安全",
+    desc: "息壤坚持「本地优先、端到端加密」原则。\n\n• 数据驻留：聊天原文、记忆与行为数据默认仅存在本机\n• 加密同步：开启多端同步时在本地高强度加密后传输\n• 权限透明：敏感权限操作必须人工确认",
+  },
+  descCapture: {
+    title: "灵感与数据入口",
+    desc: "多渠道汇集外部信息。\n\n• 文本速记、语音输入、截图 OCR、系统日历\n• 先进入待确认暂存区，确认后再入库",
+  },
+  descSync: {
+    title: "多端加密同步",
+    desc: "连接您的多台电脑与手机，数据无缝漫游。\n\n• 采用端到端高强度密钥加密\n• 只有您本人的设备拥有解密钥匙",
+  },
+  descBackup: {
+    title: "备份与恢复",
+    desc: "为您的所有数据创建安全快照副本。\n\n• 一键备份本地全部日程、记忆与资料\n• 支持随时随地完整导入恢复",
+  },
+  descEmail: {
+    title: "邮箱关键事件",
+    desc: "在本地直接读取邮件头，提取机票、高铁、酒店、账单等重要事件。\n\n• 邮件正文不上传，不提供给第三方\n• 提取的事件先入待确认区供您审阅",
+  },
+  descCloud: {
+    title: "云端服务接入",
+    desc: "连接高性能云端大模型，获得更强大的自然语言理解与智能推理能力。\n\n• 离线自动降级：无网络时本地规则库无缝承接\n• 流量与调用额度实时透明呈现",
+  },
+  descRules: {
+    title: "重要度与提醒规则",
+    desc: "自定义不同类型日程的提醒策略。\n\n• 会议提前 15 分钟、考试提前 1 天等\n• 自动匹配所有新建日程",
+  },
+  descGuard: {
+    title: "安全防护与护栏",
+    desc: "守护您的设备与个人数据安全的终极防线。\n\n• 所有高危指令与敏感操作（如删除、外发）均被自动拦截\n• 必须由您在弹窗中确认后签发一次性授权凭证方可执行",
+  },
+};
+
+function showInfoModal(title, text) {
+  const modal = $("infoModal");
+  if (!modal) return;
+  $("infoModalTitle").textContent = title || "功能说明";
+  $("infoModalBody").replaceChildren(
+    ...text.split("\n\n").map((para) => el("p", { style: "margin:0 0 10px;line-height:1.7;", text: para }))
+  );
+  modal.hidden = false;
+}
+
+function closeInfoModal() {
+  const modal = $("infoModal");
+  if (modal) modal.hidden = true;
+}
+
+function setupInfoModalTriggers() {
+  $("infoModalClose")?.addEventListener("click", closeInfoModal);
+  $("infoModalConfirm")?.addEventListener("click", closeInfoModal);
+
+  document.querySelectorAll(".qmark").forEach((btn) => {
+    const descId = btn.getAttribute("aria-controls");
+    const info = VIEW_FEATURE_DESCRIPTIONS[descId];
+    if (info) {
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        showInfoModal(info.title, info.desc);
+      });
+    }
+  });
+}
+
+function setupThemeToggle() {
+  const toggleBtn = $("themeToggleBtn");
+  const iconSpan = $("themeToggleIcon");
+  const labelSpan = $("themeToggleLabel");
+  if (!toggleBtn) return;
+
+  const currentTheme = localStorage.getItem("solum.theme") || "system";
+
+  function applyTheme(theme) {
+    if (theme === "dark") {
+      document.documentElement.style.colorScheme = "dark";
+      if (iconSpan) iconSpan.replaceChildren(icon("clock", 16));
+      if (labelSpan) labelSpan.textContent = "深色模式";
+    } else if (theme === "light") {
+      document.documentElement.style.colorScheme = "light";
+      if (iconSpan) iconSpan.replaceChildren(icon("bulb", 16));
+      if (labelSpan) labelSpan.textContent = "浅色模式";
+    } else {
+      document.documentElement.style.colorScheme = "light dark";
+      if (iconSpan) iconSpan.replaceChildren(icon("refresh", 16));
+      if (labelSpan) labelSpan.textContent = "跟随系统";
+    }
+    localStorage.setItem("solum.theme", theme);
+  }
+
+  applyTheme(currentTheme);
+
+  toggleBtn.addEventListener("click", () => {
+    const cur = localStorage.getItem("solum.theme") || "system";
+    const next = cur === "system" ? "dark" : cur === "dark" ? "light" : "system";
+    applyTheme(next);
+    toast("外观已切换为：" + (next === "dark" ? "深色" : next === "light" ? "浅色" : "跟随系统"), "ok");
+  });
+}
+
 function renderShellIdentity(s) {
   const loggedIn = !!s.logged_in;
-  const name = loggedIn ? s.username : "访客空间";
+  const profile = loadUserProfile();
+  const name = loggedIn ? (s.username || profile.nickname) : profile.nickname;
   const meta = loggedIn ? "已连接 · 自动同步" : "仅保存在本机";
-  const avatar = loggedIn ? String(s.username || "S").slice(0, 1).toUpperCase() : "访";
+  const avatar = loggedIn ? (profile.avatar || String(s.username || "S").slice(0, 1).toUpperCase()) : profile.avatar;
   $("accountShellLabel").textContent = name;
   $("accountShellMeta").textContent = meta;
   $("accountShellAction").textContent = loggedIn ? "管理" : "登录";
@@ -4674,6 +5014,13 @@ function renderShellIdentity(s) {
   $("mobileAccountLabel").textContent = name;
   $("mobileAccountMeta").textContent = meta;
   $("mobileAccountBtn").textContent = loggedIn ? "管理" : "登录";
+  if ($("profileSheetRole")) $("profileSheetRole").textContent = profile.role || (loggedIn ? "已认证成员" : "本地空间");
+  if ($("profileSheetBio")) $("profileSheetBio").textContent = profile.bio || "专注当下，记录生活";
+  if ($("profileSheetPlanTitle")) $("profileSheetPlanTitle").textContent = loggedIn ? "标准版权益" : "本地访客空间";
+  if ($("profileSheetPlanDesc")) $("profileSheetPlanDesc").textContent = loggedIn ? "多端加密同步已就绪" : "数据仅保存在这台设备";
+  
+  applyUserProfile(profile);
+  
   document.body.dataset.account = loggedIn ? "member" : "guest";
   document.querySelectorAll(".utility-btn[data-requires-account='true']").forEach((button) => {
     button.classList.toggle("locked", !loggedIn);
@@ -4874,7 +5221,23 @@ function setupPasswordToggles() {
     });
   });
 }
+
 setupPasswordToggles();
+applyUserProfile();
+setupProfileEditorEvents();
+setupInfoModalTriggers();
+setupThemeToggle();
+if ($("profileSheetSyncBtn")) {
+  $("profileSheetSyncBtn").appendChild(icon("refresh", 16));
+  $("profileSheetSyncBtn").addEventListener("click", () => {
+    syncManual();
+    toast("正在同步最新数据…", "sync");
+  });
+}
+if ($("profileSheetStatusIcon")) {
+  $("profileSheetStatusIcon").appendChild(icon("cloud", 20));
+}
+
 
 $("accountGatePrivacyIcon").appendChild(icon("lock", 20));
 $("accountGateClose").appendChild(icon("x", 18));
