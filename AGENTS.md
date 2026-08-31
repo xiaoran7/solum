@@ -21,3 +21,4 @@
 - 行为变化写 `docs/CHANGELOG.md`，可复用故障写 `docs/PITFALLS.md`，架构变化同步 `docs/ARCHITECTURE.md`；不要为每次会话制造流水。
 - Rust 变更通过 workspace test、clippy `-D warnings` 和 fmt check；前端交互需 mock-IPC + 可见浏览器验证，断言最终渲染而不是属性意图。
 - 只 stage 本次文件。提交/推送遵循用户当次要求和仓库规则；绝不跨仓混提，绝不自动部署。
+- **打包发版铁律**：凡执行 Android APK、桌面打包或发版编译时，必须同步递增 `versionCode` 与 `versionName`（以及 `Cargo.toml` 版本），产物带版本后缀（如 `Solum-vX.Y.Z.apk`），严禁覆盖旧版本。

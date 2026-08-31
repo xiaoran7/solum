@@ -187,6 +187,14 @@ function icon(name, size) {
   return wrap.firstChild;
 }
 
+// 品牌印记的唯一实体在 index.html 的 <defs>（#solumMark）；这里经 <use> 复用，
+// 主描边是 currentColor，跟随所在上下文的 color。
+function solumMark(size) {
+  const wrap = document.createElement("span");
+  wrap.innerHTML = `<svg class="solum-logo-svg" viewBox="0 0 256 256" width="${size}" height="${size}" aria-hidden="true"><use href="#solumMark"/></svg>`;
+  return wrap.firstChild;
+}
+
 function tag(label, kind) { return el("span", { class: "tag" + (kind ? " " + kind : ""), text: label }); }
 function st(label, dotKind) {
   return el("span", { class: "st" }, [
@@ -530,19 +538,30 @@ document.addEventListener("keydown", (e) => {
 
 /* ============================== 浮层与 Android 返回键 ============================== */
 // 宿主 WryActivity 的返回策略是 `webView.canGoBack() ? goBack() : 退出 Activity`。
-// 浮层（模态 / 抽屉 / 输入框菜单）打开时压一条 history，返回键就先关浮层而不是退出
+// history 栈从栈底到栈顶依次是：初始视图 → 视图回退栈（见「导航」一节）→ 浮层条目。
+// 浮层（确认框 / 说明与资料弹窗 / 抽屉 / 移动工具 / 可关闭账户门 / 输入框菜单）
+// 打开时压一条 history，返回键就先关浮层而不是退出
 // 整个应用——2026-07-21 真机走查：抽屉开着按返回直接回到桌面。
 // 只维护「当前有没有浮层」这一条 history，不按浮层个数计数：菜单项点开抽屉时是
 // 「关菜单 + 开抽屉」两步，若各自压/弹，`history.back()` 的 popstate 是异步的，会在
 // 抽屉开好之后才到，把刚打开的抽屉又关掉（2026-07-21 真机实测到这个竞态）。
 // 因此状态变更后只登记一次同步，放到微任务里等这一轮 DOM 改动全部落定再比对。
+// 视图条目只在无浮层时压入，所以 overlayPushed 成立时浮层条目一定在栈顶；若用户
+// 从浮层里的入口直接导航，showView 会把这个栈顶条目原位替换成目标视图。
 let overlayPushed = false;
 let overlaySyncScheduled = false;
 let closingFromPopstate = false;
+// 程序化 history.back()（浮层在 UI 上先关、再补弹栈）触发的 popstate 不是用户返回，
+// 吞掉它，避免被下面的视图回退分支再导航一次。
+let swallowNextPopstate = false;
 function anyOverlayOpen() {
   return !$("composerMenu").hidden
     || $("modalMask").classList.contains("open")
-    || $("drawer").classList.contains("open");
+    || $("drawer").classList.contains("open")
+    || !$("profileEditorModal").hidden
+    || !$("infoModal").hidden
+    || !$("mobileTools").hidden
+    || (!$("accountGate").hidden && !$("accountGateClose").hidden);
 }
 function syncOverlayHistory() {
   if (closingFromPopstate || overlaySyncScheduled) return;
@@ -556,20 +575,33 @@ function syncOverlayHistory() {
       history.pushState({ solumOverlay: 1 }, "");
     } else if (!open && overlayPushed) {
       overlayPushed = false;
+      swallowNextPopstate = true;
       history.back();
     }
   });
 }
-window.addEventListener("popstate", () => {
-  if (!overlayPushed) return; // 不是我们压的，交还给宿主（= 退出 Activity）
-  overlayPushed = false;
-  closingFromPopstate = true;
-  try {
-    if (!$("composerMenu").hidden) toggleComposerMenu(false);
-    if ($("modalMask").classList.contains("open")) closeModal();
-    if ($("drawer").classList.contains("open")) closeDrawer();
-  } finally {
-    closingFromPopstate = false;
+window.addEventListener("popstate", (event) => {
+  if (swallowNextPopstate) { swallowNextPopstate = false; return; }
+  if (overlayPushed) {
+    overlayPushed = false;
+    closingFromPopstate = true;
+    try {
+      if (!$("composerMenu").hidden) toggleComposerMenu(false);
+      if ($("modalMask").classList.contains("open")) closeModal();
+      if ($("drawer").classList.contains("open")) closeDrawer();
+      if (!$("profileEditorModal").hidden) closeProfileEditor();
+      if (!$("infoModal").hidden) closeInfoModal();
+      if (!$("mobileTools").hidden) closeMobileTools();
+      if (!$("accountGate").hidden && !$("accountGateClose").hidden) closeAccountGate();
+    } finally {
+      closingFromPopstate = false;
+    }
+    return;
+  }
+  // 视图回退栈：返回到上一个视图；栈底没有更多条目时交还宿主（= 退出 Activity）。
+  const target = event.state && event.state.solumView;
+  if (target && target !== currentView && $("view-" + target)) {
+    showView(target, { push: false });
   }
 });
 
@@ -942,12 +974,29 @@ function confirmDeleteChatSession(id) {
   }, { icon: "trash" });
 }
 
+// 消息行结构：.msg-row（角色 + 头像）承载布局，.msg 气泡承载内容。
+// 返回值是气泡本体——调用方会继续往里追加信封；气泡的 _msgRow 指向整行，
+// 需要移除整条消息（如打字指示器）时经它删除。
 function addMsg(cls, nodes, options) {
-  const div = el("div", { class: "msg " + cls }, nodes);
-  $("chatLog").appendChild(div);
+  const role = cls.indexOf("user") === 0 ? "user" : "assistant";
+  const bubble = el("div", { class: cls.indexOf("typing") >= 0 ? "msg typing" : "msg" }, nodes);
+  const avatar = el("span", { class: "msg-avatar", "aria-hidden": "true" });
+  if (role === "user") {
+    const p = loadUserProfile();
+    const palette = AVATAR_COLOR_PALETTES[p.avatarBg] || AVATAR_COLOR_PALETTES.amber;
+    avatar.textContent = p.avatar || "唐";
+    avatar.style.backgroundColor = palette.bg;
+    avatar.style.color = palette.ink;
+    avatar.style.borderColor = palette.border;
+  } else {
+    avatar.appendChild(solumMark(18));
+  }
+  const row = el("div", { class: "msg-row " + role }, [avatar, bubble]);
+  bubble._msgRow = row;
+  $("chatLog").appendChild(row);
   $("chatEmpty").style.display = "none";
   if (!options || !options.restore) requestAnimationFrame(() => { $("chatScroll").scrollTop = $("chatScroll").scrollHeight; });
-  return div;
+  return bubble;
 }
 /* ============================== 对话 Markdown（自研无依赖；块级语义逐条对齐鸿蒙 core/markdown.ets） ==============================
    HTML 永远只按普通文字处理（全走 textContent，绝不 innerHTML）；链接/图片语法
@@ -1105,7 +1154,7 @@ function onChatDelta(streamId, delta) {
   if (!s.bubble) {
     // 首个 token：把「正在输入」气泡就地转成一个会增长的真实气泡（不闪）。
     s.textSpan = el("span", { text: "" });
-    s.typing.className = "msg agent";
+    s.typing.className = "msg";
     s.typing.textContent = "";
     s.typing.appendChild(el("div", { class: "intent" }, tag(INTENT.chat, "accent")));
     s.typing.appendChild(s.textSpan);
@@ -1152,11 +1201,11 @@ async function sendChat(text, captureId = null) {
       if (r.intent === "status_answer") $("checkinBar").classList.remove("show");
       recordChatMessage("assistant", r.message, r.intent);
       recordChatTurn(text, r.message, r.intent);
-      refreshAll();
+      refreshAfterIngest();
       return true;
     }
     // 无可见流式（非闲聊意图，或被抑制的信封）：整包构建，与流式前完全一致。
-    typing.remove();
+    (typing._msgRow || typing).remove();
     const parts = [];
     parts.push(el("div", { class: "intent" },
       tag(INTENT[r.intent] || r.intent, r.intent === "dangerous_command" ? "danger" : "accent")));
@@ -1192,7 +1241,7 @@ async function sendChat(text, captureId = null) {
     if (r.intent === "status_answer") $("checkinBar").classList.remove("show");
     recordChatMessage("assistant", r.message, r.intent);
     recordChatTurn(text, r.message, r.intent);
-    refreshAll();
+    refreshAfterIngest();
     return true;
   } catch (err) {
     delete activeChatStreams[streamId];
@@ -1229,27 +1278,23 @@ $("sessionSelectMobile").addEventListener("change", (event) => switchChatSession
 $("documentUploadIcon")?.appendChild(icon("folder", 23));
 
 const EXAMPLES = [
-  ["会议", "明天下午3点在会议室和张伟开会"],
-  ["考试", "7月20号上午九点期末考试"],
-  ["截止", "下周五之前交实验报告"],
-  ["高危指令", "帮我删除所有照片"],
-  ["闲聊", "我最近总是忘记喝水，有什么办法吗"],
-  ["状态", "我在护肤"],
+  ["安排一个日程", "明天下午 3 点，在会议室和张伟开会"],
+  ["记住一个截止时间", "下周五之前交实验报告"],
+  ["整理最近的状态", "我最近总忘记喝水，帮我想个办法"],
 ];
-for (const [k, text] of EXAMPLES) {
+for (const [label, text] of EXAMPLES) {
   $("examples").appendChild(el("button", {
     class: "example", type: "button",
     onclick: () => { $("chatInput").value = text; $("chatInput").focus(); },
-  }, [tag("示例", "plain"), tag(k, k === "高危指令" ? "danger" : "plain"), el("span", { text })]));
+  }, [
+    el("span", { class: "example-seed", "aria-hidden": "true" }),
+    el("span", { class: "example-copy" }, [
+      el("strong", { text: label }),
+      el("small", { text }),
+    ]),
+    el("span", { class: "example-arrow", text: "→", "aria-hidden": "true" }),
+  ]));
 }
-const dailyBriefExample = el("button", {
-  class: "example", type: "button", onclick: () => accountLoggedIn
-    ? refreshDailyBrief()
-    : requireAccount("登录后生成包含建议与跨设备信息的今日简报"),
-}, [tag("示例", "plain"), tag("今日简报", "accent"), el("span", { text: "刷新今日简报" })]);
-dailyBriefExample.dataset.requiresAccount = "true";
-dailyBriefExample.appendChild(el("span", { class: "utility-lock", title: "登录后可用" }, icon("lock", 14)));
-$("examples").appendChild(dailyBriefExample);
 
 function dailyBriefText(brief) {
   const events = (brief.events_today || []).map((e) => `${fmtDTText(e.start)} ${e.title}`);
@@ -1799,7 +1844,14 @@ async function showWidget(widgetId) {
     // 抽屉是窄容器：返回 + 组件名占标题行，三个次要操作收进「⋯」浮窗。
     const moreWrap = el("div", { class: "dh-more" });
     let moreMenu = null;
-    const closeMore = () => { if (moreMenu) { moreMenu.remove(); moreMenu = null; moreBtn.setAttribute("aria-expanded", "false"); } };
+    let moreOutsideHandler = null;
+    const closeMore = () => {
+      if (moreOutsideHandler) {
+        document.removeEventListener("click", moreOutsideHandler);
+        moreOutsideHandler = null;
+      }
+      if (moreMenu) { moreMenu.remove(); moreMenu = null; moreBtn.setAttribute("aria-expanded", "false"); }
+    };
     const moreBtn = el("button", { class: "btn icon", type: "button", title: "更多操作", "aria-label": "更多操作", "aria-expanded": "false" }, icon("settings", 17));
     const head = el("div", { class: "drawer-detail-head" }, [
       el("button", { class: "btn icon", type: "button", title: "返回组件列表", "aria-label": "返回组件列表",
@@ -1843,8 +1895,9 @@ async function showWidget(widgetId) {
       moreMenu.addEventListener("click", (e) => { if (e.target.closest("button")) setTimeout(closeMore, 0); });
       moreWrap.appendChild(moreMenu);
       moreBtn.setAttribute("aria-expanded", "true");
+      moreOutsideHandler = (e) => { if (!e.target.closest(".dh-more")) closeMore(); };
+      document.addEventListener("click", moreOutsideHandler);
     });
-    document.addEventListener("click", (e) => { if (moreMenu && !e.target.closest(".dh-more")) closeMore(); });
     moreWrap.appendChild(moreBtn);
     box.appendChild(head);
     const statBlock = renderWidgetStats(definition, records);
@@ -2452,6 +2505,7 @@ async function addDocumentToChat(id) {
     const text = (await doc.blob.text()).trim();
     if (!text) return toast("这份文本资料没有可加入的内容", "danger");
     const excerpt = text.slice(0, 12_000);
+    closeDrawer();
     showView("chat");
     $("chatInput").value = `请基于我手动附上的资料《${doc.name}》回答：\n\n${excerpt}${text.length > excerpt.length ? "\n\n[资料过长，已截取前 12000 字符]" : ""}`;
     $("chatInput").focus();
@@ -2524,6 +2578,7 @@ function renderWidgetQuickStarts() {
   for (const [title, hint, prompt] of WIDGET_QUICK_STARTS) {
     box.appendChild(el("button", { class: "workbench-choice", type: "button", onclick: () => {
       closeDrawer();
+      showView("chat");
       $("chatInput").value = prompt;
       $("chatInput").focus();
     } }, [el("strong", { text: title }), el("span", { text: hint })]));
@@ -4322,7 +4377,7 @@ document.addEventListener("visibilitychange", () => {
 
 /* ============================== 今日面板（宽屏对话页侧栏） ============================== */
 async function refreshToday() {
-  if (!$("todayPanel").offsetParent && window.innerWidth < 1200) return; // 隐藏时不必刷新
+  if (!$("todayPanel").offsetParent && window.innerWidth < 1240) return; // 隐藏时不必刷新
   try {
     const [due, evs, sugg, allEvents] = await Promise.all([
       invoke("due", { now: nowParam() }),
@@ -4636,6 +4691,7 @@ function openAccountGate(reason, options) {
   $("accountGuestBtn").hidden = !options.allowGuest;
   $("accountGate").hidden = false;
   document.body.classList.add("account-gate-open");
+  syncOverlayHistory();
   requestAnimationFrame(() => {
     const shell = $("accountGate").querySelector(".account-gate-shell");
     if (!motionPreference.matches && shell && typeof shell.animate === "function") {
@@ -4649,9 +4705,11 @@ function openAccountGate(reason, options) {
 }
 
 function closeAccountGate() {
+  if ($("accountGate").hidden) return;
   $("accountGate").hidden = true;
   document.body.classList.remove("account-gate-open");
   $("accountGateStatus").textContent = "";
+  syncOverlayHistory();
 }
 
 function requireAccount(reason) {
@@ -4755,12 +4813,15 @@ function openProfileEditor() {
   renderColorPicker();
 
   modal.hidden = false;
+  syncOverlayHistory();
   $("profileInputName")?.focus();
 }
 
 function closeProfileEditor() {
   const modal = $("profileEditorModal");
-  if (modal) modal.hidden = true;
+  if (!modal || modal.hidden) return;
+  modal.hidden = true;
+  syncOverlayHistory();
 }
 
 function renderProfilePreview() {
@@ -4941,11 +5002,14 @@ function showInfoModal(title, text) {
     ...text.split("\n\n").map((para) => el("p", { style: "margin:0 0 10px;line-height:1.7;", text: para }))
   );
   modal.hidden = false;
+  syncOverlayHistory();
 }
 
 function closeInfoModal() {
   const modal = $("infoModal");
-  if (modal) modal.hidden = true;
+  if (!modal || modal.hidden) return;
+  modal.hidden = true;
+  syncOverlayHistory();
 }
 
 function setupInfoModalTriggers() {
@@ -6254,14 +6318,17 @@ const TOOL_ENTRIES = [
   { label: "组件", icon: "folder", requiresAccount: true, action: () => accountLoggedIn ? openDrawer("widgets") : requireAccount("登录后创建和管理个人组件") },
 ];
 function closeMobileTools() {
+  if ($("mobileTools").hidden) return;
   $("mobileTools").hidden = true;
   $("mobileToolsMask").hidden = true;
   $("mobileToolsBtn").setAttribute("aria-expanded", "false");
+  syncOverlayHistory();
 }
 function openMobileTools() {
   $("mobileTools").hidden = false;
   $("mobileToolsMask").hidden = false;
   $("mobileToolsBtn").setAttribute("aria-expanded", "true");
+  syncOverlayHistory();
   requestAnimationFrame(() => $("mobileTools").querySelector("button")?.focus());
 }
 function makeUtilityButton(entry) {
@@ -6413,37 +6480,19 @@ const dataMotionObserver = new MutationObserver((records) => {
 });
 dataMotionObserver.observe($("main"), { childList: true, subtree: true });
 
-function showView(view, options) {
-  options = options || {};
-  if (!$("view-" + view)) view = "chat";
-  if (!accountLoggedIn && !GUEST_ALLOWED_VIEWS.has(view)) {
-    requireAccount(`“${groupOfView(view).label}”中的完整能力需要登录`);
-    return false;
+/* ---- 视图切换管线 -------------------------------------------------------
+   showView 只做编排：记住滚动 → 记账 → 同步导航 chrome → 激活面板 → 压历史 →
+   恢复滚动/动画 → 派发数据刷新。每一步是可独立阅读的函数。 */
+function rememberScroll() {
+  if (!currentView) return;
+  const currentPanel = $("view-" + currentView);
+  if (currentPanel) {
+    viewScrollPositions.set(currentView, currentPanel.scrollTop);
+    uiState.scroll[currentView] = currentPanel.scrollTop;
   }
-  if (currentView && currentView !== view) {
-    const currentPanel = $("view-" + currentView);
-    if (currentPanel) {
-      viewScrollPositions.set(currentView, currentPanel.scrollTop);
-      uiState.scroll[currentView] = currentPanel.scrollTop;
-    }
-  }
-  const group = groupOfView(view);
-  navLastView[group.id] = view;
-  uiState.lastView = view;
-  uiState.navLastView = { ...navLastView };
-  saveUiState(false);
-  closeMobileTools();
-  document.querySelectorAll(".nav-btn, .tab-btn").forEach((b) => {
-    const on = b.dataset.group === group.id;
-    b.classList.toggle("active", on);
-    if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
-  });
-  document.querySelectorAll(".utility-btn[data-group]").forEach((button) => {
-    const on = button.dataset.group === group.id;
-    button.classList.toggle("active", on);
-    if (on) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
-  });
-  $("mobileToolsBtn").classList.toggle("active", UTILITY_GROUPS.includes(group));
+}
+
+function renderSubnav(group, view) {
   const sn = $("subnav");
   sn.textContent = "";
   const subEntry = group.sub && group.sub.find(([v]) => v === view);
@@ -6478,12 +6527,62 @@ function showView(view, options) {
   } else {
     $("subnavWrap").classList.add("hide");
   }
+}
+
+// 侧栏 / 底栏 / 工具入口的高亮与 aria-current，外加子导航重建。
+function syncNavChrome(group, view) {
+  document.querySelectorAll(".nav-btn, .tab-btn").forEach((b) => {
+    const on = b.dataset.group === group.id;
+    b.classList.toggle("active", on);
+    if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+  });
+  document.querySelectorAll(".utility-btn[data-group]").forEach((button) => {
+    const on = button.dataset.group === group.id;
+    button.classList.toggle("active", on);
+    if (on) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
+  });
+  $("mobileToolsBtn").classList.toggle("active", UTILITY_GROUPS.includes(group));
+  renderSubnav(group, view);
+}
+
+// 视图回退栈：启动时 replaceState 落锚（见启动一节），之后每次真实切换压一条。
+// 浮层打开期间不压视图条目，保证浮层条目始终是栈顶。
+let viewHistoryArmed = false;
+
+function showView(view, options) {
+  options = options || {};
+  if (!$("view-" + view)) view = "chat";
+  if (!accountLoggedIn && !GUEST_ALLOWED_VIEWS.has(view)) {
+    requireAccount(`“${groupOfView(view).label}”中的完整能力需要登录`);
+    return false;
+  }
+  if (currentView !== view) rememberScroll();
+  const group = groupOfView(view);
+  navLastView[group.id] = view;
+  uiState.lastView = view;
+  uiState.navLastView = { ...navLastView };
+  saveUiState(false);
+  closeMobileTools();
+  syncNavChrome(group, view);
   document.querySelectorAll("section.view").forEach((x) =>
     x.classList.toggle("active", x.id === "view-" + view));
   document.body.dataset.view = view;
   document.body.dataset.group = group.id;
   const changed = currentView !== view;
   currentView = view;
+  if (changed && options.push !== false && viewHistoryArmed) {
+    try {
+      if (overlayPushed && !anyOverlayOpen()) {
+        // 典型路径：移动工具面板里的“设置”。面板已在 DOM 中关闭，但关闭动作登记的
+        // history.back() 还没进入微任务。把浮层条目直接改成目标视图，避免 DOM 已切换、
+        // history.state 却退回旧视图；随后那次 overlay 同步会看到 overlayPushed=false。
+        overlayPushed = false;
+        history.replaceState({ solumView: view }, "");
+      } else if (!overlayPushed) {
+        history.pushState({ solumView: view }, "");
+      }
+    } catch (_) { /* file:// 等场景无 history 能力 */ }
+  }
   requestAnimationFrame(() => {
     const panel = $("view-" + view);
     if (panel && changed && options.restoreScroll !== false) panel.scrollTop = viewScrollPositions.get(view) || 0;
@@ -6492,7 +6591,9 @@ function showView(view, options) {
   if (options.refresh !== false) refreshView(view);
   if (view === "search") {
     clearTimeout(globalSearchTimer);
-    globalSearchTimer = setTimeout(runGlobalSearch, options.refresh === false ? 120 : 360);
+    // 正常进入时由 refreshView 在依赖数据完成后搜索一次；只有明确跳过视图刷新
+    // 的启动态才需要补一次延迟搜索，避免同一查询先后渲染两遍。
+    if (options.refresh === false) globalSearchTimer = setTimeout(runGlobalSearch, 120);
   }
   return true;
 }
@@ -6522,6 +6623,9 @@ const VIEW_REFRESHERS = {
 };
 let routeRefreshDepth = 0;
 let routeProgressTimer = 0;
+const viewRefreshFlights = new Map();
+let refreshAllFlight = null;
+let ingestRefreshFlight = null;
 function beginRouteRefresh(view) {
   routeRefreshDepth += 1;
   const panel = $("view-" + view);
@@ -6537,18 +6641,40 @@ function endRouteRefresh(view) {
   clearTimeout(routeProgressTimer);
   $("routeProgress").classList.remove("active");
 }
-async function refreshView(view) {
-  const refreshers = VIEW_REFRESHERS[view] || [];
-  if (!refreshers.length) return;
-  beginRouteRefresh(view);
-  try {
-    await Promise.allSettled(refreshers.map((refresh) => Promise.resolve().then(refresh)));
-    if (view === "search") runGlobalSearch();
-  } finally {
-    endRouteRefresh(view);
-  }
+function settleRefreshers(refreshers) {
+  return Promise.allSettled([...new Set(refreshers)].map((refresh) => Promise.resolve().then(refresh)));
 }
-async function refreshAll(options) {
+
+function refreshView(view) {
+  const pending = viewRefreshFlights.get(view);
+  if (pending) return pending;
+  const refreshers = VIEW_REFRESHERS[view] || [];
+  if (!refreshers.length) return Promise.resolve();
+  const request = (async () => {
+    beginRouteRefresh(view);
+    try {
+      await settleRefreshers(refreshers);
+      if (view === "search") runGlobalSearch();
+    } finally {
+      endRouteRefresh(view);
+    }
+  })().finally(() => viewRefreshFlights.delete(view));
+  viewRefreshFlights.set(view, request);
+  return request;
+}
+
+// 对话结果已经在当前气泡中落地；隐藏的日程、行为和台账会在真正进入视图时刷新。
+// 这里只更新全局提醒角标，以及宽屏当前可见的今日面板。过去 refreshAll 会连账号、
+// 邮箱、备份、隐私和设置一起重载，台账还会额外并发读取九个数据层。
+function refreshAfterIngest() {
+  if (ingestRefreshFlight) return ingestRefreshFlight;
+  const refreshers = [refreshNotifs, refreshToday];
+  ingestRefreshFlight = settleRefreshers(refreshers).finally(() => { ingestRefreshFlight = null; });
+  return ingestRefreshFlight;
+}
+
+function refreshAll(options) {
+  if (refreshAllFlight) return refreshAllFlight;
   const refreshers = [
     refreshAgenda, refreshNotifs, refreshJournal, refreshWearable, refreshSuggest,
     refreshLedger, refreshPersona, refreshRules, refreshProactivity, refreshPrivacy,
@@ -6557,16 +6683,19 @@ async function refreshAll(options) {
     refreshReminderDeliveryHealth,
   ];
   const view = currentView || "chat";
-  if (options && options.progress) beginRouteRefresh(view);
-  try {
-    const activeRefreshers = accountLoggedIn
-      ? refreshers
-      : refreshers.filter((refresh) => GUEST_ALLOWED_REFRESHERS.has(refresh));
-    await Promise.allSettled(activeRefreshers.map((refresh) => Promise.resolve().then(refresh)));
-    if (currentView === "search") runGlobalSearch();
-  } finally {
-    if (options && options.progress) endRouteRefresh(view);
-  }
+  refreshAllFlight = (async () => {
+    if (options && options.progress) beginRouteRefresh(view);
+    try {
+      const activeRefreshers = accountLoggedIn
+        ? refreshers
+        : refreshers.filter((refresh) => GUEST_ALLOWED_REFRESHERS.has(refresh));
+      await settleRefreshers(activeRefreshers);
+      if (currentView === "search") runGlobalSearch();
+    } finally {
+      if (options && options.progress) endRouteRefresh(view);
+    }
+  })().finally(() => { refreshAllFlight = null; });
+  return refreshAllFlight;
 }
 
 // 四个一级入口对应 Alt+1…4；“/”随时进入本地搜索。表单输入中不抢键。
@@ -6632,7 +6761,7 @@ if (window.__TAURI__ && window.__TAURI__.event) {
     toast(`新增 ${e.payload} 条穿戴数据`, "heart");
     refreshWearable();
   });
-  listen("solum-tick", () => { refreshNotifs(); refreshToday(); });
+  listen("solum-tick", refreshClockDrivenSurfaces);
   listen("solum-synced", (e) => {
     toast(`已从其他设备同步 ${e.payload} 条变更`, "sync");
     refreshAll();
@@ -6654,13 +6783,31 @@ initClock().then(async () => {
   const requestedView = $("view-" + uiState.lastView) ? uiState.lastView : "chat";
   const initialView = accountLoggedIn || GUEST_ALLOWED_VIEWS.has(requestedView) ? requestedView : "chat";
   showView(initialView, { refresh: false, animate: false });
+  // 视图回退栈落锚：此刻起 showView 才开始压历史（武装前压栈会把启动态重复入栈）。
+  try { history.replaceState({ solumView: initialView }, ""); } catch (_) { /* 静态预览无 history 能力 */ }
+  viewHistoryArmed = true;
   refreshNotifAccess();
-  await refreshAll({ progress: true });
+  // 首屏只读取导航角标与当前视图需要的数据。旧实现无差别启动二十多个
+  // refresher，连未打开的邮箱、备份、隐私与设置页也会渲染一遍。
+  beginRouteRefresh(initialView);
+  try {
+    await settleRefreshers([refreshNotifs, ...(VIEW_REFRESHERS[initialView] || [])]);
+  } finally {
+    endRouteRefresh(initialView);
+  }
   if (!accountLoggedIn && !guestChoiceMade() && !$("privacyGate").classList.contains("open")) {
     openAccountGate("登录完整使用 Solum，或先从本地访客空间开始", { dismissible: false, allowGuest: true });
   }
 });
-setInterval(() => { refreshNotifs(); refreshToday(); }, 30000); // 到点角标定期刷新
+let clockRefreshFlight = null;
+function refreshClockDrivenSurfaces() {
+  if (document.visibilityState === "hidden") return Promise.resolve();
+  if (clockRefreshFlight) return clockRefreshFlight;
+  clockRefreshFlight = settleRefreshers([refreshNotifs, refreshToday])
+    .finally(() => { clockRefreshFlight = null; });
+  return clockRefreshFlight;
+}
+setInterval(refreshClockDrivenSurfaces, 30000); // 到点角标定期刷新；后台页不做 DOM/IPC 工作
 window.addEventListener("pagehide", () => {
   if (currentView) {
     const panel = $("view-" + currentView);
@@ -6673,7 +6820,13 @@ window.addEventListener("pagehide", () => {
 // 宽屏今日面板在窗口跨过 1200px 断点时才首次可见——不挂 resize 就会一直是
 // 空壳直到下一个 30s 周期（2026-07-17 走查发现 4）。
 let todayResizeTimer = 0;
+let todayPanelWide = window.innerWidth >= 1240;
 window.addEventListener("resize", () => {
   clearTimeout(todayResizeTimer);
-  todayResizeTimer = setTimeout(refreshToday, 200);
+  todayResizeTimer = setTimeout(() => {
+    const nextWide = window.innerWidth >= 1240;
+    const becameVisible = nextWide && !todayPanelWide;
+    todayPanelWide = nextWide;
+    if (becameVisible) refreshToday();
+  }, 200);
 });

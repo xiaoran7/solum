@@ -3801,7 +3801,7 @@ dependencies = [
 
 [[package]]
 name = "solum-alarm"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "serde",
  "tauri",
@@ -3811,7 +3811,7 @@ dependencies = [
 
 [[package]]
 name = "solum-app"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3832,7 +3832,7 @@ dependencies = [
 
 [[package]]
 name = "solum-cli"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3843,7 +3843,7 @@ dependencies = [
 
 [[package]]
 name = "solum-core"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
@@ -3869,7 +3869,7 @@ dependencies = [
 
 [[package]]
 name = "solum-health-connect"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "serde",
  "tauri",
@@ -3879,7 +3879,7 @@ dependencies = [
 
 [[package]]
 name = "solum-notif-access"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "serde",
  "tauri",
@@ -3889,7 +3889,7 @@ dependencies = [
 
 [[package]]
 name = "solum-sync-server"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "base64 0.22.1",
  "hmac",

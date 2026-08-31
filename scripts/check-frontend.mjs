@@ -116,16 +116,63 @@ if (!js.includes('const GUEST_ALLOWED_VIEWS = new Set(["chat", "agenda", "notifs
 if (!js.includes("if (!accountLoggedIn && !GUEST_ALLOWED_VIEWS.has(view))")) {
   throw new Error("showView must guard every account-only route");
 }
+const overlayHistoryStart = js.indexOf("function anyOverlayOpen()");
+const overlayHistoryEnd = js.indexOf("function syncOverlayHistory()", overlayHistoryStart);
+const overlayHistory = js.slice(overlayHistoryStart, overlayHistoryEnd);
+for (const id of ["composerMenu", "modalMask", "drawer", "profileEditorModal", "infoModal", "mobileTools", "accountGate"]) {
+  if (!overlayHistory.includes(id)) {
+    throw new Error(`Android back-stack overlay contract is missing #${id}`);
+  }
+}
+if (!js.includes('history.replaceState({ solumView: view }, "")')) {
+  throw new Error("navigation from a closing overlay must replace its history entry with the destination view");
+}
 if (!js.includes('class: "meta capture-preview", text: preview')) {
   throw new Error("capture candidates must expose a bounded raw-text preview before adoption");
 }
 if (!/GUEST_ALLOWED_REFRESHERS[\s\S]*?refreshPrivacy[\s\S]*?refreshToday/.test(js)) {
   throw new Error("guest startup must refresh the privacy lock state");
 }
+const sendChatStart = js.indexOf("async function sendChat(");
+const sendChatEnd = js.indexOf('$("chatForm").addEventListener', sendChatStart);
+const sendChatBody = js.slice(sendChatStart, sendChatEnd);
+if (!sendChatBody.includes("refreshAfterIngest()") || sendChatBody.includes("refreshAll()")) {
+  throw new Error("chat completion must refresh only affected visible surfaces, never the whole app");
+}
+const ingestRefreshStart = js.indexOf("function refreshAfterIngest()");
+const ingestRefreshEnd = js.indexOf("function refreshAll(", ingestRefreshStart);
+const ingestRefreshBody = js.slice(ingestRefreshStart, ingestRefreshEnd);
+if (!ingestRefreshBody.includes("[refreshNotifs, refreshToday]") || /refresh(?:Ledger|Email|Backup|Account)/.test(ingestRefreshBody)) {
+  throw new Error("post-ingest refresh must not preload hidden or account surfaces");
+}
+const startupStart = js.indexOf("/* ============================== 启动");
+const startupBody = js.slice(startupStart);
+if (/await\s+refreshAll\s*\(/.test(startupBody)) {
+  throw new Error("startup must load the active view instead of refreshing every hidden view");
+}
+if (!startupBody.includes('document.visibilityState === "hidden"')) {
+  throw new Error("periodic refresh must pause while the WebView is hidden");
+}
+const accountBase = html.indexOf(".account-gate-shell {");
+const finalMobileOverride = html.lastIndexOf("@media (max-width: 899px)");
+if (accountBase < 0 || finalMobileOverride < accountBase) {
+  throw new Error("the final mobile account layout must override the desktop account grid");
+}
 const letterSpacingDeclarations = [...html.matchAll(/letter-spacing\s*:\s*([^;}{]+)/gi)];
-const nonZeroLetterSpacing = letterSpacingDeclarations.filter((match) => !/^0(?:\s*!important)?$/i.test(match[1].trim()));
-if (nonZeroLetterSpacing.length > 0) {
-  throw new Error("all Solum letter spacing declarations must be zero");
+if (/\*\s*\{[^}]*letter-spacing\s*:/is.test(html)) {
+  throw new Error("letter spacing must be assigned by typography role, never forced globally");
+}
+const unsafeLetterSpacing = letterSpacingDeclarations.filter((match) => {
+  const value = match[1].trim();
+  if (/^0(?:\s*!important)?$/i.test(value)) return false;
+  const em = /^(-?(?:\d+(?:\.\d+)?|\.\d+))em$/i.exec(value);
+  return !em || Math.abs(Number(em[1])) > 0.06;
+});
+if (unsafeLetterSpacing.length > 0) {
+  throw new Error("Solum letter spacing must use a bounded typography-role value (at most 0.06em)");
+}
+if (!/#chatEmpty h3[\s\S]*?letter-spacing:\s*-\.025em/.test(html)) {
+  throw new Error("the chat-home display heading must keep its deliberate compact tracking");
 }
 if (/font-size\s*:\s*clamp\s*\(/i.test(html)) {
   throw new Error("font size must not scale with viewport width");

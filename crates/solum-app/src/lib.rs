@@ -1180,7 +1180,12 @@ async fn open_external_url(window: tauri::WebviewWindow, url: String) -> CmdResu
                         let url_obj = jni::objects::JObject::from(jurl);
                         let args = [jni::objects::JValue::Object(&url_obj)];
                         let value = env
-                            .call_method(activity, "openExternalUrl", "(Ljava/lang/String;)Z", &args)
+                            .call_method(
+                                activity,
+                                "openExternalUrl",
+                                "(Ljava/lang/String;)Z",
+                                &args,
+                            )
                             .map_err(|e| e.to_string())?;
                         value.z().map_err(|e| e.to_string())
                     })();
