@@ -174,6 +174,13 @@ if (unsafeLetterSpacing.length > 0) {
 if (!/#chatEmpty h3[\s\S]*?letter-spacing:\s*-\.025em/.test(html)) {
   throw new Error("the chat-home display heading must keep its deliberate compact tracking");
 }
+if (!/button, a, summary, label, \[role="button"\]\s*\{[^}]*-webkit-tap-highlight-color:\s*transparent/.test(html)) {
+  throw new Error("touch controls must suppress Android WebView's rectangular tap highlight");
+}
+if (!/\.signal-button\s*\{[^}]*border-radius:\s*50%/.test(html)
+    || !/\.signal-button:active\s*\{[^}]*background:\s*var\(--accent-soft\)[^}]*transform:\s*scale\(0\.94\)/.test(html)) {
+  throw new Error("the mobile account trigger must use a circular custom pressed state");
+}
 if (/font-size\s*:\s*clamp\s*\(/i.test(html)) {
   throw new Error("font size must not scale with viewport width");
 }

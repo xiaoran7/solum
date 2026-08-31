@@ -105,6 +105,7 @@
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   html, body { height: 100%; margin: 0; }
+  button, a, summary, label, [role="button"] { -webkit-tap-highlight-color: transparent; }
   body {
     font-family: var(--font-ui);
     font-size: var(--text-ui);
@@ -1007,8 +1008,11 @@
     #mHeader .grow { flex: 1; }
     .signal-button {
       width: 40px; height: 40px; display: grid; place-items: center; padding: 0;
-      border: 0; background: transparent; cursor: pointer;
+      border: 0; border-radius: 50%; background: transparent; cursor: pointer;
+      transition: background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
     }
+    .signal-button:active { background: var(--accent-soft); transform: scale(0.94); }
+    .signal-button:focus-visible { border-radius: 50%; }
     .signal-button .identity-avatar { width: 34px; height: 34px; }
     #tabbar {
       display: flex; background: var(--bg); border-top: 1px solid var(--line);
