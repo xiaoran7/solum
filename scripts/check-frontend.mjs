@@ -120,10 +120,26 @@ if (!js.includes("if (!accountLoggedIn && !GUEST_ALLOWED_VIEWS.has(view))")) {
 const overlayHistoryStart = js.indexOf("function anyOverlayOpen()");
 const overlayHistoryEnd = js.indexOf("function syncOverlayHistory()", overlayHistoryStart);
 const overlayHistory = js.slice(overlayHistoryStart, overlayHistoryEnd);
-for (const id of ["composerMenu", "modalMask", "drawer", "profileEditorModal", "infoModal", "mobileTools", "accountGate"]) {
+for (const id of ["composerMenu", "sessionMenuMobile", "modalMask", "drawer", "profileEditorModal", "infoModal", "mobileTools", "accountGate"]) {
   if (!overlayHistory.includes(id)) {
     throw new Error(`Android back-stack overlay contract is missing #${id}`);
   }
+}
+if (html.includes('id="sessionSelectMobile"') || /<select[^>]+选择对话会话/.test(html)) {
+  throw new Error("mobile chat history must use the product-styled listbox, never the native select sheet");
+}
+for (const id of ["sessionPickerMobile", "sessionPickerMobileLabel", "sessionMenuMobile"]) {
+  if (!ids.includes(id)) throw new Error(`mobile chat session picker is missing #${id}`);
+}
+if (!js.includes("collapseUnusedChatSessions(chatSessions.sessions, chatSessions.activeId)")
+    || !js.includes("chatSessions.sessions.find(isUnusedChatSession)")) {
+  throw new Error("new-chat actions must reuse the one empty session instead of creating unlimited duplicates");
+}
+if (ids.includes("profileSheetEditAvatarBtn") || html.includes("profile-avatar-badge")) {
+  throw new Error("the removed avatar emoji/edit badge must not return; profile editing belongs to the profile action");
+}
+if (!/\.drawer-head\s*\{[\s\S]*?max\(calc\(12px \+ var\(--sat\)\), 34px\)/.test(html)) {
+  throw new Error("the mobile workbench drawer must keep its controls below the top safe area");
 }
 if (!js.includes('history.replaceState({ solumView: view }, "")')) {
   throw new Error("navigation from a closing overlay must replace its history entry with the destination view");

@@ -465,7 +465,40 @@
   .session-del { border: none; background: none; color: var(--faint); cursor: pointer; padding: 2px; border-radius: var(--r-xs); }
   .session-del:hover { color: var(--danger); }
   .chatcol { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-  .chat-session-mobile { display: none; }
+  .chat-session-mobile { display: none; position: relative; }
+  .session-picker-mobile { position: relative; flex: 1; min-width: 0; }
+  .session-picker-trigger {
+    width: 100%; min-height: 40px; display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center; gap: 10px; padding: 7px 11px 7px 13px;
+    border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg);
+    color: var(--ink); font: inherit; cursor: pointer; text-align: left;
+    box-shadow: var(--shadow-xs); transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+  }
+  .session-picker-trigger:hover, .session-picker-trigger[aria-expanded="true"] { border-color: var(--accent-line); background: var(--accent-soft); }
+  .session-picker-trigger:active { transform: scale(.99); }
+  .session-picker-trigger-copy { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .875rem; font-weight: 650; }
+  .session-picker-trigger .ic { color: var(--muted); transform: rotate(90deg); transition: transform var(--t-fast) var(--ease); }
+  .session-picker-trigger[aria-expanded="true"] .ic { transform: rotate(-90deg); }
+  .session-picker-menu {
+    position: absolute; top: calc(100% + 8px); left: 0; width: min(360px, calc(100vw - 76px));
+    z-index: calc(var(--z-sticky) + 3); max-height: min(360px, 48dvh); overflow-y: auto;
+    padding: 6px; border: 1px solid var(--line); border-radius: var(--r-lg);
+    background: var(--bg); box-shadow: var(--shadow-xl);
+    animation: sessionMenuIn var(--t-fast) var(--ease) both;
+  }
+  @keyframes sessionMenuIn { from { opacity: 0; transform: translateY(-5px); } }
+  .session-picker-option {
+    width: 100%; min-height: 52px; display: grid; grid-template-columns: 20px minmax(0, 1fr);
+    align-items: center; gap: 10px; padding: 8px 10px; border: 0; border-radius: var(--r-md);
+    background: transparent; color: var(--ink); font: inherit; cursor: pointer; text-align: left;
+  }
+  .session-picker-option:hover, .session-picker-option:focus-visible { background: var(--hover); }
+  .session-picker-option[aria-selected="true"] { background: var(--accent-soft); }
+  .session-picker-check { width: 20px; height: 20px; display: grid; place-items: center; color: var(--accent); }
+  .session-picker-option:not([aria-selected="true"]) .session-picker-check { visibility: hidden; }
+  .session-picker-option-copy { min-width: 0; display: grid; gap: 2px; }
+  .session-picker-option-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .875rem; font-weight: 650; }
+  .session-picker-option-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: .75rem; }
   #chatScroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
   .chat-inner { padding: 24px 28px 16px; display: flex; flex-direction: column; gap: 18px; flex: 1; max-width: 800px; width: 100%; margin: 0 auto; }
   #todayPanel { display: none; border-left: 1px solid var(--line); background: var(--side); padding: 16px 14px; overflow-y: auto; }
@@ -655,13 +688,8 @@
     display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px;
   }
   .profile-sheet-user { display: flex; align-items: center; gap: 14px; min-width: 0; flex: 1; }
-  .profile-sheet-avatar-wrap { position: relative; flex: 0 0 auto; }
+  .profile-sheet-avatar-wrap { flex: 0 0 auto; }
   .profile-sheet-avatar { width: 52px; height: 52px; font-size: 1.5rem; border-radius: 50%; box-shadow: var(--shadow-xs); }
-  .profile-avatar-badge {
-    position: absolute; right: -2px; bottom: -2px; width: 22px; height: 22px;
-    border-radius: 50%; background: var(--bg); border: 1px solid var(--line);
-    display: grid; place-items: center; font-size: .6875rem; cursor: pointer; box-shadow: var(--shadow-xs);
-  }
   .profile-sheet-details { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
   .profile-sheet-name-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .profile-sheet-name { font-size: 1.0625rem; font-weight: 750; color: var(--ink); }
@@ -1219,8 +1247,17 @@
     transition: transform var(--t-med) var(--ease);
   }
   #drawer.open { transform: translateX(0); }
-  .drawer-head { display: flex; align-items: center; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--line); }
-  .drawer-body { flex: 1; overflow-y: auto; padding: 20px; }
+  #drawer:focus { outline: none; }
+  .drawer-head {
+    display: flex; align-items: center; gap: 12px; padding: 20px 22px 14px;
+    background: var(--bg); border-bottom: 1px solid var(--line);
+  }
+  .drawer-head .seg { flex: 1; width: auto; }
+  .drawer-head .seg button { min-height: 36px; }
+  .drawer-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 24px 22px 36px; }
+  .drawer-pane { max-width: 620px; margin: 0 auto; }
+  .drawer-intro { max-width: 44ch; margin: 0 0 24px; }
+  .drawer-section { margin-bottom: 38px; }
   .drawer-pane { display: none; }
   .drawer-pane.active { display: block; }
 
@@ -1301,7 +1338,7 @@
       display: flex; gap: 8px; margin: 10px 24px 0; padding: 0 0 8px;
       border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent;
     }
-    .chat-session-mobile select { flex: 1; min-height: 38px; border-color: transparent; background: transparent; }
+    .session-picker-trigger { box-shadow: none; }
   }
 
   /* 移动端最终覆盖必须位于账号门基础规则之后，避免后声明的桌面双列反压移动布局。 */
@@ -1324,7 +1361,24 @@
       margin: 8px 16px 0; padding: 0 0 8px; border: 0; border-bottom: 1px solid var(--line);
       border-radius: 0; background: transparent;
     }
-    .chat-session-mobile select { min-height: 38px; border-color: transparent; background: transparent; padding-left: 0; }
+    .session-picker-trigger { min-height: 42px; box-shadow: none; }
+    #drawer { width: 100vw; border-left: 0; }
+    .drawer-head {
+      gap: 10px; padding: max(calc(12px + var(--sat)), 34px) 18px 14px;
+      border-bottom-color: color-mix(in srgb, var(--line) 72%, transparent);
+    }
+    .drawer-head .seg { flex-wrap: nowrap; width: auto; padding: 3px; }
+    .drawer-head .seg button { min-height: 36px; padding: 6px 20px; }
+    #drawerClose { width: 40px; height: 40px; }
+    .drawer-body { padding: 22px 18px calc(32px + var(--sab)); }
+    .drawer-intro { margin-bottom: 24px; font-size: .8125rem; line-height: 1.7; }
+    .drawer-section { margin-bottom: 42px; }
+    .drawer-section > h3 { margin-bottom: 14px; font-size: 1.0625rem; }
+    .doc-drop { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: start; padding: 16px; border-style: solid; }
+    .doc-drop .copy { min-width: 0; }
+    .doc-drop > .btn { grid-column: 1 / -1; justify-self: start; }
+    .workbench-choices { grid-template-columns: 1fr; gap: 8px; }
+    .workbench-choice { min-height: 60px; padding: 12px 14px; }
     .chat-inner { padding: 14px 18px 12px; }
     #chatEmpty { padding: 30px 4px 24px 24px; }
     #chatEmpty::before { top: 24px; bottom: 24px; }
@@ -1460,7 +1514,6 @@
       <div class="profile-sheet-user">
         <div class="profile-sheet-avatar-wrap">
           <span class="identity-avatar profile-sheet-avatar" id="profileSheetAvatar">访</span>
-          <button class="profile-avatar-badge" id="profileSheetEditAvatarBtn" title="修改个人资料" type="button">✏️</button>
         </div>
         <div class="profile-sheet-details">
           <div class="profile-sheet-name-row">
@@ -1524,7 +1577,13 @@
       </aside>
       <div class="chatcol">
         <div class="chat-session-mobile">
-          <select id="sessionSelectMobile" aria-label="选择对话会话"></select>
+          <div class="session-picker-mobile">
+            <button class="session-picker-trigger" id="sessionPickerMobile" type="button" aria-label="选择对话" aria-haspopup="listbox" aria-controls="sessionMenuMobile" aria-expanded="false">
+              <span class="session-picker-trigger-copy" id="sessionPickerMobileLabel">新对话</span>
+              <span id="sessionPickerMobileChevron" aria-hidden="true"></span>
+            </button>
+            <div class="session-picker-menu" id="sessionMenuMobile" role="listbox" aria-label="对话记录" hidden></div>
+          </div>
           <button class="btn icon" id="newSessionBtnMobile" type="button" title="新建对话" aria-label="新建对话"></button>
         </div>
         <div id="chatScroll">
@@ -2262,7 +2321,7 @@
 
 <!-- 工作台抽屉：资料与组件 -->
 <div id="drawerMask"></div>
-<aside id="drawer" aria-label="工作台">
+<aside id="drawer" role="dialog" aria-modal="true" aria-label="工作台" tabindex="-1">
   <div class="drawer-head">
     <div class="seg" role="tablist" aria-label="工作台面板">
       <button type="button" id="drawerTabDocuments" class="active" role="tab" aria-selected="true">资料</button>
@@ -2273,8 +2332,8 @@
   </div>
   <div class="drawer-body">
     <div class="drawer-pane active" id="pane-documents">
-      <p class="hint" style="margin:0 0 16px;">资料日常保存在本机，支持 PDF、TXT、Markdown 文档。文本文件可主动加入对话输入。</p>
-      <div class="block">
+      <p class="hint drawer-intro">资料日常保存在本机，支持 PDF、TXT、Markdown 文档。文本文件可主动加入对话输入。</p>
+      <div class="block drawer-section">
         <h3>上传文档 <span class="bnote">仅保存在当前设备</span></h3>
         <div class="doc-drop">
           <span id="documentUploadIcon"></span>
@@ -2286,13 +2345,13 @@
       </div>
     </div>
     <div class="drawer-pane" id="pane-widgets">
-      <p class="hint" style="margin:0 0 16px;">生成的本地组件在对话中预览并确认后保存；记录增删改查完全离线。</p>
-      <div class="block">
+      <p class="hint drawer-intro">生成的本地组件在对话中预览并确认后保存；记录增删改查完全离线。</p>
+      <div class="block drawer-section">
         <h3>制作组件</h3>
         <p class="hint" style="margin:0 0 12px;">选一个起点，在对话中生成组件预览。</p>
         <div class="workbench-choices" id="widgetQuickStarts"></div>
       </div>
-      <div class="block">
+      <div class="block drawer-section">
         <h3>我的组件</h3>
         <div id="widgetsBox"></div>
       </div>

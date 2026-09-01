@@ -589,6 +589,7 @@ let closingFromPopstate = false;
 let swallowNextPopstate = false;
 function anyOverlayOpen() {
   return !$("composerMenu").hidden
+    || !$("sessionMenuMobile").hidden
     || $("modalMask").classList.contains("open")
     || $("drawer").classList.contains("open")
     || !$("profileEditorModal").hidden
@@ -620,6 +621,7 @@ window.addEventListener("popstate", (event) => {
     closingFromPopstate = true;
     try {
       if (!$("composerMenu").hidden) toggleComposerMenu(false);
+      if (!$("sessionMenuMobile").hidden) toggleSessionMenu(false);
       if ($("modalMask").classList.contains("open")) closeModal();
       if ($("drawer").classList.contains("open")) closeDrawer();
       if (!$("profileEditorModal").hidden) closeProfileEditor();
@@ -756,6 +758,19 @@ function newChatSession() {
     contextTurns: [],
   };
 }
+function isUnusedChatSession(session) {
+  return Boolean(session)
+    && (!Array.isArray(session.messages) || session.messages.length === 0)
+    && (!Array.isArray(session.contextTurns) || session.contextTurns.length === 0)
+    && !String(uiState.chatDrafts?.[session.id] || "").trim();
+}
+function collapseUnusedChatSessions(sessions, preferredId) {
+  const unused = sessions.filter(isUnusedChatSession);
+  if (unused.length <= 1) return sessions;
+  const preferred = unused.find((session) => session.id === preferredId);
+  const keeper = preferred || [...unused].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))[0];
+  return sessions.filter((session) => !isUnusedChatSession(session) || session.id === keeper.id);
+}
 function loadChatSessions() {
   try {
     const raw = JSON.parse(safeLocalGet(CHAT_SESSIONS_KEY) || "null");
@@ -770,8 +785,10 @@ function loadChatSessions() {
         .filter((turn) => turn && typeof turn.user === "string" && typeof turn.assistant === "string")
         .map((turn) => ({ user: turn.user.slice(0, 4_000), assistant: turn.assistant.slice(0, 4_000) })) : [],
     })).filter((item) => item.id) : [];
-    const activeId = sessions.some((item) => item.id === raw?.activeId) ? raw.activeId : sessions[0]?.id;
-    return { sessions: sessions.length ? sessions : [newChatSession()], activeId: activeId || "" };
+    const requestedActiveId = sessions.some((item) => item.id === raw?.activeId) ? raw.activeId : sessions[0]?.id;
+    const compacted = collapseUnusedChatSessions(sessions, requestedActiveId);
+    const activeId = compacted.some((item) => item.id === requestedActiveId) ? requestedActiveId : compacted[0]?.id;
+    return { sessions: compacted.length ? compacted : [newChatSession()], activeId: activeId || "" };
   } catch (_) {
     const session = newChatSession();
     return { sessions: [session], activeId: session.id };
@@ -915,12 +932,23 @@ function renderChatSessions() {
     }, icon("trash", 15)));
     list.appendChild(row);
   }
-  const mobile = $("sessionSelectMobile");
-  mobile.textContent = "";
-  for (const session of sorted) mobile.appendChild(el("option", {
-    value: session.id, text: session.title || "新对话", selected: session.id === active.id ? "selected" : null,
-  }));
-  mobile.value = active.id;
+  $("sessionPickerMobileLabel").textContent = active.title || "新对话";
+  const mobileMenu = $("sessionMenuMobile");
+  mobileMenu.textContent = "";
+  for (const session of sorted) {
+    const selected = session.id === active.id;
+    mobileMenu.appendChild(el("button", {
+      class: "session-picker-option", type: "button", role: "option",
+      "aria-selected": String(selected),
+      onclick: () => { toggleSessionMenu(false); switchChatSession(session.id); },
+    }, [
+      el("span", { class: "session-picker-check", "aria-hidden": "true" }, icon("check", 15)),
+      el("span", { class: "session-picker-option-copy" }, [
+        el("span", { class: "session-picker-option-title", text: session.title || "新对话" }),
+        el("span", { class: "session-picker-option-meta", text: `${sessionTime(session.updatedAt)} · ${sessionPreview(session)}` }),
+      ]),
+    ]));
+  }
 }
 function renderActiveChatSession() {
   const session = activeChatSession();
@@ -965,6 +993,7 @@ async function syncChatContext() {
 }
 async function switchChatSession(id) {
   if (!chatSessions.sessions.some((session) => session.id === id)) return;
+  toggleSessionMenu(false);
   saveCurrentChatDraft(true);
   chatSessions.activeId = id;
   saveChatSessions(true);
@@ -974,9 +1003,21 @@ async function switchChatSession(id) {
   try { await syncChatContext(); } catch (e) { toast(`无法切换会话上下文：${String(e)}`, "danger"); }
 }
 async function createChatSession() {
+  const current = activeChatSession();
+  if (isUnusedChatSession(current) && !String($("chatInput")?.value || "").trim()) {
+    toggleSessionMenu(false);
+    $("chatInput").focus();
+    return;
+  }
   saveCurrentChatDraft(true);
-  const session = newChatSession();
-  chatSessions.sessions.unshift(session);
+  toggleSessionMenu(false);
+  chatSessions.sessions = collapseUnusedChatSessions(chatSessions.sessions, chatSessions.activeId);
+  let session = chatSessions.sessions.find(isUnusedChatSession);
+  if (!session) {
+    session = newChatSession();
+    chatSessions.sessions.unshift(session);
+  }
+  session.updatedAt = new Date().toISOString();
   chatSessions.sessions.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
   if (chatSessions.sessions.length > CHAT_MAX_SESSIONS) chatSessions.sessions.length = CHAT_MAX_SESSIONS;
   chatSessions.activeId = session.id;
@@ -1299,9 +1340,29 @@ $("chatInput").addEventListener("input", () => saveCurrentChatDraft(false));
 $("sendBtn").appendChild(icon("send", 17));
 $("newSessionBtn").appendChild(icon("plus", 17));
 $("newSessionBtnMobile").appendChild(icon("plus", 17));
+$("sessionPickerMobileChevron").appendChild(icon("chev", 16));
 $("newSessionBtn").addEventListener("click", createChatSession);
 $("newSessionBtnMobile").addEventListener("click", createChatSession);
-$("sessionSelectMobile").addEventListener("change", (event) => switchChatSession(event.currentTarget.value));
+function toggleSessionMenu(force) {
+  const menu = $("sessionMenuMobile");
+  const show = force != null ? force : menu.hidden;
+  if (show === !menu.hidden) return;
+  if (show) toggleComposerMenu(false);
+  menu.hidden = !show;
+  $("sessionPickerMobile").setAttribute("aria-expanded", String(show));
+  syncOverlayHistory();
+  if (show) requestAnimationFrame(() => menu.querySelector('[aria-selected="true"]')?.focus());
+}
+$("sessionPickerMobile").addEventListener("click", (event) => {
+  event.stopPropagation();
+  toggleSessionMenu();
+});
+document.addEventListener("click", (event) => {
+  if (!$("sessionMenuMobile").hidden && !event.target.closest(".session-picker-mobile")) toggleSessionMenu(false);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("sessionMenuMobile").hidden) toggleSessionMenu(false);
+});
 // 资料上传入口当前由工作台的原生文件选择器承接；旧的独立图标节点已移除。
 $("documentUploadIcon")?.appendChild(icon("folder", 23));
 
@@ -2636,7 +2697,7 @@ function openDrawer(pane) {
     $("drawerMask").classList.add("open");
     $("drawer").classList.add("open");
     syncOverlayHistory();
-    $("drawerClose").focus();
+    $("drawer").focus({ preventScroll: true });
   }
   drawerShowPane(pane);
   return true;
@@ -2660,6 +2721,7 @@ function toggleComposerMenu(force) {
   const menu = $("composerMenu");
   const show = force != null ? force : menu.hidden;
   if (show === !menu.hidden) return; // 状态没变就别动 history
+  if (show) toggleSessionMenu(false);
   menu.hidden = !show;
   $("composerPlus").setAttribute("aria-expanded", String(show));
   syncOverlayHistory();
@@ -5011,7 +5073,6 @@ async function compressAvatarFile(file) {
 
 function setupProfileEditorEvents() {
   $("profileCustomBtn")?.addEventListener("click", openProfileEditor);
-  $("profileSheetEditAvatarBtn")?.addEventListener("click", openProfileEditor);
   $("profileEditorClose")?.addEventListener("click", closeProfileEditor);
   $("profileEditorCancel")?.addEventListener("click", closeProfileEditor);
 
