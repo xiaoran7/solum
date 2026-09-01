@@ -7,6 +7,8 @@
 - 2026-08-29：Solum Center 生产完成 Tg-oauth 统一身份接入发版（`solum-release-0a497cd`）；Postgres 迁移 `auth.oauth_identities` 表；支持 `/v1/auth/oauth/config` 与 `/v1/auth/oauth/exchange` 自动开户与 E2EE 恢复码解耦。
 - 2026-08-28：全仓文档按当前 `0.2.8/1018`、local-first 边界和真实待办重构；删除重复会话流水与过期生产断言。
 
+- 2026-09-01：新增一套 4 枚系列默认用户头像方案稿（`crates/solum-app/dist/assets/avatars/`，均为 2048×2048 PNG）：嫩芽 / 台灯 / 新月 / 四芒闪光；延续品牌印记 #solumMark 的墨黑圆头粗线 + 琥珀 `#F0AA24` 芯线 + 淡紫 `#9D8BB9` 轨道 + 微粉/暖白节点语言，满版软底对齐现有 `AVATAR_COLOR_PALETTES`（emerald / amber / indigo / rose）；已通过 128px 与 40px 圆形裁剪可辨性验证。尚未接入 `app.js` 默认头像分配逻辑、未打包发版。
+
 ## [0.2.10]
 
 - 2026-09-01：移除 Android WebView 在按钮点击时绘制的方形蓝色触摸高亮；移动端账户头像改为圆形淡琥珀按压反馈，同时保留键盘 `:focus-visible` 焦点轮廓。
