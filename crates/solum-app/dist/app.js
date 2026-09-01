@@ -39,27 +39,43 @@ function invalidateIpcCache() {
   ipcCacheGeneration += 1;
   ipcCache.clear();
 }
+const ACCOUNT_EXPIRY_PATTERN = /登录已过期|认证已过期|当前账号会话已退出|旧账号会话缺少[^。]*重新登录|(?:^|\s)(?:401|unauthorized)(?:\s|$)/i;
+const ACCOUNT_EXPIRY_BYPASS = new Set([
+  "account_login", "account_register", "account_logout", "account_status_get",
+  "account_oauth_config_get", "account_oauth_login", "account_recover_login",
+]);
+function isAccountExpiryError(error) {
+  return ACCOUNT_EXPIRY_PATTERN.test(String(error || ""));
+}
+function observeAccountExpiry(command, promise) {
+  return promise.catch((error) => {
+    if (!ACCOUNT_EXPIRY_BYPASS.has(command) && isAccountExpiryError(error)) {
+      void handleAccountExpiry(error, command);
+    }
+    throw error;
+  });
+}
 function invoke(command, args) {
   const ttl = IPC_CACHE_TTL_MS.get(command);
   if (!ttl) {
-    return rawInvoke(command, args).then((value) => {
+    return observeAccountExpiry(command, rawInvoke(command, args).then((value) => {
       if (!IPC_READ_ONLY_UNCACHED.has(command)) invalidateIpcCache();
       return value;
-    });
+    }));
   }
   const key = ipcCacheKey(command, args);
   const now = performance.now();
   const cached = ipcCache.get(key);
   if (cached && now - cached.at < ttl) return Promise.resolve(cached.value);
   const pending = ipcInFlight.get(key);
-  if (pending) return pending;
+  if (pending) return observeAccountExpiry(command, pending);
   const generation = ipcCacheGeneration;
   const request = rawInvoke(command, args).then((value) => {
     if (generation === ipcCacheGeneration) ipcCache.set(key, { at: performance.now(), value });
     return value;
   }).finally(() => ipcInFlight.delete(key));
   ipcInFlight.set(key, request);
-  return request;
+  return observeAccountExpiry(command, request);
 }
 
 /* ============================== 基础工具 ============================== */
@@ -116,6 +132,19 @@ function saveUiState(immediate) {
   uiStateSaveTimer = setTimeout(flushUiState, 280);
 }
 
+function migrateMemoryListUiState() {
+  const key = `solum.memory-list-layout.v2.${localProfileId}`;
+  if (safeLocalGet(key) === "done") return;
+  const movedMemoryViews = new Set(["journal", "wearable", "review", "captures"]);
+  viewScrollPositions.set("ledger", 0);
+  uiState.scroll.ledger = 0;
+  navLastView.memory = "ledger";
+  uiState.navLastView.memory = "ledger";
+  if (movedMemoryViews.has(uiState.lastView)) uiState.lastView = "ledger";
+  saveUiState(true);
+  safeLocalSet(key, "done");
+}
+
 // el("div", { class: "x", text: "y", onclick: fn }, [children]) → DOM 节点。
 // 全部走 textContent / createElement，杜绝字符串拼 HTML 的注入面。
 function el(tag, attrs, children) {
@@ -152,6 +181,9 @@ const ICONS = {
   heart:    '<path d="M12 20.2 4.9 13a4.8 4.8 0 1 1 7.1-6.4A4.8 4.8 0 1 1 19.1 13z"/>',
   doc:      '<path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z"/><path d="M13.5 3v5.5H19M9 13.5h6M9 17h6"/>',
   folder:   '<path d="M3.5 7.5A2.5 2.5 0 0 1 6 5h4l2 2.5h6A2.5 2.5 0 0 1 20.5 10v7.5A2.5 2.5 0 0 1 18 20H6a2.5 2.5 0 0 1-2.5-2.5z"/>',
+  image:    '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="9" r="1.6"/><path d="m5.5 17 4.2-4.2 3.1 3.1 2.2-2.2 3.5 3.3"/>',
+  download: '<path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M4 20h16"/>',
+  upload:   '<path d="M12 16V4M7.5 8.5 12 4l4.5 4.5"/><path d="M4 20h16"/>',
   plus:     '<path d="M12 5v14M5 12h14"/>',
   user:     '<circle cx="12" cy="8" r="3.8"/><path d="M5.5 20.5a6.5 6.5 0 0 1 13 0"/>',
   gauge:    '<path d="M4.5 16.5a8.5 8.5 0 1 1 15 0"/><path d="m12 14 3.2-3.2"/>',
@@ -285,6 +317,7 @@ function humanSourceLabel(source) {
   if (raw.startsWith("habit:")) return "习惯建议";
   if (raw === "system_share") return "系统分享";
   if (raw === "manual") return "手动记录";
+  if (/soulous/i.test(raw)) return "Soulous";
   return "本地记录";
 }
 const STATUS = { pending: ["待触发", "hollow"], fired: ["已触发", "ok"], dismissed: ["已取消", ""] };
@@ -982,12 +1015,7 @@ function addMsg(cls, nodes, options) {
   const bubble = el("div", { class: cls.indexOf("typing") >= 0 ? "msg typing" : "msg" }, nodes);
   const avatar = el("span", { class: "msg-avatar", "aria-hidden": "true" });
   if (role === "user") {
-    const p = loadUserProfile();
-    const palette = AVATAR_COLOR_PALETTES[p.avatarBg] || AVATAR_COLOR_PALETTES.amber;
-    avatar.textContent = p.avatar || "唐";
-    avatar.style.backgroundColor = palette.bg;
-    avatar.style.color = palette.ink;
-    avatar.style.borderColor = palette.border;
+    renderAvatarElement(avatar, loadUserProfile());
   } else {
     avatar.appendChild(solumMark(18));
   }
@@ -3052,18 +3080,49 @@ function sortLedgerRows(rows) {
     (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : a.id - b.id));
 }
 
+let selectedLedgerRow = null;
+
+function filteredLedgerRows() {
+  const source = $("ledgerSourceFilter")?.value || "";
+  return source ? ledgerRowsCache.filter((row) => humanSourceLabel(row.source) === source) : ledgerRowsCache;
+}
+
+function memoryTimeLabel(value) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return fmtDTText(value);
+  return parsed.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
 function renderLedgerRows(box, rows) {
-  if (!rows.length) {
-    box.appendChild(emptyBox("memory", "记忆台账为空", "对话、事件、提醒、行为都会以可删的形式沉淀在这里。"));
+  const visibleRows = rows || filteredLedgerRows();
+  $("ledgerCount").textContent = `${visibleRows.length} 条记忆`;
+  box.textContent = "";
+  if (!visibleRows.length) {
+    box.appendChild(emptyBox("memory", "这里还没有记忆", "对话、事件、提醒和行为会逐渐沉淀在这里。"));
     return;
   }
-  box.appendChild(dataTable(["层", "#", "内容", "来源", "时间", ""],
-    rows.map(ledgerRowCells)));
+  for (const memory of visibleRows) {
+    box.appendChild(el("button", {
+      class: "memory-row",
+      type: "button",
+      "aria-label": `查看记忆：${memory.summary || "无标题"}`,
+      onclick: () => openMemoryDetail(memory),
+    }, [
+      el("span", { class: "memory-row-copy" }, [
+        el("span", { class: "memory-row-summary", text: memory.summary || "（无内容）" }),
+        el("span", { class: "memory-row-meta" }, [
+          el("span", { class: "memory-row-source", text: humanSourceLabel(memory.source) }),
+          el("time", { class: "memory-row-time", text: memoryTimeLabel(memory.created_at), datetime: memory.created_at || "" }),
+        ]),
+      ]),
+      el("span", { class: "memory-row-arrow", "aria-hidden": "true" }, icon("chev", 17)),
+    ]));
+  }
 }
 
 function appendLedgerMoreButton(box) {
   if (!ledgerMoreAvailable()) return;
-  const wrap = el("div", { style: "display:flex;justify-content:center;padding:10px 0 2px;" });
+  const wrap = el("div", { class: "memory-more" });
   wrap.appendChild(el("button", {
     class: "btn", text: "加载更多", "aria-label": "加载更多台账条目",
     onclick: () => loadMoreLedger(),
@@ -3079,8 +3138,8 @@ async function loadMoreLedger() {
     const more = await loadLedgerNextPages();
     ledgerRowsCache.push(...more);
     sortLedgerRows(ledgerRowsCache);
-    box.textContent = "";
-    renderLedgerRows(box, ledgerRowsCache);
+    updateLedgerSourceFilter();
+    renderLedgerRows(box);
     appendLedgerMoreButton(box);
   } catch (e) {
     toast(safeUserError(e, "加载更多失败，请稍后重试。"), "danger");
@@ -3089,81 +3148,76 @@ async function loadMoreLedger() {
   }
 }
 
-function ledgerRowCells(m) {
-  const ly = LAYER[m.layer] || [m.layer, ""];
-  const routine = m.layer === "routine"
-    ? ledgerPaging.routines.find((r) => r.id === m.id) : null;
-  return [
-    [tag(ly[0], ly[1])],
-    td(String(m.id), "num"),
-    [m.summary],
-    td(humanSourceLabel(m.source), "mut"),
-    [fmtDT(m.created_at)],
-    [el("span", { style: "display:flex;gap:6px;" }, [
-      // F12 可编辑：目前只有语义记忆（fact）支持就地改写——其余层是
-      // 行为/事件的忠实记录，改写等于篡改历史，只提供删除。
-      m.layer === "fact"
-        ? el("button", {
-            class: "btn icon", title: "改写这条记忆", "aria-label": "改写这条记忆",
-            onclick: () => askFactEdit(m.id, m.summary),
-          }, icon("pencil", 16))
-        : "",
-      routine
-        ? el("button", {
-            class: "btn icon", title: "编辑固定提醒", "aria-label": "编辑固定提醒",
-            onclick: () => askRoutineEdit(routine),
-          }, icon("pencil", 16))
-        : "",
-      routine
-        ? el("button", {
-            class: "btn sm", text: routine.active ? "暂停" : "启用",
-            title: routine.active ? "暂停这条固定提醒" : "重新启用这条固定提醒",
-            onclick: (event) => setRoutineActive(m.id, !routine.active, event.currentTarget),
-          })
-        : "",
-      el("button", {
-        class: "btn icon danger", title: "删除这条记忆", "aria-label": "删除这条记忆",
-        onclick: () => askForget(m.layer, m.id),
-      }, icon("trash", 16)),
-    ])],
-  ];
+function updateLedgerSourceFilter() {
+  const select = $("ledgerSourceFilter");
+  const previous = select.value;
+  const sources = [...new Set(ledgerRowsCache.map((row) => humanSourceLabel(row.source)))].sort((a, b) => a.localeCompare(b, "zh-CN"));
+  select.replaceChildren(el("option", { value: "", text: "全部来源" }));
+  for (const source of sources) select.appendChild(el("option", { value: source, text: source }));
+  if (sources.includes(previous)) select.value = previous;
+}
+
+function openMemoryDetail(memory) {
+  selectedLedgerRow = memory;
+  const type = LAYER[memory.layer] || [memory.layer || "未知类型", ""];
+  $("memoryDetailContent").textContent = memory.summary || "（无内容）";
+  $("memoryDetailSource").textContent = humanSourceLabel(memory.source);
+  $("memoryDetailTime").textContent = fmtDTText(memory.created_at) || "—";
+  $("memoryDetailType").textContent = type[0];
+  const routine = memory.layer === "routine" ? ledgerPaging.routines.find((item) => item.id === memory.id) : null;
+  $("memoryDetailEdit").hidden = memory.layer !== "fact" && !routine;
+  $("memoryDetailEdit").textContent = routine ? "编辑提醒" : "编辑内容";
+  showView("ledger-detail");
 }
 
 async function refreshLedger() {
-  const box = $("ledgerBox"), outboundBox = $("soulousOutboundLedger"), notificationBox = $("notificationLedger");
+  const box = $("ledgerBox");
   try {
-    const [routines, soulous, notificationIntelligence] = await Promise.all([
-      accountLoggedIn ? invoke("routines") : Promise.resolve([]),
-      accountLoggedIn
-        ? invoke("soulous_config_get", { now: nowParam() })
-        : Promise.resolve({ push_schedule_events: false }),
-      accountLoggedIn ? invoke("notif_intelligence_status") : Promise.resolve(null),
-    ]);
-    ledgerPaging.routines = routines;
-    const outboundEnabled = Boolean(soulous.push_schedule_events);
-    outboundBox.textContent = "";
-    outboundBox.appendChild(el("div", { class: "statusline", title: outboundEnabled
-        ? "范围仅限标题、类型、时间和地点；可在 设置 → 云端 立即关闭。"
-        : "日程、任务、场景、健康和记忆均未获授权出站。" }, [
-      el("span", { class: "sdot" + (outboundEnabled ? " ok" : "") }),
-      el("span", { class: "t", text: outboundEnabled
-        ? "正在流向 Soulous：息壤 日程事件（逐次确认）"
-        : "没有 息壤 数据正在流向 Soulous" }),
-    ]));
-    if (accountLoggedIn) {
-      renderNotificationLedger(notificationBox, notificationIntelligence);
-    } else if (notificationBox) {
-      notificationBox.textContent = "";
-      notificationBox.appendChild(emptyBox("lock", "登录后查看通知智能记录", "访客的本地记忆台账仍可正常查看和编辑。"));
-    }
-    box.textContent = "";
+    ledgerPaging.routines = accountLoggedIn ? await invoke("routines") : [];
+    $("ledgerCount").textContent = "正在读取…";
 
     // 首屏：每层各一页合并显示；之后"加载更多"逐层续拉。
     ledgerRowsCache = await loadLedgerFirstPage();
-    renderLedgerRows(box, ledgerRowsCache);
+    updateLedgerSourceFilter();
+    renderLedgerRows(box);
     appendLedgerMoreButton(box);
-  } catch (e) { box.textContent = ""; box.appendChild(emptyBox("alert", safeUserError(e, "内容暂时无法读取，请稍后重试。"))); }
+  } catch (e) {
+    box.textContent = "";
+    $("ledgerCount").textContent = "读取失败";
+    box.appendChild(emptyBox("alert", "记忆暂时无法读取", safeUserError(e, "请稍后重试。")));
+  }
 }
+
+async function refreshCaptures() {
+  const box = $("notificationLedger");
+  if (!accountLoggedIn) {
+    box.replaceChildren(emptyBox("lock", "登录后查看通知回看", "访客的本地记忆仍可正常查看。"));
+    return;
+  }
+  try {
+    renderNotificationLedger(box, await invoke("notif_intelligence_status"));
+  } catch (error) {
+    box.replaceChildren(emptyBox("alert", "通知回看暂时无法读取", safeUserError(error, "请稍后重试。")));
+  }
+}
+$("ledgerSourceFilter").addEventListener("change", () => {
+  renderLedgerRows($("ledgerBox"));
+  appendLedgerMoreButton($("ledgerBox"));
+});
+$("memoryDetailBackIcon").appendChild(icon("back", 16));
+$("memoryDetailBack").addEventListener("click", () => showView("ledger", { refresh: false }));
+$("memoryDetailEdit").addEventListener("click", () => {
+  if (!selectedLedgerRow) return;
+  if (selectedLedgerRow.layer === "fact") {
+    askFactEdit(selectedLedgerRow.id, selectedLedgerRow.summary);
+    return;
+  }
+  const routine = ledgerPaging.routines.find((item) => item.id === selectedLedgerRow.id);
+  if (routine) askRoutineEdit(routine);
+});
+$("memoryDetailDelete").addEventListener("click", () => {
+  if (selectedLedgerRow) askForget(selectedLedgerRow.layer, selectedLedgerRow.id);
+});
 async function askSoulousEventPush(id) {
   try {
     const p = await invoke("guard_request", {
@@ -3177,7 +3231,7 @@ async function setRoutineActive(id, active, button) {
   try {
     await invoke("routine_set_active", { id, active, now: nowParam() });
     toast(active ? "固定提醒已启用" : "固定提醒已暂停", "ok");
-    refreshAll();
+    refreshLedger();
   } catch (e) {
     button.disabled = false;
     toast(String(e), "danger");
@@ -3205,7 +3259,11 @@ function askRoutineEdit(routine) {
           id: routine.id, title: title.value, time_of_day: time.value, now: nowParam(),
         });
         toast("固定提醒已更新", "ok");
-        refreshAll();
+        if (selectedLedgerRow?.layer === "routine" && selectedLedgerRow.id === routine.id) {
+          selectedLedgerRow.summary = title.value;
+          $("memoryDetailContent").textContent = title.value;
+        }
+        refreshLedger();
       } catch (e) { toast(String(e), "danger"); }
     },
     { okStyle: "primary" });
@@ -3224,6 +3282,10 @@ function askFactEdit(id, current) {
       try {
         await invoke("fact_update", { id, content: input.value });
         toast("已改写这条记忆", "ok");
+        if (selectedLedgerRow?.layer === "fact" && selectedLedgerRow.id === id) {
+          selectedLedgerRow.summary = input.value;
+          $("memoryDetailContent").textContent = input.value;
+        }
         refreshLedger();
       } catch (e) { toast(String(e), "danger"); }
     },
@@ -3269,6 +3331,15 @@ $("importFile").addEventListener("change", async (event) => {
     }, { icon: "shield" });
   } catch (error) { toast(String(error), "danger"); }
 });
+$("exportDataIcon").appendChild(icon("download", 19));
+$("importDataIcon").appendChild(icon("upload", 19));
+$("backupDataIcon").appendChild(icon("lock", 19));
+$("exportDataChev").appendChild(icon("chev", 16));
+$("importDataChev").appendChild(icon("chev", 16));
+$("backupDataChev").appendChild(icon("chev", 16));
+$("openBackupCenterBtn").addEventListener("click", () => {
+  if (requireAccount("登录后使用加密云备份")) showView("backup");
+});
 function askForget(layer, id) {
   // 后果预览改由后端生成：它能说出级联真正会带走多少条日程/提醒，
   // 而前端此前只能给一句笼统的「会级联删除」。
@@ -3277,7 +3348,11 @@ function askForget(layer, id) {
     args: { layer, id },
     title: "人工确认：删除这条记忆",
     note: "确认后签发一次性令牌，绑定这一条记忆；删除后不可通过对话恢复。",
-    onDone: async () => { refreshAll(); },
+    onDone: async () => {
+      selectedLedgerRow = null;
+      showView("ledger", { refresh: false });
+      await refreshLedger();
+    },
   });
 }
 
@@ -4659,7 +4734,8 @@ let accountFormSeeded = false; // 同 llm 表单：只首次 seed，refreshAll �
 let accountGateMode = "login";
 let accountAuthSubmitting = false;
 const GUEST_CHOICE_KEY = "solum.guest-choice.v1";
-const GUEST_ALLOWED_VIEWS = new Set(["chat", "agenda", "notifs", "ledger", "journal", "search", "settings", "privacy", "capture"]);
+const AUTH_EXPIRED_REDIRECT_KEY = "solum.auth-expired-redirect.v1";
+const GUEST_ALLOWED_VIEWS = new Set(["chat", "agenda", "notifs", "ledger", "ledger-detail", "journal", "search", "settings", "privacy", "capture", "data"]);
 const GUEST_ALLOWED_REFRESHERS = new Set([
   refreshAgenda, refreshNotifs, refreshJournal, refreshLedger, refreshPrivacy, refreshToday,
   refreshReminderDeliveryHealth,
@@ -4667,6 +4743,33 @@ const GUEST_ALLOWED_REFRESHERS = new Set([
 
 function guestChoiceMade() {
   try { return localStorage.getItem(GUEST_CHOICE_KEY) === "guest"; } catch (_) { return false; }
+}
+
+function takeAuthExpiredRedirect() {
+  try {
+    const pending = localStorage.getItem(AUTH_EXPIRED_REDIRECT_KEY) === "1";
+    localStorage.removeItem(AUTH_EXPIRED_REDIRECT_KEY);
+    return pending;
+  } catch (_) { return false; }
+}
+
+let accountExpiryFlight = null;
+function handleAccountExpiry(error, command) {
+  if (accountExpiryFlight || !accountLoggedIn) return accountExpiryFlight || Promise.resolve();
+  accountLoggedIn = false;
+  invalidateIpcCache();
+  safeLocalSet(AUTH_EXPIRED_REDIRECT_KEY, "1");
+  try { localStorage.removeItem(GUEST_CHOICE_KEY); } catch (_) { /* login gate still opens immediately */ }
+  renderShellIdentity({ logged_in: false });
+  setAccountGateMode("login");
+  closeMobileTools();
+  openAccountGate("登录状态已过期，请重新登录", { dismissible: false, allowGuest: true });
+  $("accountGateStatus").textContent = "登录状态已失效，请重新登录。";
+  console.info("Solum account session expired", command, String(error || ""));
+  accountExpiryFlight = rawInvoke("account_logout")
+    .catch(() => null)
+    .finally(() => { accountExpiryFlight = null; });
+  return accountExpiryFlight;
 }
 
 function setAccountGateMode(mode) {
@@ -4724,45 +4827,73 @@ function requireAccount(reason) {
    Solum Profile Customization & Feature Info System
    ========================================================================= */
 const PROFILE_STORAGE_KEY = "solum.user-profile.v1";
+const DEFAULT_AVATAR_SRC = "assets/avatars/default-sprout.png";
+const MAX_AVATAR_INPUT_BYTES = 12 * 1024 * 1024;
+const MAX_AVATAR_STORED_BYTES = 220 * 1024;
 const DEFAULT_USER_PROFILE = {
   nickname: "唐棠",
   role: "本地空间",
   bio: "专注当下，记录生活",
-  avatar: "唐",
-  avatarBg: "amber",
+  avatarData: "",
 };
-const AVATAR_COLOR_PALETTES = {
-  amber:   { bg: "var(--accent-soft)", ink: "var(--accent)", border: "var(--accent-line)", swatch: "#f0a824" },
-  emerald: { bg: "#dcfce7",            ink: "#16a34a",       border: "#86efac",            swatch: "#22c55e" },
-  indigo:  { bg: "#e0e7ff",            ink: "#4338ca",       border: "#a5b4fc",            swatch: "#6366f1" },
-  rose:    { bg: "#ffe4e6",            ink: "#e11d48",       border: "#fda4af",            swatch: "#f43f5e" },
-  violet:  { bg: "#ede9fe",            ink: "#7c3aed",       border: "#c4b5fd",            swatch: "#8b5cf6" },
-  cyan:    { bg: "#cffafe",            ink: "#0891b2",       border: "#67e8f9",            swatch: "#06b6d4" },
-  slate:   { bg: "#f1f5f9",            ink: "#334155",       border: "#cbd5e1",            swatch: "#64748b" },
-};
-const EMOJI_OPTIONS = ["🌱", "✨", "🚀", "🐱", "☕", "🦊", "🌸", "⚡", "💎", "🎨", "🌿", "🦉", "🪐", "🎯"];
+
+function normalizeAvatarData(value) {
+  if (typeof value !== "string" || !/^data:image\/(?:png|jpeg|webp);base64,/i.test(value)) return "";
+  const encoded = value.slice(value.indexOf(",") + 1);
+  const estimatedBytes = Math.ceil(encoded.length * 3 / 4);
+  return estimatedBytes <= MAX_AVATAR_STORED_BYTES ? value : "";
+}
+
+function normalizeUserProfile(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    nickname: String(source.nickname || DEFAULT_USER_PROFILE.nickname).trim().slice(0, 24) || DEFAULT_USER_PROFILE.nickname,
+    role: String(source.role || DEFAULT_USER_PROFILE.role).trim().slice(0, 36) || DEFAULT_USER_PROFILE.role,
+    bio: String(source.bio || DEFAULT_USER_PROFILE.bio).trim().slice(0, 100) || DEFAULT_USER_PROFILE.bio,
+    avatarData: normalizeAvatarData(source.avatarData),
+  };
+}
 
 function loadUserProfile() {
   try {
     const raw = localStorage.getItem(PROFILE_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return { ...DEFAULT_USER_PROFILE, ...parsed };
+      return normalizeUserProfile(parsed);
     }
   } catch (_) { }
   return { ...DEFAULT_USER_PROFILE };
 }
 
 function saveUserProfile(profile) {
+  const normalized = normalizeUserProfile(profile);
   try {
-    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
-  } catch (_) { }
-  applyUserProfile(profile);
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(normalized));
+  } catch (_) {
+    toast("头像保存失败，请换一张更小的图片重试", "danger");
+    return false;
+  }
+  applyUserProfile(normalized);
+  return true;
+}
+
+function renderAvatarElement(target, profile) {
+  if (!target) return;
+  const p = normalizeUserProfile(profile);
+  const img = el("img", {
+    src: p.avatarData || DEFAULT_AVATAR_SRC,
+    alt: "",
+    draggable: "false",
+  });
+  if (p.avatarData) img.addEventListener("error", () => { img.src = DEFAULT_AVATAR_SRC; }, { once: true });
+  target.replaceChildren(img);
+  target.style.removeProperty("background-color");
+  target.style.removeProperty("color");
+  target.style.removeProperty("border-color");
 }
 
 function applyUserProfile(profile) {
-  const p = profile || loadUserProfile();
-  const palette = AVATAR_COLOR_PALETTES[p.avatarBg] || AVATAR_COLOR_PALETTES.amber;
+  const p = normalizeUserProfile(profile || loadUserProfile());
 
   const avatars = [
     $("accountShellAvatar"),
@@ -4770,12 +4901,7 @@ function applyUserProfile(profile) {
     $("profileSheetAvatar"),
   ].filter(Boolean);
 
-  avatars.forEach((el) => {
-    el.textContent = p.avatar || "唐";
-    el.style.backgroundColor = palette.bg;
-    el.style.color = palette.ink;
-    el.style.borderColor = palette.border;
-  });
+  avatars.forEach((avatar) => renderAvatarElement(avatar, p));
 
   if ($("profileSheetRole")) $("profileSheetRole").textContent = p.role || "本地空间";
   if ($("profileSheetBio")) $("profileSheetBio").textContent = p.bio || "专注当下，记录生活";
@@ -4786,10 +4912,7 @@ function applyUserProfile(profile) {
   }
 
   document.querySelectorAll(".msg-row.user .msg-avatar").forEach((el) => {
-    el.textContent = p.avatar || "唐";
-    el.style.backgroundColor = palette.bg;
-    el.style.color = palette.ink;
-    el.style.borderColor = palette.border;
+    renderAvatarElement(el, p);
   });
 }
 
@@ -4806,11 +4929,8 @@ function openProfileEditor() {
   if ($("profileInputName")) $("profileInputName").value = current.nickname || "";
   if ($("profileInputRole")) $("profileInputRole").value = current.role || "";
   if ($("profileInputBio")) $("profileInputBio").value = current.bio || "";
-  if ($("profileInputChar")) $("profileInputChar").value = "";
 
   renderProfilePreview();
-  renderEmojiPicker();
-  renderColorPicker();
 
   modal.hidden = false;
   syncOverlayHistory();
@@ -4827,57 +4947,66 @@ function closeProfileEditor() {
 function renderProfilePreview() {
   if (!editingProfileDraft) return;
   const p = editingProfileDraft;
-  const palette = AVATAR_COLOR_PALETTES[p.avatarBg] || AVATAR_COLOR_PALETTES.amber;
-
-  const previewAvatar = $("profilePreviewAvatar");
-  if (previewAvatar) {
-    previewAvatar.textContent = p.avatar || "唐";
-    previewAvatar.style.backgroundColor = palette.bg;
-    previewAvatar.style.color = palette.ink;
-    previewAvatar.style.borderColor = palette.border;
-  }
+  renderAvatarElement($("profilePreviewAvatar"), p);
   if ($("profilePreviewName")) $("profilePreviewName").textContent = p.nickname || "唐棠";
   if ($("profilePreviewRole")) $("profilePreviewRole").textContent = p.role || "本地空间";
   if ($("profilePreviewBio")) $("profilePreviewBio").textContent = p.bio || "专注当下，记录生活";
 }
 
-function renderEmojiPicker() {
-  const box = $("avatarEmojiPicker");
-  if (!box) return;
-  box.textContent = "";
-  for (const emoji of EMOJI_OPTIONS) {
-    const btn = el("button", {
-      class: "avatar-emoji-btn" + (editingProfileDraft.avatar === emoji ? " selected" : ""),
-      type: "button",
-      text: emoji,
-      onclick: () => {
-        editingProfileDraft.avatar = emoji;
-        renderProfilePreview();
-        renderEmojiPicker();
-      },
-    });
-    box.appendChild(btn);
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("图片读取失败"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function canvasToBlob(canvas, quality) {
+  return new Promise((resolve) => canvas.toBlob(resolve, "image/webp", quality));
+}
+
+async function decodeAvatarFile(file) {
+  if (typeof createImageBitmap === "function") return createImageBitmap(file);
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.decoding = "async";
+    image.src = url;
+    await image.decode();
+    return image;
+  } finally {
+    URL.revokeObjectURL(url);
   }
 }
 
-function renderColorPicker() {
-  const box = $("avatarColorPicker");
-  if (!box) return;
-  box.textContent = "";
-  for (const [key, val] of Object.entries(AVATAR_COLOR_PALETTES)) {
-    const swatch = el("button", {
-      class: "avatar-color-swatch" + (editingProfileDraft.avatarBg === key ? " selected" : ""),
-      type: "button",
-      title: key,
-      style: "background-color: " + val.swatch + ";",
-      onclick: () => {
-        editingProfileDraft.avatarBg = key;
-        renderProfilePreview();
-        renderColorPicker();
-      },
-    });
-    box.appendChild(swatch);
+async function compressAvatarFile(file) {
+  if (!file || !/^image\/(?:png|jpeg|webp)$/i.test(file.type)) throw new Error("请选择 PNG、JPG 或 WebP 图片");
+  if (file.size > MAX_AVATAR_INPUT_BYTES) throw new Error("原图不能超过 12 MB");
+  const source = await decodeAvatarFile(file);
+  const side = Math.min(source.width, source.height);
+  if (!side) throw new Error("无法识别这张图片");
+  let outputSize = 320;
+  let quality = 0.84;
+  let blob = null;
+  while (outputSize >= 224) {
+    const canvas = document.createElement("canvas");
+    canvas.width = outputSize;
+    canvas.height = outputSize;
+    const context = canvas.getContext("2d", { alpha: false });
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, outputSize, outputSize);
+    const sx = Math.max(0, (source.width - side) / 2);
+    const sy = Math.max(0, (source.height - side) / 2);
+    context.drawImage(source, sx, sy, side, side, 0, 0, outputSize, outputSize);
+    blob = await canvasToBlob(canvas, quality);
+    if (blob && blob.size <= MAX_AVATAR_STORED_BYTES) break;
+    quality -= 0.12;
+    if (quality < 0.46) { outputSize -= 48; quality = 0.76; }
   }
+  if (typeof source.close === "function") source.close();
+  if (!blob || blob.size > MAX_AVATAR_STORED_BYTES) throw new Error("图片压缩后仍过大，请换一张图片");
+  return blobToDataUrl(blob);
 }
 
 function setupProfileEditorEvents() {
@@ -4902,18 +5031,33 @@ function setupProfileEditorEvents() {
     renderProfilePreview();
   });
 
-  $("profileApplyCharBtn")?.addEventListener("click", () => {
-    const char = $("profileInputChar")?.value.trim();
-    if (char && editingProfileDraft) {
-      editingProfileDraft.avatar = char.slice(0, 2);
+  $("profileChooseAvatarBtn")?.addEventListener("click", () => $("profileAvatarFile")?.click());
+  $("profileAvatarFile")?.addEventListener("change", async (event) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file || !editingProfileDraft) return;
+    const button = $("profileChooseAvatarBtn");
+    button.disabled = true;
+    try {
+      editingProfileDraft.avatarData = await compressAvatarFile(file);
       renderProfilePreview();
-      renderEmojiPicker();
+      toast("头像已裁切并压缩，保存后生效", "ok");
+    } catch (error) {
+      toast(String(error), "danger");
+    } finally {
+      button.disabled = false;
     }
+  });
+  $("profileDeleteAvatarBtn")?.addEventListener("click", () => {
+    if (!editingProfileDraft) return;
+    editingProfileDraft.avatarData = "";
+    renderProfilePreview();
+    toast("已恢复嫩芽默认头像", "ok");
   });
 
   $("profileEditorSave")?.addEventListener("click", () => {
     if (!editingProfileDraft) return;
-    saveUserProfile(editingProfileDraft);
+    if (!saveUserProfile(editingProfileDraft)) return;
     closeProfileEditor();
     toast("个人资料已更新", "ok");
   });
@@ -5069,12 +5213,9 @@ function renderShellIdentity(s) {
   const profile = loadUserProfile();
   const name = loggedIn ? (s.username || profile.nickname) : profile.nickname;
   const meta = loggedIn ? "已连接 · 自动同步" : "仅保存在本机";
-  const avatar = loggedIn ? (profile.avatar || String(s.username || "S").slice(0, 1).toUpperCase()) : profile.avatar;
   $("accountShellLabel").textContent = name;
   $("accountShellMeta").textContent = meta;
   $("accountShellAction").textContent = loggedIn ? "管理" : "登录";
-  $("accountShellAvatar").textContent = avatar;
-  $("accountShellAvatarM").textContent = avatar;
   $("mobileAccountLabel").textContent = name;
   $("mobileAccountMeta").textContent = meta;
   $("mobileAccountBtn").textContent = loggedIn ? "管理" : "登录";
@@ -5153,6 +5294,10 @@ async function refreshAccount() {
   let s;
   try { s = await invoke("account_status_get"); } catch (_) { return; }
   accountLoggedIn = !!s.logged_in;
+  if (accountLoggedIn && isAccountExpiryError(s.state_error)) {
+    await handleAccountExpiry(s.state_error, "account_status_get");
+    return;
+  }
   renderShellIdentity(s);
   renderAccountStatus(s);
   $("accountLoginForm").hidden = accountLoggedIn;
@@ -6250,7 +6395,7 @@ renderSearchQuick();
 // 邮箱、设置和工作台属于低频工具，不与用户每天往返的四个根入口争夺位置。
 const PRIMARY_GROUPS = [
   { id: "today",  label: "今天", icon: "home",     views: [["chat", "今天"]] },
-  { id: "memory", label: "记忆", icon: "memory",   views: [["ledger", "台账"], ["journal", "行为"], ["wearable", "健康趋势"], ["review", "复盘"], ["captures", "通知"]] },
+  { id: "memory", label: "记忆", icon: "memory",   views: [["ledger", "记忆"], ["ledger-detail", "详情"]], navViews: [["ledger", "记忆"]] },
   { id: "plan",   label: "计划", icon: "calendar", views: [["agenda", "日程"], ["notifs", "提醒"], ["suggest", "建议"]] },
   { id: "search", label: "搜索", icon: "search",   views: [["search", "搜索"]] },
 ];
@@ -6261,6 +6406,11 @@ const SETTINGS_GROUP = {
       ["proactivity", "主动度",     "gauge",  "每个能力域独立调档；高危确认不受档位影响"],
       ["privacy",     "隐私",       "lock",   "通知上云开关、通知智能管线与完整隐私政策"],
       ["capture",     "数据入口",   "inbox",  "各采集通道的真实状态与待确认区"],
+      ["captures",    "通知回看",   "bell",   "查看通知提炼结果、过滤记录与待确认动作"],
+      ["journal",     "行为足迹",   "memory", "回顾互动、状态记录与生活轨迹"],
+      ["wearable",    "健康趋势",   "gauge",  "查看本地健康传感器的阶段趋势"],
+      ["review",      "复盘简报",   "doc",    "按时间范围生成阶段性回顾"],
+      ["data",        "数据与备份", "folder", "本地导出、合并恢复与加密云备份"],
       ["sync",        "同步",       "refresh", "多设备账户与同步状态"],
       ["backup",      "备份与恢复", "lock",   "手动加密封缄、版本历史与恢复接管"],
       ["cloud",       "云端接入",   "cloud",  "LLM 端点配置与 Soulous 互通"],
@@ -6285,6 +6435,7 @@ function groupOfView(view) {
 }
 // 设置目录页（多级导航一级页）：图标 + 名称 + 一句说明 + 右箭头
 for (const [v, label, ic, desc] of SETTINGS_GROUP.sub) {
+  if (v === "backup") continue;
   const guestAllowed = GUEST_ALLOWED_VIEWS.has(v);
   $("settingsMenu").appendChild(el("button", {
     class: "nav-menu-item" + (guestAllowed ? "" : " locked-entry"),
@@ -6453,9 +6604,9 @@ const dataMotionObserver = new MutationObserver((records) => {
     for (const node of record.addedNodes) {
       if (!(node instanceof HTMLElement)) continue;
       if (node.closest("#chatLog") || node.matches("#chatLog, .msg, .msg *")) continue;
-      const candidates = node.matches(".row,.ev-row,.notif-row,.mail-row,.gc-card,.search-result,.search-quick,.empty,.statusline")
+      const candidates = node.matches(".row,.ev-row,.notif-row,.mail-row,.gc-card,.search-result,.search-quick,.memory-row,.empty,.statusline")
         ? [node]
-        : Array.from(node.querySelectorAll(".row,.ev-row,.notif-row,.mail-row,.gc-card,.search-result,.search-quick,.empty,.statusline"));
+        : Array.from(node.querySelectorAll(".row,.ev-row,.notif-row,.mail-row,.gc-card,.search-result,.search-quick,.memory-row,.empty,.statusline"));
       for (const candidate of candidates) {
         if (motionSeen.has(candidate) || !candidate.closest("section.view.active")) continue;
         motionSeen.add(candidate);
@@ -6505,10 +6656,10 @@ function renderSubnav(group, view) {
     ]));
     sn.appendChild(el("span", { class: "crumb-sep", text: "/" }));
     sn.appendChild(el("span", { class: "crumb-cur", text: subEntry[1] }));
-  } else if (group.views.length > 1) {
+  } else if ((group.navViews || group.views).length > 1) {
     sn.classList.add("seg"); sn.classList.remove("crumb");
     $("subnavWrap").classList.remove("hide");
-    for (const [v, label] of group.views) {
+    for (const [v, label] of (group.navViews || group.views)) {
       const panel = $("view-" + v);
       const lockedForGuest = !accountLoggedIn && !GUEST_ALLOWED_VIEWS.has(v);
       if (panel) {
@@ -6558,8 +6709,9 @@ function showView(view, options) {
   }
   if (currentView !== view) rememberScroll();
   const group = groupOfView(view);
-  navLastView[group.id] = view;
-  uiState.lastView = view;
+  const rememberedView = view === "ledger-detail" ? "ledger" : view;
+  navLastView[group.id] = rememberedView;
+  uiState.lastView = rememberedView;
   uiState.navLastView = { ...navLastView };
   saveUiState(false);
   closeMobileTools();
@@ -6607,7 +6759,9 @@ const VIEW_REFRESHERS = {
   wearable: [refreshWearable],
   review: [],
   ledger: [refreshLedger],
-  captures: [refreshLedger],
+  "ledger-detail": [],
+  captures: [refreshCaptures],
+  data: [],
   search: [refreshAgenda, refreshLedger, refreshJournal],
   settings: [refreshReminderDeliveryHealth],
   persona: [refreshPersona],
@@ -6775,7 +6929,9 @@ const privacyGateReady = initPrivacyGate();
 // 启动时会短暂渲染 guest 的聊天记录，而且 pagehide 还可能把错误分区写回。
 initClock().then(async () => {
   await privacyGateReady;
+  migrateMemoryListUiState();
   await refreshAccount();
+  const authExpiredRedirect = takeAuthExpiredRedirect();
   renderChatSessions();
   renderActiveChatSession();
   restoreCurrentChatDraft();
@@ -6795,8 +6951,14 @@ initClock().then(async () => {
   } finally {
     endRouteRefresh(initialView);
   }
-  if (!accountLoggedIn && !guestChoiceMade() && !$("privacyGate").classList.contains("open")) {
-    openAccountGate("登录完整使用 Solum，或先从本地访客空间开始", { dismissible: false, allowGuest: true });
+  if (!accountLoggedIn && !$("privacyGate").classList.contains("open")) {
+    if (authExpiredRedirect) {
+      setAccountGateMode("login");
+      openAccountGate("登录状态已过期，请重新登录", { dismissible: false, allowGuest: true });
+      $("accountGateStatus").textContent = "原会话已安全退出。";
+    } else if (!guestChoiceMade()) {
+      openAccountGate("登录完整使用 Solum，或先从本地访客空间开始", { dismissible: false, allowGuest: true });
+    }
   }
 });
 let clockRefreshFlight = null;

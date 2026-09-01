@@ -609,37 +609,17 @@
   .info-modal-body { padding: 20px 22px; line-height: 1.7; font-size: .9375rem; color: var(--ink-2); overflow-y: auto; }
   .profile-editor-body { padding: 20px 22px; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
 
-  .profile-preview-card {
-    display: flex; align-items: center; gap: 14px; padding: 14px 18px;
-    background: var(--inset); border: 1px solid var(--line); border-radius: var(--r-lg);
-  }
+  .profile-avatar-editor { display: grid; justify-items: center; gap: 12px; padding: 4px 0 8px; }
   .profile-preview-avatar {
-    width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center;
-    font-size: 1.5rem; font-weight: 750; background: var(--accent-soft); color: var(--ink);
-    border: 1px solid var(--accent-line); flex: 0 0 auto;
+    width: 96px; height: 96px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--inset); border: 1px solid var(--line-strong); overflow: hidden;
   }
-  .profile-preview-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .profile-preview-info strong { font-size: 1.0625rem; font-weight: 700; }
-  .profile-preview-info small { font-size: .75rem; color: var(--accent); font-weight: 650; }
-  .profile-preview-info p { margin: 2px 0 0; font-size: .8125rem; color: var(--muted); }
-
-  .avatar-emoji-picker { display: flex; flex-wrap: wrap; gap: 8px; }
-  .avatar-emoji-btn {
-    width: 38px; height: 38px; border-radius: var(--r-sm); border: 1px solid var(--line);
-    background: var(--bg); font-size: 1.1875rem; display: grid; place-items: center;
-    cursor: pointer; transition: all var(--t-fast) var(--ease);
+  .profile-avatar-actions { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; }
+  .profile-avatar-note { margin: 0; max-width: 32ch; color: var(--muted); font-size: .75rem; line-height: 1.55; text-align: center; }
+  .identity-avatar, .profile-preview-avatar, .msg-avatar { overflow: hidden; }
+  .identity-avatar img, .profile-preview-avatar img, .msg-avatar img {
+    width: 100%; height: 100%; object-fit: cover; display: block; border-radius: inherit;
   }
-  .avatar-emoji-btn:hover { transform: scale(1.1); border-color: var(--accent); }
-  .avatar-emoji-btn.selected { border-color: var(--accent-fill); background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent-fill); }
-
-  .avatar-custom-char-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
-  .avatar-color-picker { display: flex; flex-wrap: wrap; gap: 12px; }
-  .avatar-color-swatch {
-    width: 32px; height: 32px; border-radius: 50%; border: 2px solid var(--bg);
-    cursor: pointer; box-shadow: 0 0 0 1px var(--line); transition: all var(--t-fast) var(--ease);
-  }
-  .avatar-color-swatch:hover { transform: scale(1.12); }
-  .avatar-color-swatch.selected { box-shadow: 0 0 0 2.5px var(--ink); transform: scale(1.08); }
 
   /* ---- 个人主页与快捷菜单抽屉/面板 ---- */
   #mobileToolsMask {
@@ -993,6 +973,59 @@
   /* 个人主页状态卡图标 */
   .status-card-icon { display: grid; place-items: center; color: var(--accent); }
 
+  /* ---- 记忆：内容优先的开放列表 ---- */
+  .memory-view .vwrap { max-width: 820px; }
+  .memory-head {
+    display: flex; align-items: end; justify-content: space-between; gap: 18px;
+    padding: 22px 0 12px; border-bottom: 1px solid var(--line);
+  }
+  .memory-head h2 { margin: 0; font-size: 2rem; line-height: 1.1; letter-spacing: -.025em; }
+  .memory-count { display: block; margin-top: 8px; color: var(--muted); font-size: .8125rem; font-variant-numeric: tabular-nums; }
+  .memory-filter { display: grid; gap: 4px; min-width: 142px; }
+  .memory-filter span { color: var(--muted); font-size: .6875rem; font-weight: 650; }
+  .memory-filter select { min-height: 38px; padding: 7px 34px 7px 10px; }
+  .memory-list { display: grid; }
+  .memory-row {
+    width: 100%; min-height: 82px; display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center; gap: 16px; padding: 14px 2px; border: 0; border-bottom: 1px solid var(--line);
+    border-radius: 0; background: transparent; color: var(--ink); text-align: left; cursor: pointer;
+  }
+  .memory-row:hover { background: var(--inset); }
+  .memory-row:active { transform: translateY(1px); }
+  .memory-row-copy { min-width: 0; display: grid; gap: 8px; }
+  .memory-row-summary {
+    min-width: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+    color: var(--ink); font-size: 1rem; font-weight: 620; line-height: 1.48; overflow-wrap: anywhere;
+  }
+  .memory-row-meta { display: flex; align-items: center; justify-content: space-between; gap: 14px; color: var(--muted); font-size: .75rem; }
+  .memory-row-source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .memory-row-time { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+  .memory-row-arrow { color: var(--faint); display: grid; place-items: center; }
+  .memory-more { display: flex; justify-content: center; padding: 18px 0 4px; }
+  .memory-detail { max-width: 760px; }
+  .memory-detail-nav { padding: 20px 0 10px; }
+  .memory-back { border: 0; background: none; color: var(--ink); padding: 6px 0; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 650; }
+  .memory-detail-article { padding: 20px 0 32px; }
+  .memory-detail-article h2 { margin: 0 0 22px; font-size: 1.875rem; line-height: 1.25; letter-spacing: -.02em; }
+  .memory-detail-content { margin: 0; color: var(--ink-2); font-size: 1.0625rem; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .memory-detail-meta { margin: 34px 0 0; padding: 18px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .memory-detail-meta div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 18px; padding: 9px 0; }
+  .memory-detail-meta dt { color: var(--muted); }
+  .memory-detail-meta dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+  .memory-detail-actions { display: flex; justify-content: flex-end; gap: 10px; padding-top: 20px; }
+  .data-tools { display: grid; border-top: 1px solid var(--line); }
+  .data-tool-row {
+    width: 100%; display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 14px;
+    padding: 18px 2px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
+    background: transparent; color: var(--ink); text-align: left; cursor: pointer;
+  }
+  .data-tool-row:hover { background: var(--inset); }
+  .data-tool-icon { color: var(--accent); display: grid; place-items: center; }
+  .data-tool-copy { min-width: 0; display: grid; gap: 3px; }
+  .data-tool-copy strong { font-size: .9375rem; }
+  .data-tool-copy small { color: var(--muted); font-size: .75rem; line-height: 1.45; }
+  .data-tool-row > span:last-child { color: var(--faint); display: grid; place-items: center; }
+
   /* ---- 移动端适配 ---- */  @media (max-width: 899px) {
     :root { --sat: env(safe-area-inset-top, 0px); --sab: env(safe-area-inset-bottom, 0px); }
     html.android { --sat: max(env(safe-area-inset-top, 0px), 24px); --sab: max(env(safe-area-inset-bottom, 0px), 16px); }
@@ -1036,6 +1069,18 @@
     .seg { flex-wrap: wrap; width: 100%; }
     .seg button { flex: 1; min-width: fit-content; }
     section.view { padding: 0 16px 32px; }
+    .memory-view { padding-top: 0; }
+    .memory-head { align-items: center; padding: 14px 0 10px; }
+    .memory-head h2 { font-size: 1.75rem; }
+    .memory-count { margin-top: 5px; }
+    .memory-filter { min-width: 128px; }
+    .memory-filter span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .memory-row { min-height: 78px; padding: 12px 2px; }
+    .memory-row-summary { font-size: .9375rem; }
+    .memory-detail-nav { padding-top: 12px; }
+    .memory-detail-article { padding-top: 12px; }
+    .memory-detail-article h2 { font-size: 1.625rem; }
+    .memory-detail-meta div { grid-template-columns: 86px minmax(0, 1fr); }
     .vhead { padding: 16px 0 12px; margin-bottom: 14px; }
     .chatgrid { grid-template-columns: 1fr; }
     #chatSessions, #todayPanel { display: none; }
@@ -1611,24 +1656,31 @@
       <div class="digest" id="reviewOut" style="display:none;"></div>
     </div></section>
 
-    <!-- 记忆台账 -->
-    <section class="view" id="view-ledger"><div class="vwrap">
-      <div class="vhead">
-        <div class="vt">
-          <h2>记忆库 <button class="qmark" type="button" aria-expanded="false" aria-controls="descLedger" aria-label="说明"></button></h2>
-          <p class="desc" id="descLedger" hidden>息壤为您整理的记忆库。您可以随时查看来源、编辑修改或彻底删除不需要的记忆。</p>
-        </div>
-        <div class="vactions">
-          <button class="btn" id="exportBtn" title="将本地全部数据导出为备份文件">导出全部数据</button>
-          <button class="btn" id="importBtn" title="从导出文件恢复数据">导入备份</button>
-          <input type="file" id="importFile" accept="application/json,.json" hidden>
-        </div>
+    <!-- 记忆 -->
+    <section class="view memory-view" id="view-ledger"><div class="vwrap">
+      <div class="memory-head">
+        <div><h2>记忆</h2><span class="memory-count" id="ledgerCount">正在读取…</span></div>
+        <label class="memory-filter" for="ledgerSourceFilter"><span>来源</span><select id="ledgerSourceFilter"><option value="">全部来源</option></select></label>
       </div>
-      <div id="soulousOutboundLedger" style="margin-bottom:18px;"></div>
-      <div class="block">
-        <h3>记忆条目</h3>
-        <div class="tscroll" id="ledgerBox"></div>
-      </div>
+      <div class="memory-list" id="ledgerBox" aria-live="polite"></div>
+    </div></section>
+
+    <!-- 记忆详情 -->
+    <section class="view" id="view-ledger-detail"><div class="vwrap memory-detail">
+      <div class="memory-detail-nav"><button class="memory-back" id="memoryDetailBack" type="button"><span id="memoryDetailBackIcon"></span><span>返回记忆</span></button></div>
+      <article class="memory-detail-article">
+        <h2>记忆详情</h2>
+        <p class="memory-detail-content" id="memoryDetailContent"></p>
+        <dl class="memory-detail-meta">
+          <div><dt>来源</dt><dd id="memoryDetailSource">—</dd></div>
+          <div><dt>记录时间</dt><dd id="memoryDetailTime">—</dd></div>
+          <div><dt>类型</dt><dd id="memoryDetailType">—</dd></div>
+        </dl>
+        <div class="memory-detail-actions">
+          <button class="btn" id="memoryDetailEdit" type="button">编辑</button>
+          <button class="btn danger" id="memoryDetailDelete" type="button">删除</button>
+        </div>
+      </article>
     </div></section>
 
     <!-- 通知回看 -->
@@ -1678,6 +1730,17 @@
         </div>
       </div>
       <div class="nav-menu" id="settingsMenu"></div>
+    </div></section>
+
+    <!-- 数据与备份 -->
+    <section class="view" id="view-data"><div class="vwrap">
+      <div class="vhead"><div class="vt"><h2>数据与备份</h2><p class="desc" style="display:block;position:static;box-shadow:none;border:0;padding:0;margin-top:10px;">本地导出与恢复由你主动触发；云端备份始终加密。</p></div></div>
+      <div class="data-tools">
+        <button class="data-tool-row" id="exportBtn" type="button"><span class="data-tool-icon" id="exportDataIcon"></span><span class="data-tool-copy"><strong>导出全部数据</strong><small>将本机数据导出为本地备份文件</small></span><span id="exportDataChev"></span></button>
+        <button class="data-tool-row" id="importBtn" type="button"><span class="data-tool-icon" id="importDataIcon"></span><span class="data-tool-copy"><strong>导入本地备份</strong><small>预览后合并恢复，不会直接覆盖现有数据</small></span><span id="importDataChev"></span></button>
+        <input type="file" id="importFile" accept="application/json,.json" hidden>
+        <button class="data-tool-row" id="openBackupCenterBtn" type="button"><span class="data-tool-icon" id="backupDataIcon"></span><span class="data-tool-copy"><strong>加密云备份</strong><small>手动封缄、查看版本并安全恢复</small></span><span id="backupDataChev"></span></button>
+      </div>
     </div></section>
 
     <!-- 人格 -->
@@ -2245,13 +2308,14 @@
       <button class="btn icon" id="profileEditorClose" type="button" aria-label="关闭"></button>
     </div>
     <div class="profile-editor-body">
-      <div class="profile-preview-card">
-        <div class="profile-preview-avatar" id="profilePreviewAvatar">访</div>
-        <div class="profile-preview-info">
-          <strong id="profilePreviewName">访客空间</strong>
-          <small id="profilePreviewRole">本地空间</small>
-          <p id="profilePreviewBio">专注当下，记录生活</p>
+      <div class="profile-avatar-editor">
+        <div class="profile-preview-avatar" id="profilePreviewAvatar"></div>
+        <div class="profile-avatar-actions">
+          <button class="btn sm" type="button" id="profileChooseAvatarBtn">选择本地图片</button>
+          <button class="btn sm" type="button" id="profileDeleteAvatarBtn">删除头像</button>
+          <input type="file" id="profileAvatarFile" accept="image/png,image/jpeg,image/webp" hidden />
         </div>
+        <p class="profile-avatar-note">自动居中裁切并压缩，仅保存在本机。支持 PNG、JPEG、WebP，原图不超过 12 MB。</p>
       </div>
       <div class="field">
         <label for="profileInputName">昵称</label>
@@ -2264,18 +2328,6 @@
       <div class="field">
         <label for="profileInputBio">个性签名 / 简介</label>
         <textarea id="profileInputBio" rows="2" maxlength="80" placeholder="写一句属于你的座右铭或偏好…"></textarea>
-      </div>
-      <div class="field">
-        <label>头像 Emoji / 字符选择</label>
-        <div class="avatar-emoji-picker" id="avatarEmojiPicker"></div>
-        <div class="avatar-custom-char-row">
-          <input type="text" id="profileInputChar" maxlength="2" placeholder="输入单字/Emoji (如: 唐)" style="max-width:170px;" />
-          <button class="btn sm" type="button" id="profileApplyCharBtn">应用字符</button>
-        </div>
-      </div>
-      <div class="field">
-        <label>头像主题色</label>
-        <div class="avatar-color-picker" id="avatarColorPicker"></div>
       </div>
     </div>
     <div class="modal-sheet-foot">

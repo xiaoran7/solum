@@ -6978,7 +6978,7 @@ mod tests {
         let js = include_str!("../dist/app.js");
         let config = include_str!("../tauri.conf.json");
         assert!(js.contains(
-            "const GUEST_ALLOWED_VIEWS = new Set([\"chat\", \"agenda\", \"notifs\", \"ledger\", \"journal\", \"search\", \"settings\", \"privacy\", \"capture\"])"
+            "const GUEST_ALLOWED_VIEWS = new Set([\"chat\", \"agenda\", \"notifs\", \"ledger\", \"ledger-detail\", \"journal\", \"search\", \"settings\", \"privacy\", \"capture\", \"data\"])"
         ));
         assert!(config.contains("\"dangerousDisableAssetCspModification\": [\"style-src\"]"));
         assert!(config.contains("style-src 'self' 'unsafe-inline'"));

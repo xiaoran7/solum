@@ -6,6 +6,7 @@ const appJsPath = new URL("../crates/solum-app/dist/app.js", import.meta.url);
 const tauriConfPath = new URL("../crates/solum-app/tauri.conf.json", import.meta.url);
 const appPath = new URL("../crates/solum-app/src/lib.rs", import.meta.url);
 const accountCorePath = new URL("../crates/solum-core/src/account.rs", import.meta.url);
+const defaultAvatarPath = new URL("../crates/solum-app/dist/assets/avatars/default-sprout.png", import.meta.url);
 const notificationPipelinePath = new URL(
   "../crates/solum-notif-access/android/src/main/java/dev/solum/notifaccess/NotificationPipelineService.kt",
   import.meta.url,
@@ -110,7 +111,7 @@ const privacyView = html.slice(privacyViewStart, nextViewStart);
 if (!privacyView.includes('id="privacyAccountLock"') || !privacyView.includes('id="privacyAccountControls"')) {
   throw new Error("guest privacy account controls must stay inside #view-privacy");
 }
-if (!js.includes('const GUEST_ALLOWED_VIEWS = new Set(["chat", "agenda", "notifs", "ledger", "journal", "search", "settings", "privacy", "capture"])')) {
+if (!js.includes('const GUEST_ALLOWED_VIEWS = new Set(["chat", "agenda", "notifs", "ledger", "ledger-detail", "journal", "search", "settings", "privacy", "capture", "data"])')) {
   throw new Error("guest view contract changed without updating the frontend gate");
 }
 if (!js.includes("if (!accountLoggedIn && !GUEST_ALLOWED_VIEWS.has(view))")) {
@@ -240,6 +241,62 @@ for (const command of accountOnlyCommands) {
 }
 if (!js.includes("登录后生成包含建议与跨设备信息的今日简报")) {
   throw new Error("daily brief entry must explain the account lock to guests");
+}
+
+const requiredProfileIds = [
+  "profilePreviewAvatar", "profileChooseAvatarBtn", "profileDeleteAvatarBtn", "profileAvatarFile",
+];
+for (const id of requiredProfileIds) {
+  if (!ids.includes(id)) throw new Error(`local avatar editor is missing #${id}`);
+}
+for (const removedId of ["avatarEmojiPicker", "avatarColorPicker", "profileInputChar", "profileApplyCharBtn"]) {
+  if (ids.includes(removedId) || js.includes(removedId)) throw new Error(`removed character/color avatar control still exists: ${removedId}`);
+}
+if (!fs.existsSync(defaultAvatarPath) || !js.includes('const DEFAULT_AVATAR_SRC = "assets/avatars/default-sprout.png"')) {
+  throw new Error("the sprout image must be the only default profile avatar");
+}
+if (!js.includes("MAX_AVATAR_INPUT_BYTES = 12 * 1024 * 1024")
+    || !js.includes('canvas.toBlob(resolve, "image/webp", quality)')
+    || !js.includes('editingProfileDraft.avatarData = ""')) {
+  throw new Error("local avatars must be bounded, compressed, and deletable back to the sprout default");
+}
+
+if (!js.includes("AUTH_EXPIRED_REDIRECT_KEY")
+    || !js.includes('rawInvoke("account_logout")')
+    || !js.includes('openAccountGate("登录状态已过期，请重新登录"')
+    || !/accountLoggedIn\s*&&\s*isAccountExpiryError\(s\.state_error\)/.test(js)) {
+  throw new Error("expired account sessions must clear locally and redirect to the login gate");
+}
+
+const ledgerViewStart = html.indexOf('id="view-ledger"');
+const ledgerViewEnd = html.indexOf('<section class="view', ledgerViewStart + 1);
+const ledgerView = html.slice(ledgerViewStart, ledgerViewEnd);
+if (!ledgerView.includes('id="ledgerSourceFilter"') || !ledgerView.includes('id="ledgerBox"')
+    || /exportBtn|importBtn|soulousOutboundLedger|notificationLedger/.test(ledgerView)) {
+  throw new Error("the memory landing page must be a content-only list with source filtering");
+}
+if (!ids.includes("memoryDetailContent") || !ids.includes("memoryDetailSource") || !ids.includes("memoryDetailTime")) {
+  throw new Error("memory rows must open a dedicated detail view");
+}
+if (!js.includes("function migrateMemoryListUiState()")
+    || !js.includes('navLastView.memory = "ledger"')
+    || !js.includes('viewScrollPositions.set("ledger", 0)')) {
+  throw new Error("upgrades from the old tabbed memory page must reset its stale route and scroll position once");
+}
+if (!/\.memory-row-summary\s*\{[^}]*-webkit-line-clamp:\s*2/s.test(html)) {
+  throw new Error("long memory content must be clamped to two lines in the list");
+}
+const refreshLedgerStart = js.indexOf("async function refreshLedger()");
+const refreshLedgerEnd = js.indexOf("async function refreshCaptures()", refreshLedgerStart);
+const refreshLedgerBody = js.slice(refreshLedgerStart, refreshLedgerEnd);
+if (refreshLedgerStart < 0 || refreshLedgerEnd < 0 || /soulous_config_get|notif_intelligence_status/.test(refreshLedgerBody)) {
+  throw new Error("the memory list must not reload Soulous or notification intelligence");
+}
+const dataViewStart = html.indexOf('id="view-data"');
+const dataViewEnd = html.indexOf('<section class="view', dataViewStart + 1);
+const dataView = html.slice(dataViewStart, dataViewEnd);
+if (!/exportBtn/.test(dataView) || !/importBtn/.test(dataView) || !/openBackupCenterBtn/.test(dataView)) {
+  throw new Error("export, import, and encrypted backup must live under settings data tools");
 }
 
 console.log(`frontend checks passed: ${inlineScripts.length} script, ${ids.length} unique ids`);
