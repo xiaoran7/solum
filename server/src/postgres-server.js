@@ -1421,120 +1421,137 @@ async function createPostgresServer(overrides = {}) {
       const codeVerifier = requiredString(body.code_verifier, 'invalid_code_verifier', 256);
       const redirectUri = optionalString(body.redirect_uri, 'invalid_redirect_uri', 2048) || '';
 
-      const tokenUrl = `${config.oauthIssuer.replace(/\/+$/, '')}/token`;
-      const userinfoUrl = `${config.oauthIssuer.replace(/\/+$/, '')}/userinfo`;
-
-      const formParams = new URLSearchParams({
-        grant_type: 'authorization_code',
-        code,
-        code_verifier: codeVerifier,
-        client_id: config.oauthClientId,
-      });
-      if (redirectUri) formParams.set('redirect_uri', redirectUri);
-      if (config.oauthClientSecret) formParams.set('client_secret', config.oauthClientSecret);
-
-      let tokenResponse;
+      // Unauthenticated but issuer-facing: without a per-IP cap a garbage-code
+      // flood turns this endpoint into free outbound traffic and database
+      // transactions, exactly like the refresh-flood the pool protection
+      // below already guards against.
+      const address = requestClientAddress(req, config.trustProxy);
+      const ipReservation = refreshIpFailures.reserve(address);
+      if (!ipReservation) throw new HttpError(429, 'too_many_attempts');
       try {
-        tokenResponse = await fetch(tokenUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Accept': 'application/json',
-          },
-          body: formParams.toString(),
+        const tokenUrl = `${config.oauthIssuer.replace(/\/+$/, '')}/token`;
+        const userinfoUrl = `${config.oauthIssuer.replace(/\/+$/, '')}/userinfo`;
+
+        const formParams = new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          code_verifier: codeVerifier,
+          client_id: config.oauthClientId,
         });
-      } catch (err) {
-        throw new HttpError(502, 'oauth_provider_unreachable');
-      }
+        if (redirectUri) formParams.set('redirect_uri', redirectUri);
+        if (config.oauthClientSecret) formParams.set('client_secret', config.oauthClientSecret);
 
-      if (!tokenResponse.ok) {
-        throw new HttpError(401, 'oauth_exchange_failed');
-      }
-
-      const tokenData = await tokenResponse.json().catch(() => ({}));
-      const accessToken = tokenData.access_token;
-      if (!accessToken) throw new HttpError(401, 'oauth_token_missing');
-
-      let userinfoResponse;
-      try {
-        userinfoResponse = await fetch(userinfoUrl, {
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Accept': 'application/json',
-          },
-        });
-      } catch (err) {
-        throw new HttpError(502, 'oauth_provider_unreachable');
-      }
-
-      if (!userinfoResponse.ok) {
-        throw new HttpError(401, 'oauth_userinfo_failed');
-      }
-
-      const userinfo = await userinfoResponse.json().catch(() => ({}));
-      const subject = userinfo.sub || userinfo.id;
-      if (!subject) throw new HttpError(401, 'oauth_subject_missing');
-
-      const email = userinfo.email || null;
-      const profileName = userinfo.name || userinfo.preferred_username || userinfo.username || email || subject;
-
-      const client = await pool.connect();
-      try {
-        await client.query('begin');
-        const existingIdentity = await client.query(
-          `select u.id, u.username, u.status from auth.oauth_identities oi
-           join auth.users u on u.id = oi.user_id
-           where oi.provider = $1 and oi.subject = $2`,
-          ['tg-oauth', String(subject)]
-        );
-
-        let user;
-        if (existingIdentity.rowCount === 1) {
-          user = existingIdentity.rows[0];
-          if (user.status !== 'active') throw new HttpError(403, 'user_disabled');
-          await client.query(
-            `update auth.oauth_identities set email = $1, profile_name = $2, updated_at = now()
-             where provider = $3 and subject = $4`,
-            [email, profileName, 'tg-oauth', String(subject)]
-          );
-        } else {
-          let usernameCandidate = String(profileName).replace(/[\u0000-\u001f\u007f]/g, '').trim();
-          if (!usernameCandidate || usernameCandidate.length > 120) {
-            usernameCandidate = `user_${String(subject).slice(0, 16)}`;
-          }
-          let finalUsername = usernameCandidate;
-          let suffix = 1;
-          while (true) {
-            const existingUser = await client.query(
-              'select id from auth.users where username = $1', [finalUsername]
-            );
-            if (existingUser.rowCount === 0) break;
-            finalUsername = `${usernameCandidate}_${suffix++}`;
-          }
-
-          const insertedUser = await client.query(
-            `insert into auth.users (username, status, password_version)
-             values ($1, 'active', 2)
-             returning id, username, status`,
-            [finalUsername]
-          );
-          user = insertedUser.rows[0];
-
-          await client.query(
-            `insert into auth.oauth_identities (user_id, provider, subject, email, profile_name)
-             values ($1, $2, $3, $4, $5)`,
-            [user.id, 'tg-oauth', String(subject), email, profileName]
-          );
+        let tokenResponse;
+        try {
+          tokenResponse = await fetch(tokenUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'Accept': 'application/json',
+            },
+            body: formParams.toString(),
+          });
+        } catch (err) {
+          throw new HttpError(502, 'oauth_provider_unreachable');
         }
 
-        const session = await issueSession(client, user, config.authSecret);
-        await client.query('commit');
-        return json(res, 200, session);
+        if (!tokenResponse.ok) {
+          throw new HttpError(401, 'oauth_exchange_failed');
+        }
+
+        const tokenData = await tokenResponse.json().catch(() => ({}));
+        const accessToken = tokenData.access_token;
+        if (!accessToken) throw new HttpError(401, 'oauth_token_missing');
+
+        let userinfoResponse;
+        try {
+          userinfoResponse = await fetch(userinfoUrl, {
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Accept': 'application/json',
+            },
+          });
+        } catch (err) {
+          throw new HttpError(502, 'oauth_provider_unreachable');
+        }
+
+        if (!userinfoResponse.ok) {
+          throw new HttpError(401, 'oauth_userinfo_failed');
+        }
+
+        const userinfo = await userinfoResponse.json().catch(() => ({}));
+        const subject = userinfo.sub || userinfo.id;
+        if (!subject) throw new HttpError(401, 'oauth_subject_missing');
+
+        const email = userinfo.email || null;
+        const profileName = userinfo.name || userinfo.preferred_username ||
+          userinfo.username || email || subject;
+
+        const client = await pool.connect();
+        try {
+          await client.query('begin');
+          const existingIdentity = await client.query(
+            `select u.id, u.username, u.status from auth.oauth_identities oi
+             join auth.users u on u.id = oi.user_id
+             where oi.provider = $1 and oi.subject = $2`,
+            ['tg-oauth', String(subject)]
+          );
+
+          let user;
+          if (existingIdentity.rowCount === 1) {
+            user = existingIdentity.rows[0];
+            if (user.status !== 'active') throw new HttpError(403, 'user_disabled');
+            await client.query(
+              `update auth.oauth_identities set email = $1, profile_name = $2, updated_at = now()
+               where provider = $3 and subject = $4`,
+              [email, profileName, 'tg-oauth', String(subject)]
+            );
+          } else {
+            let usernameCandidate = String(profileName).replace(/[\u0000-\u001f\u007f]/g, '').trim();
+            if (!usernameCandidate || usernameCandidate.length > 120) {
+              usernameCandidate = `user_${String(subject).slice(0, 16)}`;
+            }
+            let finalUsername = usernameCandidate;
+            let suffix = 1;
+            while (true) {
+              const existingUser = await client.query(
+                'select id from auth.users where username = $1', [finalUsername]
+              );
+              if (existingUser.rowCount === 0) break;
+              finalUsername = `${usernameCandidate}_${suffix++}`;
+            }
+
+            const insertedUser = await client.query(
+              `insert into auth.users (username, status, password_version)
+               values ($1, 'active', 2)
+               returning id, username, status`,
+              [finalUsername]
+            );
+            user = insertedUser.rows[0];
+
+            await client.query(
+              `insert into auth.oauth_identities (user_id, provider, subject, email, profile_name)
+               values ($1, $2, $3, $4, $5)`,
+              [user.id, 'tg-oauth', String(subject), email, profileName]
+            );
+          }
+
+          const session = await issueSession(client, user, config.authSecret);
+          await client.query('commit');
+          return json(res, 200, session);
+        } catch (error) {
+          await client.query('rollback').catch(() => {});
+          throw error;
+        } finally {
+          client.release();
+        }
       } catch (error) {
-        await client.query('rollback').catch(() => {});
+        // Issuer-rejected exchanges (401) are brute-force signals; provider
+        // outages (502) and disabled accounts (403) are not.
+        if (error instanceof HttpError && error.status === 401) ipReservation.commit();
         throw error;
       } finally {
-        client.release();
+        ipReservation.release();
       }
     }
 
@@ -2386,8 +2403,13 @@ async function createPostgresServer(overrides = {}) {
           throw new HttpError(409, 'backup_generation_stale');
         }
         if (row.status === 'pending') {
+          // Verify inside PostgreSQL: shipping every ciphertext to Node only
+          // to hash it would move up to the whole package across the wire
+          // while holding the tenant lock open.
           const objectRows = await client.query(
-            `select object_id,declared_bytes,declared_sha256
+            `select object_id,declared_bytes,
+                    ciphertext is not null and octet_length(ciphertext)=declared_bytes
+                      and sha256(ciphertext)=declared_sha256 as verified
              from vault.backup_objects where tenant_id=$1 and backup_id=$2
              order by object_id`,
             [tenantId, backupId]
@@ -2397,23 +2419,8 @@ async function createPostgresServer(overrides = {}) {
           }
           let verifiedBytes = 0;
           for (const objectRow of objectRows.rows) {
-            const stored = await client.query(
-              `select ciphertext from vault.backup_objects
-               where tenant_id=$1 and backup_id=$2 and object_id=$3`,
-              [tenantId, backupId, objectRow.object_id]
-            );
-            const ciphertext = stored.rows[0] && stored.rows[0].ciphertext;
-            const declaredBytes = safeDatabaseInteger(
-              objectRow.declared_bytes, 'backup_object_bytes'
-            );
-            if (!Buffer.isBuffer(ciphertext) || ciphertext.length !== declaredBytes ||
-                !secureEqualBuffer(
-                  crypto.createHash('sha256').update(ciphertext).digest(),
-                  objectRow.declared_sha256
-                )) {
-              throw new HttpError(409, 'backup_incomplete');
-            }
-            verifiedBytes += declaredBytes;
+            if (!objectRow.verified) throw new HttpError(409, 'backup_incomplete');
+            verifiedBytes += safeDatabaseInteger(objectRow.declared_bytes, 'backup_object_bytes');
           }
           if (verifiedBytes !== safeDatabaseInteger(row.total_bytes, 'backup_total_bytes')) {
             throw new HttpError(409, 'backup_incomplete');
@@ -2492,18 +2499,27 @@ async function createPostgresServer(overrides = {}) {
       const result = await withTenant(pool, tenantId, async (client) => {
         await lockTenantMutation(client, tenantId);
         await touchActiveDevice(client, tenantId, device, config.tenantMaxDevices);
+        // Window functions run before LIMIT, so sizing ciphertexts inside the
+        // same query level would detoast every blob beyond `since` (up to the
+        // tenant's whole history). Pick candidates by size first, then fetch
+        // ciphertext only for the rows that survive the byte cap.
         const pulled = await client.query(
           `with candidates as (
-             select seq,device_id,ciphertext,
-                    row_number() over(order by seq) as row_num,
-                    sum(octet_length(ciphertext)) over(order by seq) as cumulative_bytes
+             select seq,device_id,octet_length(ciphertext) as blob_bytes
              from sync.blobs
              where tenant_id=$1 and seq>$2 and device_id<>$3
              order by seq
              limit $4
+           ), selected as (
+             select seq,device_id,
+                    sum(blob_bytes) over (order by seq) as cumulative_bytes,
+                    row_number() over (order by seq) as row_num
+             from candidates
            )
-           select seq,device_id,ciphertext from candidates
-           where cumulative_bytes<=$5 or row_num=1 order by seq`,
+           select b.seq,b.device_id,b.ciphertext
+           from selected s join sync.blobs b on b.seq=s.seq
+           where s.cumulative_bytes<=$5 or s.row_num=1
+           order by b.seq`,
           [tenantId, since, device, MAX_PULL_ROWS, MAX_PULL_BYTES]
         );
         const oldest = await client.query(
@@ -2603,7 +2619,8 @@ async function createPostgresServer(overrides = {}) {
     if (req.method === 'GET' && url.pathname === '/v1/alerts') {
       const tenantId = await authenticate(req);
       const since = parseNonNegativeInt(url.searchParams.get('since'), 0);
-      const limit = parseNonNegativeInt(url.searchParams.get('limit'), 100, 500) || 100;
+      const limit = parseNonNegativeInt(url.searchParams.get('limit'), 100, 500);
+      if (limit < 1) throw new HttpError(400, 'invalid_query');
       const source = url.searchParams.has('source') ?
         requiredString(url.searchParams.get('source'), 'invalid_query', 64) : null;
       const alerts = await withTenant(pool, tenantId, async (client) => {

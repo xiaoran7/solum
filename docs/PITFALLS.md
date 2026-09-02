@@ -29,6 +29,13 @@
 - `account_status_get.logged_in=true` 不代表会话仍可用；刷新 token 失败会写入 `state_error`。只渲染错误文案会把用户困在伪登录态，必须与普通 IPC 的 401/过期错误一起进入统一退出与登录重定向。
 - 不把相册原图直接塞进 `localStorage`：高像素照片会迅速撞上 WebView 配额并放大解码内存。先限制输入体积、居中裁切、压缩并再次检查编码后大小；解码失败或超限时保留原头像。
 
+## 服务端
+
+- Schema 开头 `revoke all on schema public from public` 会连 pgcrypto 的 `digest()` 一起锁死，运行时角色解析不到扩展函数并报 `function ... does not exist`；库内哈希用 pg_catalog 内置 `sha256()`，不要依赖 public schema 的扩展函数。
+- 窗口函数先于 `LIMIT` 执行：把 `octet_length(ciphertext)` 累计窗口和密文选择写进同一层查询，`since` 之后的整段历史都会被解包。pull 必须先在有界候选集上算尺寸，再对入选行取密文。
+- 集成测试不自行初始化角色/schema，需按 compose migrate 同款流程预置全新测试库；断言含全局 identity 序列号（如 42/74），复用跑过的库会假失败。
+- 无本地 Postgres/Docker 时，可在 VPS 起 `--rm` Postgres 容器（仅绑 127.0.0.1）+ SSH 隧道跑集成测试，用后即删。
+
 ## 安全
 
 - Guard token 一次性且绑定动作/参数/主体；模型或页面不能自行构造。

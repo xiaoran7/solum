@@ -510,6 +510,52 @@ test('unauthenticated refresh and logout are IP-rate-limited', () => {
     'logout failures must count toward the window');
 });
 
+test('pull and backup verification stay bounded inside the database', () => {
+  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const pullBody = source.slice(
+    source.indexOf("url.pathname === '/v1/pull'"), source.indexOf("url.pathname === '/v1/stats'"));
+  assert.ok(pullBody.includes('octet_length(ciphertext) as blob_bytes'),
+    'pull must size candidates without selecting their ciphertext');
+  assert.ok(pullBody.indexOf('limit $4') < pullBody.indexOf('sum(blob_bytes) over'),
+    'the cumulative byte window must run over a row-bounded candidate set');
+  assert.ok(pullBody.includes('from selected s join sync.blobs b on b.seq=s.seq'),
+    'ciphertext may only be fetched for rows that survive the byte cap');
+  const commitBody = source.slice(
+    source.indexOf('const backupCommitMatch'),
+    source.indexOf('const backupVersionMatch'));
+  assert.ok(commitBody.includes('sha256(ciphertext)=declared_sha256'),
+    'commit must verify object digests inside PostgreSQL');
+  assert.ok(!commitBody.includes('select ciphertext from vault.backup_objects'),
+    'commit must not stream ciphertexts into Node');
+  const schema = fs.readFileSync(path.join(root, 'db', 'init', '01-schema.sql'), 'utf8');
+  assert.match(schema, /create index if not exists usage_events_pending_idx/);
+  assert.match(schema, /create index if not exists alerts_tenant_seq_idx/);
+});
+
+test('oauth exchange shares the unauthenticated per-IP abuse window', () => {
+  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const oauthBody = source.slice(
+    source.indexOf("url.pathname === '/v1/auth/oauth/exchange'"),
+    source.indexOf("url.pathname === '/v1/auth/register'"));
+  assert.ok(oauthBody.includes('refreshIpFailures.reserve(address)'),
+    'oauth exchange must reserve from the per-IP window before calling the issuer');
+  assert.ok(oauthBody.includes('ipReservation.commit()'),
+    'issuer-rejected exchanges must count toward the window');
+  assert.ok(oauthBody.indexOf('refreshIpFailures.reserve(address)') <
+    oauthBody.indexOf('fetch(tokenUrl,'),
+    'the reservation must precede the outbound issuer call');
+});
+
+test('alerts pagination rejects an explicit zero limit', () => {
+  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const alertsBody = source.slice(
+    source.indexOf("url.pathname === '/v1/alerts'"),
+    source.indexOf("url.pathname === '/v1/keys/recovery'"));
+  assert.ok(!alertsBody.includes("parseNonNegativeInt(url.searchParams.get('limit'), 100, 500) || 100"),
+    'a zero limit must not be coerced into the default');
+  assert.match(alertsBody, /if \(limit < 1\) throw new HttpError\(400, 'invalid_query'\)/);
+});
+
 test('usage events have a retention policy like every other table', () => {
   const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
   assert.match(source, /SOLUM_USAGE_EVENT_RETENTION_DAYS \|\| 90/);

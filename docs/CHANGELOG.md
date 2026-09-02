@@ -4,6 +4,7 @@
 
 ## [Unreleased]
 
+- 2026-09-03：Solum Center `solum-cloud` 0.8.0 服务端性能与安全发版（本地 node:test 55/55 通过，其中 6 个 Postgres 集成测试在 VPS 一次性容器真库执行）：`/v1/pull` 累计字节窗口改为先在有界候选集（≤500 行）上计尺寸、再对入选行取密文，修复新设备/长期离线设备全量拉取时解包整个租户 blob 历史的 O(全历史) 扫描；备份 commit 的对象校验移入 PostgreSQL（内置 `sha256()`），不再把最多 64×68MB 密文拉到 Node 内逐个哈希；schema 新增 `ai.usage_events` pending 部分索引与 `sync.alerts (tenant_id, seq)` 索引；`/v1/auth/oauth/exchange` 补 per-IP 限流（401 计数、502/403 不计）；修复 `/v1/alerts` 显式 `limit=0` 被静默当作 100 的问题。集成测试权限清单补齐 `auth.oauth_identities` 与 `vault.recovery_codes`（8-29 OAuth 发版后未同步的测试腐化）；PITFALLS 记录 public schema revoke 使 pgcrypto `digest()` 不可解析、须用内置 `sha256()` 的坑。
 - 2026-08-29：Solum Center 生产完成 Tg-oauth 统一身份接入发版（`solum-release-0a497cd`）；Postgres 迁移 `auth.oauth_identities` 表；支持 `/v1/auth/oauth/config` 与 `/v1/auth/oauth/exchange` 自动开户与 E2EE 恢复码解耦。
 - 2026-08-28：全仓文档按当前 `0.2.8/1018`、local-first 边界和真实待办重构；删除重复会话流水与过期生产断言。
 

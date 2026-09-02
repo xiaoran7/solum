@@ -145,6 +145,11 @@ create table if not exists ai.usage_events (
 
 create index if not exists usage_events_tenant_created_idx
   on ai.usage_events (tenant_id, created_at desc);
+-- Stale-pending recovery runs before every AI reserve/usage read; without the
+-- partial index it degenerates into scanning the tenant's whole event window.
+create index if not exists usage_events_pending_idx
+  on ai.usage_events (tenant_id, created_at)
+  where status = 'pending';
 
 create or replace function sync.current_tenant_id()
 returns uuid
@@ -286,6 +291,11 @@ $$;
 
 create index if not exists alerts_tenant_source_seq_idx
   on sync.alerts (tenant_id, source, seq);
+-- Keyset pagination (tenant_id, seq > ? order by seq) cannot use the
+-- source-prefixed index; on a busy multi-tenant table it would walk the
+-- global identity PK past other tenants' rows.
+create index if not exists alerts_tenant_seq_idx
+  on sync.alerts (tenant_id, seq);
 create index if not exists alerts_received_at_idx
   on sync.alerts (received_at);
 create index if not exists alerts_tenant_received_at_idx

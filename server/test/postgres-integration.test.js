@@ -84,6 +84,10 @@ test('PostgreSQL roles retain exact least-privilege attributes and membership',
         { grantee: 'solum_api', table_schema: 'ai', table_name: 'usage_monthly', privilege_type: 'INSERT' },
         { grantee: 'solum_api', table_schema: 'ai', table_name: 'usage_monthly', privilege_type: 'SELECT' },
         { grantee: 'solum_api', table_schema: 'ai', table_name: 'usage_monthly', privilege_type: 'UPDATE' },
+        { grantee: 'solum_api', table_schema: 'auth', table_name: 'oauth_identities', privilege_type: 'DELETE' },
+        { grantee: 'solum_api', table_schema: 'auth', table_name: 'oauth_identities', privilege_type: 'INSERT' },
+        { grantee: 'solum_api', table_schema: 'auth', table_name: 'oauth_identities', privilege_type: 'SELECT' },
+        { grantee: 'solum_api', table_schema: 'auth', table_name: 'oauth_identities', privilege_type: 'UPDATE' },
         { grantee: 'solum_api', table_schema: 'auth', table_name: 'refresh_tokens', privilege_type: 'DELETE' },
         { grantee: 'solum_api', table_schema: 'auth', table_name: 'refresh_tokens', privilege_type: 'INSERT' },
         { grantee: 'solum_api', table_schema: 'auth', table_name: 'refresh_tokens', privilege_type: 'SELECT' },
@@ -110,6 +114,9 @@ test('PostgreSQL roles retain exact least-privilege attributes and membership',
         { grantee: 'solum_api', table_schema: 'vault', table_name: 'backups', privilege_type: 'UPDATE' },
         { grantee: 'solum_api', table_schema: 'vault', table_name: 'key_envelopes', privilege_type: 'INSERT' },
         { grantee: 'solum_api', table_schema: 'vault', table_name: 'key_envelopes', privilege_type: 'SELECT' },
+        { grantee: 'solum_api', table_schema: 'vault', table_name: 'recovery_codes', privilege_type: 'INSERT' },
+        { grantee: 'solum_api', table_schema: 'vault', table_name: 'recovery_codes', privilege_type: 'SELECT' },
+        { grantee: 'solum_api', table_schema: 'vault', table_name: 'recovery_codes', privilege_type: 'UPDATE' },
       ]);
       const runtime = await runtimePool.query(
         "select current_user, pg_has_role(current_user, 'solum_api', 'member') as is_api_member"
@@ -870,4 +877,67 @@ test('PostgreSQL runtime enforces auth, RLS, quotas and JSON contracts',
       headers: { 'CF-Connecting-IP': '203.0.113.99' },
     });
     assert.equal(limited.response.status, 429);
+  });
+
+test('pull honors the row and cumulative byte caps without streaming unbounded history',
+  { skip: !ownerDatabaseUrl || !databaseUrl || !disposableDatabase }, async (t) => {
+    const pool = new Pool({ connectionString: databaseUrl, max: 2 });
+    const ownerPool = new Pool({ connectionString: ownerDatabaseUrl, max: 1 });
+    const app = await createPostgresServer({
+      pool,
+      authSecret: 'integration-secret-'.repeat(4),
+      adminUsername: ' integration-admin ',
+      adminPassword: 'integration-admin-password',
+      registrationMode: 'open',
+    });
+    const port = await listen(app.server);
+    const base = `http://127.0.0.1:${port}`;
+    t.after(async () => {
+      app.server.closeAllConnections();
+      await app.close();
+      await Promise.all([pool.end(), ownerPool.end()]);
+    });
+
+    const username = `pull-cap-${crypto.randomBytes(5).toString('hex')}`;
+    const registration = await jsonRequest(base, '/v1/auth/register', {
+      method: 'POST', body: { username, password: 'integration-password' },
+    });
+    assert.equal(registration.response.status, 201);
+    const token = registration.data.access_token;
+    const tenantId = registration.data.user.id;
+
+    // Three 8 MiB blobs from another device: the cumulative size crosses the
+    // 16 MiB pull cap on the third row. Direct owner inserts bypass the HTTP
+    // storage quota because this exercises pull accounting, not the quota.
+    const big = await ownerPool.query(
+      `insert into sync.blobs(tenant_id,device_id,ciphertext)
+       select $1,'writer-a',repeat('b',8388608)::bytea from generate_series(1,3)
+       returning seq`, [tenantId]
+    );
+    assert.equal(big.rowCount, 3);
+    const firstSeq = Number(big.rows[0].seq);
+
+    const capped = await jsonRequest(base, '/v1/pull?since=0&device=reader', { token });
+    assert.equal(capped.response.status, 200);
+    assert.equal(capped.data.blobs.length, 2,
+      'the third 8 MiB blob would push the cumulative size past the 16 MiB cap');
+    assert.deepEqual(capped.data.blobs.map((blob) => blob.seq), [firstSeq, firstSeq + 1]);
+    assert.ok(capped.data.blobs.every((blob) => blob.device === 'writer-a'));
+
+    // 505 small blobs: the byte cap no longer binds, the 500-row cap does.
+    await ownerPool.query(
+      `insert into sync.blobs(tenant_id,device_id,ciphertext)
+       select $1,'writer-a',repeat('s',1024)::bytea from generate_series(1,505)`, [tenantId]
+    );
+    const rowCapped = await jsonRequest(base, `/v1/pull?since=${firstSeq + 2}&device=reader`,
+      { token });
+    assert.equal(rowCapped.response.status, 200);
+    assert.equal(rowCapped.data.blobs.length, 500, 'pull must stop at MAX_PULL_ROWS');
+    assert.equal(rowCapped.data.blobs[0].seq, firstSeq + 3);
+    assert.equal(rowCapped.data.oldest_seq, firstSeq);
+
+    // A device never receives its own blobs back.
+    const selfPull = await jsonRequest(base, '/v1/pull?since=0&device=writer-a', { token });
+    assert.equal(selfPull.response.status, 200);
+    assert.equal(selfPull.data.blobs.length, 0);
   });
