@@ -500,7 +500,7 @@ function buildConfig(overrides = {}) {
     adminPassword: process.env.SOLUM_ADMIN_PASSWORD || '',
     registrationMode: process.env.SOLUM_REGISTRATION_MODE || 'closed',
     oauthEnabled: process.env.SOLUM_OAUTH_ENABLED !== 'false',
-    oauthIssuer: process.env.SOLUM_OAUTH_ISSUER || 'https://oauth.tannerlab.xyz',
+    oauthIssuer: process.env.SOLUM_OAUTH_ISSUER || 'https://auth.tannerlab.cn',
     oauthClientId: process.env.SOLUM_OAUTH_CLIENT_ID || 'solum-center',
     oauthClientSecret: process.env.SOLUM_OAUTH_CLIENT_SECRET || '',
     mimoApiKey: process.env.SOLUM_LLM_API_KEY || process.env.MIMO_API_KEY || '',
