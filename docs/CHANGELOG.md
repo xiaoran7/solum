@@ -1,9 +1,21 @@
 # Solum Changelog
 
+## 2026-09-07 — 文档精简
+
+- 通用工程与整洁约束统一引用工作区 AGENT.md；项目入口只保留特有边界，合并重复工具说明和逐会话记录。
+- 仅文档变更；检查引用、编码和 diff，未打包、未执行设备或生产验证。
+
+
 本页保留版本级摘要。逐提交实现、测试计数和会话过程由 Git 历史保存。
 
 ## [Unreleased]
 
+- 2026-09-07：Android 端与多端共享层架构解耦、硬编码清理与全面国际化体系落地：
+  1. **LLM 端点与模型解耦**：移除旧私网调试 IP，默认预设升级为通过 CPA Stream Guard (`http://100.70.173.50:8317/v1`) 连接 `gemini-3.8-flash-high`，解耦前端自定义端点与超时机制；更新工作区配置 `solum-llm.json` 与 `solum-core/src/llm.rs` 默认模型。
+  2. **中心域名与模型单点真理**：`account_status_get` 统一导出 `default_server_url` 与 `default_model`，前端 HTML/JS 移除写死默认中心值和模型名；登录、注册、OAuth 流程全面改为动态绑定。
+  3. **通知规则领域解耦**：从 `solum-core/src/notification_intelligence.rs` 中剥离微信/QQ/钉钉的硬编码 match 分支，抽离为声明式 `AppStarterRuleSpec` 策略层 `starter_patterns_for_package`，新增策略注册与回退测试。
+  4. **Android 原生层真实国际化**：在 `solum-app`、`solum-alarm`、`solum-notif-access` 三大模块建立标准的 `values` 与 `values-en` 资源架构，全面提取并替换 Kotlin 代码中写死的通知渠道名、前台服务常驻通知、语音提示、OCR 错误与福利告警字符串。
+  5. **前端严格 CSP 双语系统**：自研轻量、零外部依赖、符合严格 CSP 的 `dist/i18n.js`（含 `data-i18n` 声明式 DOM 翻译、参数化插值与词典投影）；在“设置 → 系统设置”新增中/英文切换控件；`check-frontend.mjs` 扩展脚本语法与 417 个独立元素 ID 检验全绿。
 - 2026-09-04：废弃旧域 `oauth.tannerlab.xyz`，将 Solum Center `postgres-server.js` 中 `oauthIssuer` 默认回退值与 contract 测试断言校准为规范域名 `https://auth.tannerlab.cn`。
 - 2026-09-03：Solum Center `solum-cloud` 0.8.0 服务端性能与安全发版（本地 node:test 55/55 通过，其中 6 个 Postgres 集成测试在 VPS 一次性容器真库执行）：`/v1/pull` 累计字节窗口改为先在有界候选集（≤500 行）上计尺寸、再对入选行取密文，修复新设备/长期离线设备全量拉取时解包整个租户 blob 历史的 O(全历史) 扫描；备份 commit 的对象校验移入 PostgreSQL（内置 `sha256()`），不再把最多 64×68MB 密文拉到 Node 内逐个哈希；schema 新增 `ai.usage_events` pending 部分索引与 `sync.alerts (tenant_id, seq)` 索引；`/v1/auth/oauth/exchange` 补 per-IP 限流（401 计数、502/403 不计）；修复 `/v1/alerts` 显式 `limit=0` 被静默当作 100 的问题。集成测试权限清单补齐 `auth.oauth_identities` 与 `vault.recovery_codes`（8-29 OAuth 发版后未同步的测试腐化）；PITFALLS 记录 public schema revoke 使 pgcrypto `digest()` 不可解析、须用内置 `sha256()` 的坑。
 - 2026-08-29：Solum Center 生产完成 Tg-oauth 统一身份接入发版（`solum-release-0a497cd`）；Postgres 迁移 `auth.oauth_identities` 表；支持 `/v1/auth/oauth/config` 与 `/v1/auth/oauth/exchange` 自动开户与 E2EE 恢复码解耦。

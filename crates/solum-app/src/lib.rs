@@ -331,7 +331,7 @@ struct AppInfo {
     active_generation: Option<String>,
     web_storage: WebStorageNames,
     system_now: String,
-    /// e.g. "http://100.79.74.121:8000/v1 · qwen3.5-2b · no key"; `None` = offline mode.
+    /// e.g. "http://100.70.173.50:8317/v1 · gemini-3.8-flash-high · no key"; `None` = offline mode.
     llm: Option<String>,
 }
 
@@ -934,6 +934,7 @@ struct AccountStatus {
     logged_in: bool,
     username: String,
     server_url: String,
+    default_server_url: String,
     model: String,
     default_model: String,
     model_options: Vec<String>,
@@ -991,6 +992,7 @@ async fn account_status_get() -> CmdResult<AccountStatus> {
                 logged_in: true,
                 username: s.username,
                 server_url: s.server_url,
+                default_server_url: solum_core::account::SOLUM_CENTER_URL.to_string(),
                 model: s.model,
                 default_model,
                 model_options,
@@ -1004,7 +1006,8 @@ async fn account_status_get() -> CmdResult<AccountStatus> {
         None => Ok(AccountStatus {
             logged_in: false,
             username: String::new(),
-            server_url: String::new(),
+            server_url: solum_core::account::SOLUM_CENTER_URL.to_string(),
+            default_server_url: solum_core::account::SOLUM_CENTER_URL.to_string(),
             model: solum_core::account::DEFAULT_CLOUD_MODEL.to_string(),
             default_model: solum_core::account::DEFAULT_CLOUD_MODEL.to_string(),
             model_options: solum_core::account::CLOUD_MODEL_OPTIONS

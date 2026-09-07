@@ -4585,13 +4585,17 @@ async function refreshToday() {
 }
 
 /* ============================== 云端接入（设置 → 云端） ============================== */
-// 直连配置暂时隐藏；保留单一迁移预设，避免旧配置回显为任意自定义厂商。
+// 预设服务端点与推理模型
 const LLM_PRESETS = [
-  { id: "solum-local", label: "Solum 本地 Agent", base: "http://100.79.74.121:8000/v1",
-    models: ["qwen3.5-2b"], timeout: 60, temp: "default",
-    note: "Solum 中心通过 Tailnet 连接本地 vLLM；自定义端点暂不开放。" },
+  { id: "gemini-guard", label: "Gemini 3.8 Flash (CPA Guard)", base: "http://100.70.173.50:8317/v1",
+    models: ["gemini-3.8-flash-high"], timeout: 90, temp: "default",
+    note: "通过 Tailnet 内网 CPA Stream Guard 连接 Gemini 3.8 Flash High 模型。" },
+  { id: "custom", label: "自定义端点…", base: "",
+    models: ["gemini-3.8-flash-high", "qwen3.5-2b"], timeout: 60, temp: "default",
+    note: "支持任何兼容 OpenAI 接口的推理服务。" },
 ];
-const SOLUM_CENTER_URL = "https://tannerlab.cn";
+let solumCenterUrl = "https://solum.tannerlab.cn";
+let solumActiveModel = "gemini-3.8-flash-high";
 let llmKeyTail = "";   // 已保存密钥的尾巴（空 = 还没存过 key，保存时必填）
 let llmFormSeeded = false; // 表单只在首次加载/保存后回填，refreshAll 不许覆盖正在编辑的内容
 
@@ -5374,10 +5378,12 @@ async function refreshAccount() {
     $("accountRecoverToggle").hidden = false;
   }
   if (accountLoggedIn) $("accountFold").open = true;
+  if (s.default_server_url) solumCenterUrl = s.default_server_url;
   const modelSelect = $("accountModel");
   const currentValue = modelSelect.value;
   modelSelect.textContent = "";
-  const defaultModel = s.default_model || "qwen3.5-2b";
+  const defaultModel = s.default_model || solumActiveModel;
+  solumActiveModel = defaultModel;
   const options = Array.from(new Set([defaultModel, ...(s.model_options || [])]));
   for (const model of options) modelSelect.appendChild(el("option", {
     value: model, text: model === defaultModel ? `${model}（默认）` : model,
@@ -5393,14 +5399,14 @@ async function refreshAccount() {
     $("accountServer").value = s.server_url;
     $("accountUser").value = s.username;
   } else {
-    $("accountServer").value = SOLUM_CENTER_URL;
+    $("accountServer").value = s.server_url || s.default_server_url || solumCenterUrl;
   }
   $("accountModel").value = options.includes(s.model) ? s.model : defaultModel;
 }
 
 async function submitSettingsLogin() {
   if (accountAuthSubmitting || $("accountLoginBtn").disabled) return;
-  const serverUrl = $("accountServer").value.trim() || SOLUM_CENTER_URL;
+  const serverUrl = $("accountServer").value.trim() || solumCenterUrl;
   const username = $("accountUser").value.trim();
   const password = $("accountPass").value;
   if (!username || !password) return toast("请填写账号和密码", "danger");
@@ -5449,10 +5455,10 @@ async function submitAccountGate() {
   $("accountGateStatus").textContent = "正在建立你的加密空间…";
   try {
     await invoke(registering ? "account_register" : "account_login", {
-      serverUrl: SOLUM_CENTER_URL,
+      serverUrl: solumCenterUrl,
       username,
       password,
-      model: "qwen3.5-2b",
+      model: solumActiveModel,
     });
     $("accountGatePass").value = "";
     $("accountGateConfirm").value = "";
@@ -5595,7 +5601,7 @@ function promptModal(title, message, placeholder, defaultVal) {
 
 async function startOAuthLogin() {
   if (accountAuthSubmitting) return;
-  const serverUrl = (typeof SOLUM_CENTER_URL !== 'undefined' ? SOLUM_CENTER_URL : "https://tannerlab.cn");
+  const serverUrl = solumCenterUrl || "https://solum.tannerlab.cn";
   let autoCheckTimer = null;
   let onVisibilityChange = null;
   try {
@@ -5686,7 +5692,7 @@ async function startOAuthLogin() {
             code: code.trim(),
             code_verifier: pkce.code_verifier,
             redirect_uri: redirectUri,
-            model: "qwen3.5-2b",
+            model: $("accountModel")?.value?.trim() || solumActiveModel,
             recovery_code: recoveryCode,
           },
         });
@@ -5867,7 +5873,7 @@ $("accountRecoverCancel").addEventListener("click", () => {
 $("accountRecoverSubmit").addEventListener("click", async () => {
   const btn = $("accountRecoverSubmit");
   if (btn.disabled || accountAuthSubmitting) return;
-  const serverUrl = $("accountServer").value.trim() || SOLUM_CENTER_URL;
+  const serverUrl = $("accountServer").value.trim() || solumCenterUrl;
   const username = $("accountRecoverUser").value.trim();
   const code = $("accountRecoverCode").value.trim();
   if (!username || !code) return toast("请填写账号和恢复码", "danger");
@@ -6494,34 +6500,74 @@ function groupOfView(view) {
   }
   return GROUPS[0];
 }
-// 设置目录页（多级导航一级页）：图标 + 名称 + 一句说明 + 右箭头
-for (const [v, label, ic, desc] of SETTINGS_GROUP.sub) {
-  if (v === "backup") continue;
-  const guestAllowed = GUEST_ALLOWED_VIEWS.has(v);
-  $("settingsMenu").appendChild(el("button", {
-    class: "nav-menu-item" + (guestAllowed ? "" : " locked-entry"),
-    type: "button",
-    "data-requires-account": guestAllowed ? "false" : "true",
-    onclick: () => showView(v),
-  }, [
-    icon(ic, 20),
-    el("div", null, [el("div", { class: "nm", text: label }), el("div", { class: "nd", text: desc })]),
-    guestAllowed ? null : el("span", { class: "menu-lock", title: "登录后可用" }, icon("lock", 15)),
-    el("span", { class: "chev" }, icon("chev", 16)),
-  ]));
+function getGroupLabel(g) {
+  if (typeof t === "function") {
+    if (g.id === "today") return t("nav.today");
+    if (g.id === "memory") return t("nav.memory");
+    if (g.id === "plan") return t("agenda.title", null, g.label);
+    if (g.id === "search") return t("common.search", null, g.label);
+    if (g.id === "settings") return t("nav.settings");
+  }
+  return g.label;
 }
-for (const g of PRIMARY_GROUPS) {
-  $("nav").appendChild(el("button", { class: "nav-btn", "data-group": g.id, onclick: () => gotoGroup(g) }, [
-    icon(g.icon, 19),
-    el("span", { text: g.label }),
-    el("span", { class: "grow" }),
-    g.id === "plan" ? el("span", { class: "due-pill", id: "dueNav" }) : null,
-  ]));
-  $("tabbar").appendChild(el("button", { class: "tab-btn", "data-group": g.id, onclick: () => gotoGroup(g) }, [
-    icon(g.icon, 21),
-    el("span", { text: g.label }),
-    g.id === "plan" ? el("span", { class: "due-pill", id: "dueTab" }) : null,
-  ]));
+
+function renderSettingsMenu() {
+  const menu = $("settingsMenu");
+  if (!menu) return;
+  menu.textContent = "";
+  for (const [v, label, ic, desc] of SETTINGS_GROUP.sub) {
+    if (v === "backup") continue;
+    const guestAllowed = GUEST_ALLOWED_VIEWS.has(v);
+    menu.appendChild(el("button", {
+      class: "nav-menu-item" + (guestAllowed ? "" : " locked-entry"),
+      type: "button",
+      "data-requires-account": guestAllowed ? "false" : "true",
+      onclick: () => showView(v),
+    }, [
+      icon(ic, 20),
+      el("div", null, [el("div", { class: "nm", text: label }), el("div", { class: "nd", text: desc })]),
+      guestAllowed ? null : el("span", { class: "menu-lock", title: "登录后可用" }, icon("lock", 15)),
+      el("span", { class: "chev" }, icon("chev", 16)),
+    ]));
+  }
+}
+
+function renderPrimaryNav() {
+  const nav = $("nav");
+  const tabbar = $("tabbar");
+  if (!nav || !tabbar) return;
+  nav.textContent = "";
+  tabbar.textContent = "";
+  for (const g of PRIMARY_GROUPS) {
+    const label = getGroupLabel(g);
+    nav.appendChild(el("button", { class: "nav-btn", "data-group": g.id, onclick: () => gotoGroup(g) }, [
+      icon(g.icon, 19),
+      el("span", { text: label }),
+      el("span", { class: "grow" }),
+      g.id === "plan" ? el("span", { class: "due-pill", id: "dueNav" }) : null,
+    ]));
+    tabbar.appendChild(el("button", { class: "tab-btn", "data-group": g.id, onclick: () => gotoGroup(g) }, [
+      icon(g.icon, 21),
+      el("span", { text: label }),
+      g.id === "plan" ? el("span", { class: "due-pill", id: "dueTab" }) : null,
+    ]));
+  }
+}
+
+renderSettingsMenu();
+renderPrimaryNav();
+
+function initLanguageControl() {
+  const sel = $("appLanguageSelect");
+  if (!sel || typeof window === "undefined" || !window.i18n) return;
+  sel.value = window.i18n.getLanguage();
+  sel.addEventListener("change", () => {
+    window.i18n.setLanguage(sel.value);
+    renderPrimaryNav();
+    renderSettingsMenu();
+    if (typeof refreshNavBadges === "function") refreshNavBadges();
+    toast(window.t ? window.t("toast.saved") : "Language updated", "ok");
+  });
 }
 const TOOL_ENTRIES = [
   { label: "邮箱事件", icon: "mail", group: "mail", requiresAccount: true, action: () => showView("email") },
@@ -6989,6 +7035,10 @@ const privacyGateReady = initPrivacyGate();
 // 先从 Rust 取得本地 profile id，再读取 Web Storage/IndexedDB。否则账号用户
 // 启动时会短暂渲染 guest 的聊天记录，而且 pagehide 还可能把错误分区写回。
 initClock().then(async () => {
+  if (typeof window !== "undefined" && window.i18n) {
+    window.i18n.translateDom();
+    initLanguageControl();
+  }
   await privacyGateReady;
   migrateMemoryListUiState();
   await refreshAccount();

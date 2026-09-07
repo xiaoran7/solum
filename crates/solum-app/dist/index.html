@@ -1609,8 +1609,8 @@
           <form id="chatForm">
             <button class="btn icon" id="composerPlus" type="button" aria-haspopup="true" aria-expanded="false" title="工作台：资料与组件" aria-label="工作台：资料与组件"></button>
             <div id="composerMenu" hidden></div>
-            <input type="text" id="chatInput" placeholder="写下一件事…" autocomplete="off" />
-            <button class="btn primary" id="sendBtn" type="submit" aria-label="发送"></button>
+            <input type="text" id="chatInput" placeholder="写下一件事…" data-i18n-placeholder="chat.placeholder" autocomplete="off" />
+            <button class="btn primary" id="sendBtn" type="submit" aria-label="发送" data-i18n-aria="chat.send"></button>
           </form>
         </div>
       </div>
@@ -1778,7 +1778,17 @@
 
     <!-- 设置目录 -->
     <section class="view" id="view-settings"><div class="vwrap">
-      <div class="vhead"><div class="vt"><h2>系统设置</h2></div></div>
+      <div class="vhead"><div class="vt"><h2 data-i18n="settings.title">系统设置</h2></div></div>
+      <div class="block" id="appLanguageBlock">
+        <h3 data-i18n="settings.language">界面语言 / Language</h3>
+        <p class="hint" data-i18n="settings.language_desc" style="margin:0 0 10px;">切换应用界面显示语言</p>
+        <div class="field" style="max-width:260px;">
+          <select id="appLanguageSelect">
+            <option value="zh-CN">简体中文 (Simplified Chinese)</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+      </div>
       <div class="block" id="reminderReliabilityBlock" hidden>
         <h3>提醒可靠性 <span class="bnote">系统后台交付</span></h3>
         <div class="banner reliability-warning" id="reminderDeliveryWarning" role="alert" hidden><div class="grow" id="reminderDeliveryWarningText"></div></div>
@@ -2167,7 +2177,7 @@
         <div class="formcol">
           <div id="accountLoginForm">
             <div class="field" hidden><label for="accountServer">中心地址</label>
-              <input type="text" id="accountServer" value="https://solum.tannerlab.cn" autocomplete="off" spellcheck="false" /></div>
+              <input type="text" id="accountServer" placeholder="https://…" autocomplete="off" spellcheck="false" /></div>
             <div class="fieldrow">
               <div class="field"><label for="accountUser">账号</label>
                 <input type="text" id="accountUser" autocomplete="off" spellcheck="false" /></div>
@@ -2180,7 +2190,7 @@
             </div>
           </div>
           <div class="field"><label for="accountModel">云端模型</label>
-            <select id="accountModel"><option value="qwen3.5-2b">qwen3.5-2b（默认）</option></select></div>
+            <select id="accountModel"></select></div>
           <p class="account-model-note" id="accountModelNote"></p>
           <div id="accountRecoverForm" hidden>
             <div class="fieldrow">
@@ -2474,7 +2484,7 @@
     <h3 id="modalTitle"></h3>
     <div class="body" id="modalBody"></div>
     <div class="btns">
-      <button class="btn" id="modalCancel">取消</button>
+      <button class="btn" id="modalCancel" data-i18n="common.cancel">取消</button>
       <button class="btn danger-fill" id="modalOk">确认</button>
     </div>
   </div>
@@ -2497,6 +2507,7 @@
 
 <div id="toast" role="status"></div>
 
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

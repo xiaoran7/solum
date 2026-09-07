@@ -21,12 +21,14 @@ class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         if (intent.action != AlarmScheduler.ACTION_FIRE) return
         val id = intent.getLongExtra("id", -1L)
-        val title = intent.getStringExtra("title") ?: "息壤 提醒"
+        val defaultTitle = ctx.getString(R.string.reminder_default_title)
+        val channelName = ctx.getString(R.string.channel_reminders_name)
+        val title = intent.getStringExtra("title") ?: defaultTitle
         val body = intent.getStringExtra("body") ?: ""
 
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "息壤 提醒", NotificationManager.IMPORTANCE_HIGH)
+            NotificationChannel(CHANNEL_ID, channelName, NotificationManager.IMPORTANCE_HIGH)
         )
 
         val launch = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)

@@ -75,7 +75,7 @@ class MainActivity : TauriActivity() {
     val mime = incoming.type ?: return
     if (mime.startsWith("image/")) {
       val uri = sharedStreamUri(incoming)
-      if (uri == null) noteCapture("分享的图片无法读取，请改用“选择截图 OCR”。") else recognizeImage(uri)
+      if (uri == null) noteCapture(getString(R.string.error_image_unreadable)) else recognizeImage(uri)
       return
     }
     if (mime != "text/plain" && mime != "text/html") return
@@ -130,8 +130,7 @@ class MainActivity : TauriActivity() {
   fun startVoiceCapture(): Boolean {
     val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
       putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-      putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
-      putExtra(RecognizerIntent.EXTRA_PROMPT, "说出要交给 Solum 的内容")
+      putExtra(RecognizerIntent.EXTRA_PROMPT, getString(R.string.voice_input_prompt))
       putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
     }
     if (intent.resolveActivity(packageManager) == null) return false
@@ -160,8 +159,8 @@ class MainActivity : TauriActivity() {
       VOICE_REQUEST -> {
         val text = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
           ?.firstOrNull()?.trim().orEmpty()
-        if (text.isEmpty()) noteCapture("系统语音识别没有返回文字。")
-        else enqueueCapture("manual", "语音输入", text)
+        if (text.isEmpty()) noteCapture(getString(R.string.error_voice_empty))
+        else enqueueCapture("manual", getString(R.string.voice_input_title), text)
       }
       OCR_PICK_REQUEST -> data?.data?.let { recognizeImage(it) }
     }
@@ -173,23 +172,23 @@ class MainActivity : TauriActivity() {
       contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
     } catch (_: Exception) { null }
     if (bytes != null && bytes > MAX_IMAGE_BYTES) {
-      noteCapture("图片超过 20 MiB，未执行 OCR。")
+      noteCapture(getString(R.string.error_image_too_large))
       return
     }
     val image = try {
       InputImage.fromFilePath(this, uri)
     } catch (_: Exception) {
-      noteCapture("图片无法解码，未执行 OCR。")
+      noteCapture(getString(R.string.error_image_decode_failed))
       return
     }
     val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
     recognizer.process(image)
       .addOnSuccessListener { result ->
         val text = result.text.trim()
-        if (text.isEmpty()) noteCapture("截图中没有识别到文字。")
-        else enqueueCapture("share", "截图 OCR", text)
+        if (text.isEmpty()) noteCapture(getString(R.string.error_ocr_no_text))
+        else enqueueCapture("share", getString(R.string.ocr_capture_title), text)
       }
-      .addOnFailureListener { noteCapture("截图 OCR 暂时失败，请稍后重试。") }
+      .addOnFailureListener { noteCapture(getString(R.string.error_ocr_failed)) }
       .addOnCompleteListener { recognizer.close() }
   }
 

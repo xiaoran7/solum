@@ -139,7 +139,7 @@ pub fn llm_widget_schema(reasoner: &dyn Reasoner, text: &str) -> Result<String> 
 /// (DeepSeek V4, GLM-5…) need timeouts well past the old hardcoded 30s.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
-    /// e.g. "http://100.79.74.121:8000/v1"
+    /// e.g. "http://100.70.173.50:8317/v1"
     pub base_url: String,
     pub api_key: String,
     #[serde(default = "default_model")]
@@ -155,7 +155,7 @@ pub struct LlmConfig {
 }
 
 fn default_model() -> String {
-    "qwen3.5-2b".to_string()
+    "gemini-3.8-flash-high".to_string()
 }
 
 fn default_temperature() -> Option<f64> {
@@ -909,7 +909,7 @@ mod tests {
         assert!(!masked.contains("secret"));
         // Model defaults when omitted; missing key is an error.
         let d = LlmConfig::from_json(r#"{"base_url":"https://x/v1","api_key":"k"}"#).unwrap();
-        assert_eq!(d.model, "qwen3.5-2b");
+        assert_eq!(d.model, "gemini-3.8-flash-high");
         assert!(LlmConfig::from_json(r#"{"base_url":"","api_key":"k"}"#).is_err());
         // Omitted knobs keep the historic defaults…
         assert_eq!(d.temperature, Some(0.3));

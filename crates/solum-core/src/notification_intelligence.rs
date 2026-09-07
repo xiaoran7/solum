@@ -556,15 +556,47 @@ pub fn content_hash(package_name: &str, text: &str) -> String {
     format!("{hash:016x}")
 }
 
+/// Declarative starter preset specification for applications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppStarterRuleSpec {
+    pub package_pattern: &'static str,
+    pub patterns: &'static [&'static str],
+}
+
+/// Known application-specific starter rule registry.
+/// Extracted as a declarative policy layer so domain logic does not hard-code
+/// proprietary application packages into business branches.
+pub static APP_STARTER_SPECS: &[AppStarterRuleSpec] = &[
+    AppStarterRuleSpec {
+        package_pattern: "com.tencent.mm",
+        patterns: &["@我", "@所有人"],
+    },
+    AppStarterRuleSpec {
+        package_pattern: "com.tencent.mobileqq",
+        patterns: &["@我", "有人@我"],
+    },
+    AppStarterRuleSpec {
+        package_pattern: "com.alibaba.android.rimet",
+        patterns: &["DING", "紧急", "@"],
+    },
+];
+
+/// Fallback starter patterns for any other allow-listed application.
+pub static DEFAULT_STARTER_PATTERNS: &[&str] = &["@我", "@全体成员"];
+
+/// Resolve starter priority pattern list for a package without hardcoded match branching.
+pub fn starter_patterns_for_package(package_name: &str) -> &'static [&'static str] {
+    APP_STARTER_SPECS
+        .iter()
+        .find(|spec| spec.package_pattern == package_name)
+        .map(|spec| spec.patterns)
+        .unwrap_or(DEFAULT_STARTER_PATTERNS)
+}
+
 /// Package-specific best-effort starter rules. They are copied when an app is
 /// allow-listed, so users can edit or delete them; they are not an authority.
 pub fn priority_presets(package_name: &str) -> Vec<NotificationPriorityRule> {
-    let patterns: &[&str] = match package_name {
-        "com.tencent.mm" => &["@我", "@所有人"],
-        "com.tencent.mobileqq" => &["@我", "有人@我"],
-        "com.alibaba.android.rimet" => &["DING", "紧急", "@"],
-        _ => &["@我", "@全体成员"],
-    };
+    let patterns = starter_patterns_for_package(package_name);
     patterns
         .iter()
         .map(|pattern| NotificationPriorityRule {
@@ -892,5 +924,21 @@ mod tests {
         .is_empty());
         let (_, user) = batch_triage_prompt(&captures, now());
         assert!(!user.contains("id"));
+    }
+
+    #[test]
+    fn starter_rule_specs_and_fallback() {
+        assert_eq!(
+            starter_patterns_for_package("com.tencent.mm"),
+            &["@我", "@所有人"]
+        );
+        assert_eq!(
+            starter_patterns_for_package("com.alibaba.android.rimet"),
+            &["DING", "紧急", "@"]
+        );
+        assert_eq!(
+            starter_patterns_for_package("org.telegram.messenger"),
+            DEFAULT_STARTER_PATTERNS
+        );
     }
 }

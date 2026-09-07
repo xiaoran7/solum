@@ -80,10 +80,10 @@ class NotificationPipelineService : Service() {
         val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "Solum 通知处理",
+            getString(R.string.channel_pipeline_name),
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "保持 Solum 在后台静默整理已接收的应用消息"
+            description = getString(R.string.channel_pipeline_desc)
             setShowBadge(false)
             setSound(null, null)
             enableVibration(false)
@@ -97,8 +97,8 @@ class NotificationPipelineService : Service() {
 
     private fun buildNotification(): Notification = NotificationCompat.Builder(this, CHANNEL_ID)
         .setSmallIcon(android.R.drawable.ic_dialog_info)
-        .setContentTitle("Solum 在后台运行")
-        .setContentText("应用消息正在本机静默整理")
+        .setContentTitle(getString(R.string.pipeline_notif_title))
+        .setContentText(getString(R.string.pipeline_notif_text))
         .setOngoing(true)
         .setOnlyAlertOnce(true)
         .setSilent(true)
@@ -211,11 +211,12 @@ class NotificationPipelineService : Service() {
     private fun showRecoveryNotification(alert: JSONObject) {
         ensureAlertChannel()
         val status = alert.optString("status")
-        val name = alert.optString("name").ifBlank { "福利渠道" }
+        val defaultName = getString(R.string.alert_default_channel_name)
+        val name = alert.optString("name").ifBlank { defaultName }
         val latency = alert.optLong("latency_ms", -1L)
         val availability = alert.optDouble("availability_7d", Double.NaN)
         val body = buildString {
-            append(if (status == "test") "Solum 通知链路正常" else "$name 已恢复")
+            append(if (status == "test") getString(R.string.alert_test_body) else getString(R.string.alert_recovered_body, name))
             if (latency >= 0) append(" · ${latency}ms")
             if (availability.isFinite()) append(" · 7天 ${"%.2f".format(availability)}%")
         }
@@ -229,11 +230,13 @@ class NotificationPipelineService : Service() {
             openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val title = if (status == "test") getString(R.string.alert_test_title) else getString(R.string.alert_recovered_title)
+        val clickHint = getString(R.string.alert_click_action)
         val notification = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
             .setSmallIcon(applicationInfo.icon)
-            .setContentTitle(if (status == "test") "福利监控测试" else "福利渠道可以用了")
+            .setContentTitle(title)
             .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText("$body。点击立即打开福利页面。"))
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$body。$clickHint"))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setAutoCancel(true)
@@ -252,10 +255,10 @@ class NotificationPipelineService : Service() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val channel = NotificationChannel(
             ALERT_CHANNEL_ID,
-            "Solum 福利提醒",
+            getString(R.string.channel_alerts_name),
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
-            description = "监控渠道恢复时立即提醒"
+            description = getString(R.string.channel_alerts_desc)
             enableVibration(true)
         }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)

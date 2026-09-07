@@ -1,4 +1,31 @@
 <resources>
-    <string name="app_name">"息壤"</string>
-    <string name="main_activity_title">"息壤"</string>
+    <string name="app_name">息壤</string>
+    <string name="main_activity_title">息壤</string>
+
+    <!-- 语音与图片交互 -->
+    <string name="voice_input_prompt">说出要交给 Solum 的内容</string>
+    <string name="voice_input_title">语音输入</string>
+    <string name="ocr_capture_title">截图 OCR</string>
+    <string name="error_image_unreadable">分享的图片无法读取，请改用“选择截图 OCR”。</string>
+    <string name="error_image_too_large">图片超过 20 MiB，未执行 OCR。</string>
+    <string name="error_image_decode_failed">图片无法解码，未执行 OCR。</string>
+    <string name="error_ocr_no_text">截图中没有识别到文字。</string>
+    <string name="error_ocr_failed">截图 OCR 暂时失败，请稍后重试。</string>
+    <string name="error_voice_empty">系统语音识别没有返回文字。</string>
+
+    <!-- 通知渠道与服务提示 -->
+    <string name="channel_reminders_name">息壤 提醒</string>
+    <string name="reminder_default_title">息壤 提醒</string>
+    <string name="channel_pipeline_name">Solum 通知处理</string>
+    <string name="channel_pipeline_desc">保持 Solum 在后台静默整理已接收的应用消息</string>
+    <string name="pipeline_notif_title">Solum 在后台运行</string>
+    <string name="pipeline_notif_text">应用消息正在本机静默整理</string>
+    <string name="channel_alerts_name">Solum 福利提醒</string>
+    <string name="channel_alerts_desc">监控渠道恢复时立即提醒</string>
+    <string name="alert_test_title">福利监控测试</string>
+    <string name="alert_recovered_title">福利渠道可以用了</string>
+    <string name="alert_default_channel_name">福利渠道</string>
+    <string name="alert_test_body">Solum 通知链路正常</string>
+    <string name="alert_recovered_body">%1$s 已恢复</string>
+    <string name="alert_click_action">点击立即打开福利页面。</string>
 </resources>

@@ -1,0 +1,14 @@
+<resources>
+    <string name="channel_pipeline_name">Solum 通知处理</string>
+    <string name="channel_pipeline_desc">保持 Solum 在后台静默整理已接收的应用消息</string>
+    <string name="pipeline_notif_title">Solum 在后台运行</string>
+    <string name="pipeline_notif_text">应用消息正在本机静默整理</string>
+    <string name="channel_alerts_name">Solum 福利提醒</string>
+    <string name="channel_alerts_desc">监控渠道恢复时立即提醒</string>
+    <string name="alert_test_title">福利监控测试</string>
+    <string name="alert_recovered_title">福利渠道可以用了</string>
+    <string name="alert_default_channel_name">福利渠道</string>
+    <string name="alert_test_body">Solum 通知链路正常</string>
+    <string name="alert_recovered_body">%1$s 已恢复</string>
+    <string name="alert_click_action">点击立即打开福利页面。</string>
+</resources>

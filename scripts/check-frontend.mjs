@@ -3,6 +3,7 @@ import vm from "node:vm";
 
 const htmlPath = new URL("../crates/solum-app/dist/index.html", import.meta.url);
 const appJsPath = new URL("../crates/solum-app/dist/app.js", import.meta.url);
+const i18nJsPath = new URL("../crates/solum-app/dist/i18n.js", import.meta.url);
 const tauriConfPath = new URL("../crates/solum-app/tauri.conf.json", import.meta.url);
 const appPath = new URL("../crates/solum-app/src/lib.rs", import.meta.url);
 const accountCorePath = new URL("../crates/solum-core/src/account.rs", import.meta.url);
@@ -13,6 +14,7 @@ const notificationPipelinePath = new URL(
 );
 const html = fs.readFileSync(htmlPath, "utf8");
 const appJs = fs.readFileSync(appJsPath, "utf8");
+const i18nJs = fs.readFileSync(i18nJsPath, "utf8");
 const tauriConf = fs.readFileSync(tauriConfPath, "utf8");
 const app = fs.readFileSync(appPath, "utf8");
 const accountCore = fs.readFileSync(accountCorePath, "utf8");
@@ -26,6 +28,7 @@ const inlineScripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<
 if (inlineScripts.length !== 0) {
   throw new Error("index.html must not contain inline <script>; put JS in dist/app.js (CSP script-src has no 'unsafe-inline')");
 }
+new vm.Script(i18nJs, { filename: "dist/i18n.js" });
 new vm.Script(appJs, { filename: "dist/app.js" });
 if (!/<script\s+src="app\.js"><\/script>/.test(html)) {
   throw new Error('index.html must load the application via <script src="app.js"></script>');

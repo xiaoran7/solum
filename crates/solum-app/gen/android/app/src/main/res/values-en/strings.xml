@@ -1,0 +1,31 @@
+<resources>
+    <string name="app_name">Solum</string>
+    <string name="main_activity_title">Solum</string>
+
+    <!-- Voice & Image Interaction -->
+    <string name="voice_input_prompt">Speak to Solum</string>
+    <string name="voice_input_title">Voice Input</string>
+    <string name="ocr_capture_title">Screenshot OCR</string>
+    <string name="error_image_unreadable">Shared image cannot be read. Please use \"Select Screenshot OCR\" instead.</string>
+    <string name="error_image_too_large">Image exceeds 20 MiB; OCR skipped.</string>
+    <string name="error_image_decode_failed">Unable to decode image; OCR skipped.</string>
+    <string name="error_ocr_no_text">No text detected in screenshot.</string>
+    <string name="error_ocr_failed">Screenshot OCR failed temporarily; please try again later.</string>
+    <string name="error_voice_empty">No text returned from speech recognition.</string>
+
+    <!-- Notification Channels & Background Pipeline -->
+    <string name="channel_reminders_name">Solum Reminders</string>
+    <string name="reminder_default_title">Solum Reminder</string>
+    <string name="channel_pipeline_name">Solum Notification Pipeline</string>
+    <string name="channel_pipeline_desc">Keeps Solum running silently in the background to organize received notifications</string>
+    <string name="pipeline_notif_title">Solum running in background</string>
+    <string name="pipeline_notif_text">Organizing messages locally on device</string>
+    <string name="channel_alerts_name">Solum Service Alerts</string>
+    <string name="channel_alerts_desc">Alerts when monitored services recover</string>
+    <string name="alert_test_title">Alert Test</string>
+    <string name="alert_recovered_title">Service Available</string>
+    <string name="alert_default_channel_name">Service</string>
+    <string name="alert_test_body">Solum notification pipeline operational</string>
+    <string name="alert_recovered_body">%1$s is now operational</string>
+    <string name="alert_click_action">Tap to open service page.</string>
+</resources>
