@@ -10,20 +10,19 @@
 
 ## [Unreleased]
 
-- 2026-09-08：前端体验与主题时序深度治理（名称硬编码清理、深浅色模式生效、登录失效时序重构）：
-  1. **昵称与身份去特定硬编码**：彻底移除个人资料与侧边栏中强行写死的 `"唐棠"` 与 `"本地主人"` 字面量，Profile 默认昵称回退为标准中性词条（支持 i18n 多语言 `common.guest` 访客 / `username`），输入框 placeholder 规范化；明确解耦数字人格 AI 称谓与个人资料昵称。
-  2. **深浅色主题真生效**：重构 `index.html` CSS 主题变量体系，增加 `:root[data-theme="dark"]` 与 `:root[data-theme="light"]` 强类型属性选择器；`app.js` 切换主题时同步写入 `data-theme`，彻底解决过去仅声明 `colorScheme` 无法触发深色模式样式表、导致深浅色与跟随系统完全一样的问题。
-  3. **登录失效时序与提示治理**：重构 401 拦截与启动恢复状态机；运行时先展示全屏遮罩并执行注销，避免半空重启导致弹窗闪烁消失；重启后优先在第一帧拦截锁定在登录门并提供清晰鲜明的提示（“登录状态已过期失效，请重新登录以恢复云端服务”），杜绝跳回聊天界面后二次弹窗的晃动感。
-- 2026-09-07：Android 端与多端共享层架构解耦、硬编码清理与全面国际化体系落地：
-  1. **LLM 端点与模型解耦**：移除旧私网调试 IP，默认预设升级为通过 CPA Stream Guard (`http://100.70.173.50:8317/v1`) 连接 `gemini-3.8-flash-high`，解耦前端自定义端点与超时机制；更新工作区配置 `solum-llm.json` 与 `solum-core/src/llm.rs` 默认模型。
-  2. **中心域名与模型单点真理**：`account_status_get` 统一导出 `default_server_url` 与 `default_model`，前端 HTML/JS 移除写死默认中心值和模型名；登录、注册、OAuth 流程全面改为动态绑定。
-  3. **通知规则领域解耦**：从 `solum-core/src/notification_intelligence.rs` 中剥离微信/QQ/钉钉的硬编码 match 分支，抽离为声明式 `AppStarterRuleSpec` 策略层 `starter_patterns_for_package`，新增策略注册与回退测试。
-  4. **Android 原生层真实国际化**：在 `solum-app`、`solum-alarm`、`solum-notif-access` 三大模块建立标准的 `values` 与 `values-en` 资源架构，全面提取并替换 Kotlin 代码中写死的通知渠道名、前台服务常驻通知、语音提示、OCR 错误与福利告警字符串。
-  5. **前端严格 CSP 双语系统**：自研轻量、零外部依赖、符合严格 CSP 的 `dist/i18n.js`（含 `data-i18n` 声明式 DOM 翻译、参数化插值与词典投影）；在“设置 → 系统设置”新增中/英文切换控件；`check-frontend.mjs` 扩展脚本语法与 417 个独立元素 ID 检验全绿。
-- 2026-09-04：废弃旧域 `oauth.tannerlab.xyz`，将 Solum Center `postgres-server.js` 中 `oauthIssuer` 默认回退值与 contract 测试断言校准为规范域名 `https://auth.tannerlab.cn`。
-- 2026-09-03：Solum Center `solum-cloud` 0.8.0 服务端性能与安全发版（本地 node:test 55/55 通过，其中 6 个 Postgres 集成测试在 VPS 一次性容器真库执行）：`/v1/pull` 累计字节窗口改为先在有界候选集（≤500 行）上计尺寸、再对入选行取密文，修复新设备/长期离线设备全量拉取时解包整个租户 blob 历史的 O(全历史) 扫描；备份 commit 的对象校验移入 PostgreSQL（内置 `sha256()`），不再把最多 64×68MB 密文拉到 Node 内逐个哈希；schema 新增 `ai.usage_events` pending 部分索引与 `sync.alerts (tenant_id, seq)` 索引；`/v1/auth/oauth/exchange` 补 per-IP 限流（401 计数、502/403 不计）；修复 `/v1/alerts` 显式 `limit=0` 被静默当作 100 的问题。集成测试权限清单补齐 `auth.oauth_identities` 与 `vault.recovery_codes`（8-29 OAuth 发版后未同步的测试腐化）；PITFALLS 记录 public schema revoke 使 pgcrypto `digest()` 不可解析、须用内置 `sha256()` 的坑。
-- 2026-08-29：Solum Center 生产完成 Tg-oauth 统一身份接入发版（`solum-release-0a497cd`）；Postgres 迁移 `auth.oauth_identities` 表；支持 `/v1/auth/oauth/config` 与 `/v1/auth/oauth/exchange` 自动开户与 E2EE 恢复码解耦。
-- 2026-08-28：全仓文档按当前 `0.2.8/1018`、local-first 边界和真实待办重构；删除重复会话流水与过期生产断言。
+## [0.2.14]
+
+- 架构解耦与硬编码清理：
+  1. **LLM 端点与模型升级**：切换至 `http://100.70.173.50:8317/v1`（CPA Stream Guard 守护转发），模型换代为 `gemini-3.8-flash-high`，解耦前端自定义端点与超时控制。
+  2. **中心域名与模型单点真理**：`account_status_get` IPC 动态提供 `default_server_url` 与 `default_model`，彻底消除前端 HTML/JS 写死默认值与字符串硬编码。
+  3. **通知规则领域解耦**：剥离 `notification_intelligence.rs` 中微信/QQ/钉钉的硬编码分支，抽离为独立声明式策略层 `AppStarterRuleSpec`。
+- 全面国际化与前端体验深度治理：
+  1. **双端真实国际化**：Android 原生补充 `values` / `values-en` 双语 `strings.xml`，Kotlin 代码中所有通知渠道名、前台服务常驻标题、语音与 OCR 提示全面资源化；前端自研轻量、严苛 CSP 兼容双语系统 `dist/i18n.js`，设置中心提供即时中/英文切换。
+  2. **昵称与身份去特定化**：移除个人资料与侧边栏中硬编码的“唐棠”与“本地主人”字面量，支持中英文访客/用户名动态回退与规范占位符。
+  3. **深浅色主题真生效**：重构 CSS 变量体系为属性驱动（`:root[data-theme="dark|light"]`），解决仅设置 `colorScheme` 无法触发深色模式样式表的问题。
+  4. **登录失效时序重构**：401 发生时由遮罩拦截并优雅注销，启动期第一帧优先全屏锁定并鲜明提示“登录状态已过期失效”，杜绝跳屏与反复弹窗。
+- 发布版本递增为 `0.2.14/1024`。
+- 2026-09-08：生成 `Solum-v0.2.14.apk`；包名 `dev.solum.app`，版本 `0.2.14 (1024)`，minSdk 26 / targetSdk 36，ABI `arm64-v8a`；APK Signature Scheme v2 有效，三大系统接收器均完备。文件 46,559,181 字节，SHA-256 `8D2B1199BCDE870018E759FB47DD826E6CBF92B7D5945E927E20D9D1F5296B61`，签名证书 SHA-256 `F3467B14C3CA39A88D74B85F10800565D0A81BF67FCF392147EC6B4F6AEFCA87`。构建与静态发布核对全部 PASS；按铁律清理旧版本包并归档至 `Deliverables/Solum-v0.2.14.apk`。
 
 ## [0.2.13]
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Solum",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "identifier": "dev.solum.app",
   "build": {
     "frontendDist": "dist"
@@ -28,7 +28,7 @@
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
     "android": {
-      "versionCode": 1023
+      "versionCode": 1024
     },
     "windows": {
       "nsis": {
