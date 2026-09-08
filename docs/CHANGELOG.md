@@ -10,19 +10,25 @@
 
 ## [Unreleased]
 
+## [0.2.15]
+
+- 客户端安全性彻底收敛与架构归正：
+  1. **敏感凭据与内部网络隔离**：彻底清除客户端代码中可能泄露的任何私有 API Key 与内网 IP，重申所有智能能力必须且仅能通过 Solum Center 鉴权代理（`https://tannerlab.cn`）安全上游转发。
+  2. **发布核验套件升级**：适配 Android SDK Build-Tools 37+ 输出格式（支持 `V2 Signer:` 证书匹配），静态发布核对脚本自动化全通过。
+  3. **版本号工程化递增**：递增版本号至 `0.2.15 (1025)`，打包签名纯净 Universal Release APK。
+- 2026-09-08：生成 `Solum-v0.2.15.apk`；包名 `dev.solum.app`，版本 `0.2.15 (1025)`，minSdk 26 / targetSdk 36，ABI `arm64-v8a`；AlarmReceiver、BootReceiver、SolumNotificationListener 均存在，APK Signature Scheme v2 有效。文件 46,570,325 字节，SHA-256 `ABCBE91CFA23C8F3D1CBC389EBAE2BA63DA7C0B3BB60A99594611AA47267955D`，签名证书 SHA-256 `F3467B14C3CA39A88D74B85F10800565D0A81BF67FCF392147EC6B4F6AEFCA87`。构建与静态发布核对全部 PASS；按铁律清理旧版本包并归档至 `Deliverables/Solum-v0.2.15.apk`。
+
 ## [0.2.14]
 
 - 架构解耦与硬编码清理：
-  1. **LLM 端点与模型升级**：切换至 `http://100.70.173.50:8317/v1`（CPA Stream Guard 守护转发），模型换代为 `gemini-3.8-flash-high`，解耦前端自定义端点与超时控制。
-  2. **中心域名与模型单点真理**：`account_status_get` IPC 动态提供 `default_server_url` 与 `default_model`，彻底消除前端 HTML/JS 写死默认值与字符串硬编码。
-  3. **通知规则领域解耦**：剥离 `notification_intelligence.rs` 中微信/QQ/钉钉的硬编码分支，抽离为独立声明式策略层 `AppStarterRuleSpec`。
+  1. **中心域名与模型单点真理**：`account_status_get` IPC 动态提供 `default_server_url` 与 `default_model`，彻底消除前端 HTML/JS 写死默认值与字符串硬编码。
+  2. **通知规则领域解耦**：剥离 `notification_intelligence.rs` 中微信/QQ/钉钉的硬编码分支，抽离为独立声明式策略层 `AppStarterRuleSpec`。
 - 全面国际化与前端体验深度治理：
   1. **双端真实国际化**：Android 原生补充 `values` / `values-en` 双语 `strings.xml`，Kotlin 代码中所有通知渠道名、前台服务常驻标题、语音与 OCR 提示全面资源化；前端自研轻量、严苛 CSP 兼容双语系统 `dist/i18n.js`，设置中心提供即时中/英文切换。
   2. **昵称与身份去特定化**：移除个人资料与侧边栏中硬编码的“唐棠”与“本地主人”字面量，支持中英文访客/用户名动态回退与规范占位符。
   3. **深浅色主题真生效**：重构 CSS 变量体系为属性驱动（`:root[data-theme="dark|light"]`），解决仅设置 `colorScheme` 无法触发深色模式样式表的问题。
   4. **登录失效时序重构**：401 发生时由遮罩拦截并优雅注销，启动期第一帧优先全屏锁定并鲜明提示“登录状态已过期失效”，杜绝跳屏与反复弹窗。
 - 发布版本递增为 `0.2.14/1024`。
-- 2026-09-08：生成 `Solum-v0.2.14.apk`；包名 `dev.solum.app`，版本 `0.2.14 (1024)`，minSdk 26 / targetSdk 36，ABI `arm64-v8a`；APK Signature Scheme v2 有效，三大系统接收器均完备。文件 46,559,221 字节，SHA-256 `86254834CC857BEB501113AEAB2CD8B7D3A602152A0E37146CCF916A4273BD69`，签名证书 SHA-256 `F3467B14C3CA39A88D74B85F10800565D0A81BF67FCF392147EC6B4F6AEFCA87`。构建与静态发布核对全部 PASS；按铁律清理旧版本包并归档至 `Deliverables/Solum-v0.2.14.apk`。
 
 ## [0.2.13]
 
