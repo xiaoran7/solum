@@ -11,8 +11,9 @@
      Solum Design Tokens — 本地工作台 / 田野笔记
      冷白纸面承载信息，深绿墨色建立秩序；琥珀只用于主动作与到点信号。
      ========================================================================= */
-  :root {
-    color-scheme: light dark;
+  :root,
+  :root[data-theme="light"] {
+    color-scheme: light;
 
     --bg: #ffffff;
     --side: #f5f7f4;
@@ -68,7 +69,8 @@
     --measure: 62ch;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
       --bg: #121215;
       --side: #18181c;
       --card: #18181c;
@@ -100,6 +102,39 @@
       --shadow-md: 0 8px 24px rgba(0, 0, 0, .4);
       --shadow-xl: 0 24px 64px rgba(0, 0, 0, .6);
     }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #121215;
+    --side: #18181c;
+    --card: #18181c;
+    --inset: #202025;
+    --hover: #26262c;
+    --ink: #f0f0f3;
+    --ink-2: #c6c6ce;
+    --muted: #9595a2;
+    --faint: #636370;
+    --line: #27272e;
+    --line-strong: #383842;
+
+    --accent: #f0b242;
+    --accent-fill: #f0a824;
+    --on-accent-fill: #221603;
+    --accent-soft: #30240d;
+    --accent-line: #523c12;
+    --focus: rgba(240, 178, 66, .55);
+
+    --ok: #4ade80;   --ok-soft: #143520;
+    --danger: #f87171; --danger-soft: #381919; --danger-line: #592525;
+    --gray-soft: #25252b;
+
+    --toast-bg: #f0f0f3; --toast-ink: #121215;
+    --backdrop: rgba(0, 0, 0, .65);
+
+    --shadow-xs: none;
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, .3);
+    --shadow-md: 0 8px 24px rgba(0, 0, 0, .4);
+    --shadow-xl: 0 24px 64px rgba(0, 0, 0, .6);
   }
 
   * { box-sizing: border-box; }
@@ -1826,7 +1861,7 @@
         <summary>编辑并保存为新版本</summary>
         <div class="fold-body">
         <div class="formcol">
-          <div class="field"><label for="pNickname">称呼你为</label><input type="text" id="pNickname" placeholder="如：老板（留空则不称呼）" /></div>
+          <div class="field"><label for="pNickname" data-i18n="persona.calling_label">AI 对你的专属称呼</label><input type="text" id="pNickname" placeholder="留空则直接对话，不加特殊称呼" data-i18n-placeholder="persona.calling_placeholder" /></div>
           <div class="field"><label for="pTone">语气</label><input type="text" id="pTone" placeholder="如：干练、简洁，偶尔冷幽默" /></div>
           <div class="field"><label for="pCatch">口头禅</label><input type="text" id="pCatch" placeholder="逗号分隔，如：稳了, 安排上" /></div>
           <div class="field"><label for="pNotes">其他备注</label><input type="text" id="pNotes" placeholder="风格 / 价值观自由描述" /></div>
@@ -2388,15 +2423,15 @@
       </div>
       <div class="field">
         <label for="profileInputName">昵称</label>
-        <input type="text" id="profileInputName" maxlength="20" placeholder="例如：唐棠" autocomplete="off" />
+        <input type="text" id="profileInputName" maxlength="20" placeholder="输入你的昵称" data-i18n-placeholder="profile.name_placeholder" autocomplete="off" />
       </div>
       <div class="field">
         <label for="profileInputRole">身份 / 角色</label>
-        <input type="text" id="profileInputRole" maxlength="20" placeholder="例如：本地主人、独立开发者、学生" autocomplete="off" />
+        <input type="text" id="profileInputRole" maxlength="20" placeholder="例如：独立开发者、设计师、学生" data-i18n-placeholder="profile.role_placeholder" autocomplete="off" />
       </div>
       <div class="field">
         <label for="profileInputBio">个性签名 / 简介</label>
-        <textarea id="profileInputBio" rows="2" maxlength="80" placeholder="写一句属于你的座右铭或偏好…"></textarea>
+        <textarea id="profileInputBio" rows="2" maxlength="80" placeholder="写一句属于你的座右铭或偏好…" data-i18n-placeholder="profile.bio_placeholder"></textarea>
       </div>
     </div>
     <div class="modal-sheet-foot">

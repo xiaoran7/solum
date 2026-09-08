@@ -30,6 +30,22 @@ const I18N_DICTS = {
     "common.default": "默认",
     "common.none": "无",
     "common.unknown": "未知",
+    "common.guest": "访客",
+
+    // Theme
+    "theme.dark": "深色模式",
+    "theme.light": "浅色模式",
+    "theme.system": "跟随系统",
+    "theme.switched": "外观已切换为：{theme}",
+
+    // Profile & Persona
+    "profile.default_role": "本地空间",
+    "profile.default_bio": "记录当下，专注生活",
+    "profile.name_placeholder": "输入你的昵称",
+    "profile.role_placeholder": "例如：独立开发者、设计师、学生",
+    "profile.bio_placeholder": "写一句属于你的座右铭或偏好…",
+    "persona.calling_label": "AI 对你的专属称呼",
+    "persona.calling_placeholder": "留空则直接对话，不加特殊称呼",
 
     // Navigation
     "nav.today": "今日",
@@ -148,6 +164,22 @@ const I18N_DICTS = {
     "common.default": "Default",
     "common.none": "None",
     "common.unknown": "Unknown",
+    "common.guest": "Guest",
+
+    // Theme
+    "theme.dark": "Dark Mode",
+    "theme.light": "Light Mode",
+    "theme.system": "System Default",
+    "theme.switched": "Theme switched to: {theme}",
+
+    // Profile & Persona
+    "profile.default_role": "Local Space",
+    "profile.default_bio": "Focus on the present, record life",
+    "profile.name_placeholder": "Enter your nickname",
+    "profile.role_placeholder": "e.g., Developer, Designer, Student",
+    "profile.bio_placeholder": "A motto or personal preference…",
+    "persona.calling_label": "How AI addresses you",
+    "persona.calling_placeholder": "Leave blank to converse directly without titles",
 
     // Navigation
     "nav.today": "Today",

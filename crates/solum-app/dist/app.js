@@ -4829,12 +4829,16 @@ function handleAccountExpiry(error, command) {
   renderShellIdentity({ logged_in: false });
   setAccountGateMode("login");
   closeMobileTools();
-  openAccountGate("登录状态已过期，请重新登录", { dismissible: false, allowGuest: true });
-  $("accountGateStatus").textContent = "登录状态已失效，请重新登录。";
   console.info("Solum account session expired", command, String(error || ""));
+  toast("登录凭据已失效，正在为您重置安全会话…", "danger", 3500);
   accountExpiryFlight = rawInvoke("account_logout")
     .catch(() => null)
-    .finally(() => { accountExpiryFlight = null; });
+    .finally(() => {
+      accountExpiryFlight = null;
+      // 桌面端或无需重启进程环境下的平滑兜底
+      openAccountGate("登录状态已过期，请重新登录", { dismissible: false, allowGuest: true });
+      $("accountGateStatus").textContent = "登录状态已失效，请重新登录。";
+    });
   return accountExpiryFlight;
 }
 
@@ -4897,9 +4901,9 @@ const DEFAULT_AVATAR_SRC = "assets/avatars/default-sprout.png";
 const MAX_AVATAR_INPUT_BYTES = 12 * 1024 * 1024;
 const MAX_AVATAR_STORED_BYTES = 220 * 1024;
 const DEFAULT_USER_PROFILE = {
-  nickname: "唐棠",
-  role: "本地空间",
-  bio: "专注当下，记录生活",
+  nickname: "",
+  role: "",
+  bio: "",
   avatarData: "",
 };
 
@@ -4913,9 +4917,9 @@ function normalizeAvatarData(value) {
 function normalizeUserProfile(value) {
   const source = value && typeof value === "object" ? value : {};
   return {
-    nickname: String(source.nickname || DEFAULT_USER_PROFILE.nickname).trim().slice(0, 24) || DEFAULT_USER_PROFILE.nickname,
-    role: String(source.role || DEFAULT_USER_PROFILE.role).trim().slice(0, 36) || DEFAULT_USER_PROFILE.role,
-    bio: String(source.bio || DEFAULT_USER_PROFILE.bio).trim().slice(0, 100) || DEFAULT_USER_PROFILE.bio,
+    nickname: String(source.nickname || "").trim().slice(0, 24),
+    role: String(source.role || "").trim().slice(0, 36),
+    bio: String(source.bio || "").trim().slice(0, 100),
     avatarData: normalizeAvatarData(source.avatarData),
   };
 }
@@ -4969,12 +4973,17 @@ function applyUserProfile(profile) {
 
   avatars.forEach((avatar) => renderAvatarElement(avatar, p));
 
-  if ($("profileSheetRole")) $("profileSheetRole").textContent = p.role || "本地空间";
-  if ($("profileSheetBio")) $("profileSheetBio").textContent = p.bio || "专注当下，记录生活";
+  const fallbackRole = (typeof t === "function" ? t("profile.default_role") : "本地空间");
+  const fallbackBio = (typeof t === "function" ? t("profile.default_bio") : "记录当下，专注生活");
+  const fallbackName = (typeof t === "function" ? t("common.guest") : "访客");
+
+  if ($("profileSheetRole")) $("profileSheetRole").textContent = p.role || fallbackRole;
+  if ($("profileSheetBio")) $("profileSheetBio").textContent = p.bio || fallbackBio;
   
   if (!accountLoggedIn) {
-    if ($("accountShellLabel")) $("accountShellLabel").textContent = p.nickname || "唐棠";
-    if ($("mobileAccountLabel")) $("mobileAccountLabel").textContent = p.nickname || "唐棠";
+    const displayNick = p.nickname || fallbackName;
+    if ($("accountShellLabel")) $("accountShellLabel").textContent = displayNick;
+    if ($("mobileAccountLabel")) $("mobileAccountLabel").textContent = displayNick;
   }
 
   document.querySelectorAll(".msg-row.user .msg-avatar").forEach((el) => {
@@ -5013,10 +5022,14 @@ function closeProfileEditor() {
 function renderProfilePreview() {
   if (!editingProfileDraft) return;
   const p = editingProfileDraft;
+  const fallbackRole = (typeof t === "function" ? t("profile.default_role") : "本地空间");
+  const fallbackBio = (typeof t === "function" ? t("profile.default_bio") : "记录当下，专注生活");
+  const fallbackName = (typeof t === "function" ? t("common.guest") : "访客");
+
   renderAvatarElement($("profilePreviewAvatar"), p);
-  if ($("profilePreviewName")) $("profilePreviewName").textContent = p.nickname || "唐棠";
-  if ($("profilePreviewRole")) $("profilePreviewRole").textContent = p.role || "本地空间";
-  if ($("profilePreviewBio")) $("profilePreviewBio").textContent = p.bio || "专注当下，记录生活";
+  if ($("profilePreviewName")) $("profilePreviewName").textContent = p.nickname || fallbackName;
+  if ($("profilePreviewRole")) $("profilePreviewRole").textContent = p.role || fallbackRole;
+  if ($("profilePreviewBio")) $("profilePreviewBio").textContent = p.bio || fallbackBio;
 }
 
 function blobToDataUrl(blob) {
@@ -5082,17 +5095,17 @@ function setupProfileEditorEvents() {
 
   $("profileInputName")?.addEventListener("input", (e) => {
     if (!editingProfileDraft) return;
-    editingProfileDraft.nickname = e.target.value.trim() || "唐棠";
+    editingProfileDraft.nickname = e.target.value.trim();
     renderProfilePreview();
   });
   $("profileInputRole")?.addEventListener("input", (e) => {
     if (!editingProfileDraft) return;
-    editingProfileDraft.role = e.target.value.trim() || "本地空间";
+    editingProfileDraft.role = e.target.value.trim();
     renderProfilePreview();
   });
   $("profileInputBio")?.addEventListener("input", (e) => {
     if (!editingProfileDraft) return;
-    editingProfileDraft.bio = e.target.value.trim() || "专注当下，记录生活";
+    editingProfileDraft.bio = e.target.value.trim();
     renderProfilePreview();
   });
 
@@ -5248,17 +5261,20 @@ function setupThemeToggle() {
 
   function applyTheme(theme) {
     if (theme === "dark") {
+      document.documentElement.setAttribute("data-theme", "dark");
       document.documentElement.style.colorScheme = "dark";
       if (iconSpan) iconSpan.replaceChildren(icon("clock", 16));
-      if (labelSpan) labelSpan.textContent = "深色模式";
+      if (labelSpan) labelSpan.textContent = typeof t === "function" ? t("theme.dark", null, "深色模式") : "深色模式";
     } else if (theme === "light") {
+      document.documentElement.setAttribute("data-theme", "light");
       document.documentElement.style.colorScheme = "light";
       if (iconSpan) iconSpan.replaceChildren(icon("bulb", 16));
-      if (labelSpan) labelSpan.textContent = "浅色模式";
+      if (labelSpan) labelSpan.textContent = typeof t === "function" ? t("theme.light", null, "浅色模式") : "浅色模式";
     } else {
+      document.documentElement.removeAttribute("data-theme");
       document.documentElement.style.colorScheme = "light dark";
       if (iconSpan) iconSpan.replaceChildren(icon("refresh", 16));
-      if (labelSpan) labelSpan.textContent = "跟随系统";
+      if (labelSpan) labelSpan.textContent = typeof t === "function" ? t("theme.system", null, "跟随系统") : "跟随系统";
     }
     localStorage.setItem("solum.theme", theme);
   }
@@ -5269,7 +5285,13 @@ function setupThemeToggle() {
     const cur = localStorage.getItem("solum.theme") || "system";
     const next = cur === "system" ? "dark" : cur === "dark" ? "light" : "system";
     applyTheme(next);
-    toast("外观已切换为：" + (next === "dark" ? "深色" : next === "light" ? "浅色" : "跟随系统"), "ok");
+    const themeName = next === "dark"
+      ? (typeof t === "function" ? t("theme.dark") : "深色")
+      : next === "light"
+      ? (typeof t === "function" ? t("theme.light") : "浅色")
+      : (typeof t === "function" ? t("theme.system") : "跟随系统");
+    const msg = typeof t === "function" ? t("theme.switched", { theme: themeName }) : "外观已切换为：" + themeName;
+    toast(msg, "ok");
   });
 }
 
@@ -7043,6 +7065,11 @@ initClock().then(async () => {
   migrateMemoryListUiState();
   await refreshAccount();
   const authExpiredRedirect = takeAuthExpiredRedirect();
+  if (authExpiredRedirect && !accountLoggedIn && !$("privacyGate").classList.contains("open")) {
+    setAccountGateMode("login");
+    openAccountGate("登录状态已过期，请重新登录", { dismissible: false, allowGuest: true });
+    $("accountGateStatus").textContent = "登录状态已过期失效，请重新登录以恢复云端服务。";
+  }
   renderChatSessions();
   renderActiveChatSession();
   restoreCurrentChatDraft();
@@ -7063,11 +7090,7 @@ initClock().then(async () => {
     endRouteRefresh(initialView);
   }
   if (!accountLoggedIn && !$("privacyGate").classList.contains("open")) {
-    if (authExpiredRedirect) {
-      setAccountGateMode("login");
-      openAccountGate("登录状态已过期，请重新登录", { dismissible: false, allowGuest: true });
-      $("accountGateStatus").textContent = "原会话已安全退出。";
-    } else if (!guestChoiceMade()) {
+    if (!authExpiredRedirect && !guestChoiceMade()) {
       openAccountGate("登录完整使用 Solum，或先从本地访客空间开始", { dismissible: false, allowGuest: true });
     }
   }
