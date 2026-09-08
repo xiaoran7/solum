@@ -331,7 +331,7 @@ struct AppInfo {
     active_generation: Option<String>,
     web_storage: WebStorageNames,
     system_now: String,
-    /// e.g. "http://100.70.173.50:8317/v1 · gemini-3.8-flash-high · no key"; `None` = offline mode.
+    /// e.g. "https://api.example.com/v1 · default-model · no key"; `None` = offline mode.
     llm: Option<String>,
 }
 

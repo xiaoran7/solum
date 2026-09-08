@@ -139,7 +139,7 @@ pub fn llm_widget_schema(reasoner: &dyn Reasoner, text: &str) -> Result<String> 
 /// (DeepSeek V4, GLM-5…) need timeouts well past the old hardcoded 30s.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
-    /// e.g. "http://100.70.173.50:8317/v1"
+    /// e.g. "https://api.example.com/v1"
     pub base_url: String,
     pub api_key: String,
     #[serde(default = "default_model")]

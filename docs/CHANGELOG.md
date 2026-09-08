@@ -22,7 +22,7 @@
   3. **深浅色主题真生效**：重构 CSS 变量体系为属性驱动（`:root[data-theme="dark|light"]`），解决仅设置 `colorScheme` 无法触发深色模式样式表的问题。
   4. **登录失效时序重构**：401 发生时由遮罩拦截并优雅注销，启动期第一帧优先全屏锁定并鲜明提示“登录状态已过期失效”，杜绝跳屏与反复弹窗。
 - 发布版本递增为 `0.2.14/1024`。
-- 2026-09-08：生成 `Solum-v0.2.14.apk`；包名 `dev.solum.app`，版本 `0.2.14 (1024)`，minSdk 26 / targetSdk 36，ABI `arm64-v8a`；APK Signature Scheme v2 有效，三大系统接收器均完备。文件 46,559,181 字节，SHA-256 `8D2B1199BCDE870018E759FB47DD826E6CBF92B7D5945E927E20D9D1F5296B61`，签名证书 SHA-256 `F3467B14C3CA39A88D74B85F10800565D0A81BF67FCF392147EC6B4F6AEFCA87`。构建与静态发布核对全部 PASS；按铁律清理旧版本包并归档至 `Deliverables/Solum-v0.2.14.apk`。
+- 2026-09-08：生成 `Solum-v0.2.14.apk`；包名 `dev.solum.app`，版本 `0.2.14 (1024)`，minSdk 26 / targetSdk 36，ABI `arm64-v8a`；APK Signature Scheme v2 有效，三大系统接收器均完备。文件 46,559,221 字节，SHA-256 `86254834CC857BEB501113AEAB2CD8B7D3A602152A0E37146CCF916A4273BD69`，签名证书 SHA-256 `F3467B14C3CA39A88D74B85F10800565D0A81BF67FCF392147EC6B4F6AEFCA87`。构建与静态发布核对全部 PASS；按铁律清理旧版本包并归档至 `Deliverables/Solum-v0.2.14.apk`。
 
 ## [0.2.13]
 

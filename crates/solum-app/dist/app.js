@@ -4587,15 +4587,12 @@ async function refreshToday() {
 /* ============================== 云端接入（设置 → 云端） ============================== */
 // 预设服务端点与推理模型
 const LLM_PRESETS = [
-  { id: "gemini-guard", label: "Gemini 3.8 Flash (CPA Guard)", base: "http://100.70.173.50:8317/v1",
-    models: ["gemini-3.8-flash-high"], timeout: 90, temp: "default",
-    note: "通过 Tailnet 内网 CPA Stream Guard 连接 Gemini 3.8 Flash High 模型。" },
   { id: "custom", label: "自定义端点…", base: "",
-    models: ["gemini-3.8-flash-high", "qwen3.5-2b"], timeout: 60, temp: "default",
-    note: "支持任何兼容 OpenAI 接口的推理服务。" },
+    models: [], timeout: 60, temp: "default",
+    note: "支持任何兼容 OpenAI 格式的推理服务端点。" },
 ];
 let solumCenterUrl = "https://solum.tannerlab.cn";
-let solumActiveModel = "gemini-3.8-flash-high";
+let solumActiveModel = "";
 let llmKeyTail = "";   // 已保存密钥的尾巴（空 = 还没存过 key，保存时必填）
 let llmFormSeeded = false; // 表单只在首次加载/保存后回填，refreshAll 不许覆盖正在编辑的内容
 
