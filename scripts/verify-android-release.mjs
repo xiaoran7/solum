@@ -212,7 +212,7 @@ for (const component of [
 
 const signing = runApksigner(apksigner, ["verify", "--verbose", "--print-certs", apk]);
 if (!/Verified using v2 scheme[^:]*:\s*true/i.test(signing)) fail("APK Signature Scheme v2 is not verified");
-const certificateMatch = signing.match(/Signer #1 certificate SHA-256 digest:\s*([0-9a-f]+)/i);
+const certificateMatch = signing.match(/(?:Signer #1|V2 Signer:) certificate SHA-256 digest:\s*([0-9a-f]+)/i);
 if (!certificateMatch) fail("apksigner did not report the signer certificate SHA-256");
 
 const bytes = fs.readFileSync(apk);
