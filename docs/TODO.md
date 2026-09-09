@@ -1,10 +1,9 @@
 # Solum 待办
 
-更新：2026-08-28。只保留未完成工作；线上状态执行前重验。
+更新：2026-09-09。只保留未完成工作；线上状态执行前重验。
 
-## P0：Android 发布正确性
+## P0：Android 设备发布验证
 
-- [ ] 从当前源码重建 Release，确认 alarm receiver/service、通知监听、前台 data sync 和所需权限都在最终 manifest。
 - [ ] 在在线 Android 真机验证 rustls 到当前生产域名，覆盖 DNS/SNI/TLS、登录、AI、同步、断网恢复。
 - [ ] 验证锁屏、进程回收和设备重启后的 reminder 重建与到点通知；禁止用 force-stop 代替正常回收。
 - [ ] 走保留数据升级与干净安装，确认 guest/账号隔离和版本迁移。
