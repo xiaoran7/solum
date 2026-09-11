@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [0.2.16]
+
 - 接入 CPA 网关与云端鉴权门禁深度加固：
   1. **模型与上游全面对齐 CPA**：将 Rust Core（`account.rs`）与 Node 服务端（`postgres-server.js`、`server.js`）的默认模型全面切换为 `gemini-3.8-flash-high`，服务端 upstream 默认指向 CPA 网关（`https://cpa.tannerlab.cn/v1`）。
   2. **未登录明确报错拦截**：在 `orchestrator.rs` 中强化云端调用鉴权判定，未登录状态下调用云端对话推理显式拦截报错（`"使用云端智能能力请先登录 Solum 账号"`），拒绝静默伪装成功。
@@ -17,6 +19,8 @@
 - 对齐 AndroidBridge 升级 TannerLab 通行证认证界面与交互：
   1. **主卡片视觉升维**：设置中心将「TannerLab 统一通行证认证」升为首要卡片，独立醒目呈现，传统账号密码输入框默认折叠弱化。
   2. **消除手动粘贴弹窗**：对齐 AndroidBridge（DroidRunner）原生体验，去除强制弹出的授权码输入模态框；通过 Deep Link（`solum://oauth/callback`）自动监听唤醒，并在后台自动换取令牌完成登录。超时或异常时方平滑提供 fallback。
+- 发布版本递增为 `0.2.16/1026`。
+- 2026-09-11：生成 `Solum-v0.2.16.apk`；包名 `dev.solum.app`，版本 `0.2.16 (1026)`，minSdk 26 / targetSdk 36，ABI `arm64-v8a`；AlarmReceiver、BootReceiver、SolumNotificationListener 均存在，APK Signature Scheme v2 有效。文件 46,575,697 字节，SHA-256 `93F691E0600E153D796DF09EA464ED5F50F365F3F560E61BA46952C99FB6B110`，签名证书 SHA-256 `F3467B14C3CA39A88D74B85F10800565D0A81BF67FCF392147EC6B4F6AEFCA87`。构建与静态发布核对全部 PASS；按铁律清理旧版本包并归档至 `Deliverables/Solum-v0.2.16.apk`。
 
 ## [0.2.15]
 
