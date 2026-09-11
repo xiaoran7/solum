@@ -324,8 +324,8 @@ function buildConfig(overrides = {}) {
     adminUsername: process.env.SOLUM_ADMIN_USERNAME || process.env.PA_ADMIN_USERNAME || '',
     adminPassword: process.env.SOLUM_ADMIN_PASSWORD || process.env.PA_ADMIN_PASSWORD || '',
     mimoApiKey: process.env.SOLUM_LLM_API_KEY || process.env.MIMO_API_KEY || '',
-    mimoBaseUrl: process.env.SOLUM_LLM_BASE_URL || process.env.MIMO_BASE_URL || 'http://100.79.74.121:8000/v1',
-    defaultModel: process.env.SOLUM_DEFAULT_MODEL || process.env.PA_DEFAULT_MODEL || 'qwen3.5-2b',
+    mimoBaseUrl: process.env.SOLUM_LLM_BASE_URL || process.env.MIMO_BASE_URL || 'https://cpa.tannerlab.cn/v1',
+    defaultModel: process.env.SOLUM_DEFAULT_MODEL || process.env.PA_DEFAULT_MODEL || 'gemini-3.8-flash-high',
     allowedOrigins: process.env.SOLUM_ALLOWED_ORIGINS || '',
     trustProxy: process.env.SOLUM_TRUST_PROXY === 'true',
     aiMaxResponseBytes: Number(process.env.SOLUM_AI_MAX_RESPONSE_BYTES || DEFAULT_AI_RESPONSE_BYTES),
@@ -338,7 +338,7 @@ function buildConfig(overrides = {}) {
       /[\u0000-\u001f\u007f]/.test(config.adminUsername)) {
     throw new Error('SOLUM_ADMIN_USERNAME must be a valid username');
   }
-  validateModel(config.defaultModel, 'qwen3.5-2b');
+  validateModel(config.defaultModel, 'gemini-3.8-flash-high');
   if (!Number.isSafeInteger(config.aiMaxResponseBytes) ||
     config.aiMaxResponseBytes < 1024 || config.aiMaxResponseBytes > 64 * 1024 * 1024) {
     throw new Error('SOLUM_AI_MAX_RESPONSE_BYTES must be between 1024 and 67108864');

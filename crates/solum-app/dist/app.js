@@ -5388,7 +5388,7 @@ async function refreshAccount() {
   $("accountLoginBtn").hidden = accountLoggedIn;
   $("accountRegisterBtn").hidden = accountLoggedIn;
   $("accountLogoutBtn").hidden = !accountLoggedIn;
-  $("accountModelBtn").hidden = !accountLoggedIn;
+  $("accountModelBtn").hidden = true;
   $("accountSecurityArea").hidden = !accountLoggedIn;
   if (accountLoggedIn) {
     setRecoverMode(false);

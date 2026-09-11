@@ -660,7 +660,11 @@ impl Orchestrator {
                             self.chat_history.pop_front();
                         }
                     }
-                    None => outcome.message = "已记录。".into(),
+                    None => {
+                        return Err(CoreError::Llm(
+                            "使用云端智能能力请先登录 Solum 账号".into(),
+                        ));
+                    }
                 };
             }
         }
@@ -5360,10 +5364,11 @@ mod tests {
     #[test]
     fn chat_uses_reasoner_when_present() {
         let mut o = Orchestrator::in_memory().unwrap();
-        // Offline default: canned acknowledgement.
+        // Unauthenticated / offline without reasoner: explicitly errors when invoking cloud chat.
+        let err = o.ingest("今天天气怎么样", now()).unwrap_err();
         assert_eq!(
-            o.ingest("今天天气怎么样", now()).unwrap().message,
-            "已记录。"
+            err.to_string(),
+            "cloud reasoner error: 使用云端智能能力请先登录 Solum 账号"
         );
         o.set_reasoner(Box::new(FakeReasoner {
             reply: "天气我看不到，但我在。".into(),
@@ -5685,7 +5690,7 @@ mod tests {
         assert!(json.contains(&format!(r#""id":{nid}"#)));
         // Non-event intents carry no envelope offline.
         assert!(o.ingest("我在护肤", now()).unwrap().ui.is_none());
-        assert!(o.ingest("今天天气怎么样", now()).unwrap().ui.is_none());
+        assert!(o.ingest("今天天气怎么样", now()).is_err());
     }
 
     #[test]

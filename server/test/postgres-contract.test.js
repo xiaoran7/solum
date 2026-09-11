@@ -420,7 +420,7 @@ test('access tokens accept only signed, unexpired UUID tenants', () => {
 });
 
 test('compose exposes only the API and keeps PostgreSQL on the private network', () => {
-  const compose = fs.readFileSync(path.join(root, 'compose.yaml'), 'utf8');
+  const compose = fs.readFileSync(path.join(root, 'compose.yaml'), 'utf8').replace(/\r\n/g, '\n');
   const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
   const postgres = compose.slice(compose.indexOf('\n  postgres:\n'), compose.indexOf('\n  solum-cloud:\n'));
   const cloud = compose.slice(compose.indexOf('\n  solum-cloud:\n'), compose.indexOf('\n  migrate:\n'));

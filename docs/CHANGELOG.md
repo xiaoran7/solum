@@ -10,6 +10,11 @@
 
 ## [Unreleased]
 
+- 接入 CPA 网关与云端鉴权门禁深度加固：
+  1. **模型与上游全面对齐 CPA**：将 Rust Core（`account.rs`）与 Node 服务端（`postgres-server.js`、`server.js`）的默认模型全面切换为 `gemini-3.8-flash-high`，服务端 upstream 默认指向 CPA 网关（`https://cpa.tannerlab.cn/v1`）。
+  2. **未登录明确报错拦截**：在 `orchestrator.rs` 中强化云端调用鉴权判定，未登录状态下调用云端对话推理显式拦截报错（`"使用云端智能能力请先登录 Solum 账号"`），拒绝静默伪装成功。
+  3. **锁定客户端手动配置**：界面隐藏自定义模型表单与直接配置面板，杜绝用户手动改动；同时完整保留底层自定义配置文件解析与测试 IPC 能力。
+
 ## [0.2.15]
 
 - 客户端安全性彻底收敛与架构归正：

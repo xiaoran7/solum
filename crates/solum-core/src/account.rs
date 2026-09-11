@@ -28,8 +28,8 @@ use std::os::fd::AsRawFd;
 use crate::error::{CoreError, Result};
 use crate::extract::Reasoner;
 
-pub const DEFAULT_CLOUD_MODEL: &str = "qwen3.5-2b";
-pub const CLOUD_MODEL_OPTIONS: &[&str] = &["qwen3.5-2b"];
+pub const DEFAULT_CLOUD_MODEL: &str = "gemini-3.8-flash-high";
+pub const CLOUD_MODEL_OPTIONS: &[&str] = &["gemini-3.8-flash-high"];
 
 /// Solum Center 当前对外身份（国内直连备案域名）。
 pub const SOLUM_CENTER_URL: &str = "https://tannerlab.cn";
