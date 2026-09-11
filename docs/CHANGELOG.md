@@ -8,7 +8,7 @@
 
 本页保留版本级摘要。逐提交实现、测试计数和会话过程由 Git 历史保存。
 
-## [Unreleased]
+## [0.2.16]
 
 - 日程事件摄取架构升级：从“规则硬拦截”迈向“LLM-First 语义认知与本地规则高可用兜底”：
   1. **LLM 优先提取与语境裁决**：当用户已登录配置云端 Reasoner 时，优先由 Gemini 3.8 深入理解自然语言语境，准确辨别真实排期需求与玩笑、反讽、假设或情绪宣泄，杜绝本地机械正则把调侃强拉成系统闹钟的假阳性缺陷。
@@ -18,10 +18,6 @@
   1. **去除重复层级标题**：移除搜索页顶部冗余的「全局搜索」大标题与说明副标题，首屏直接聚焦并展示「想查找什么？」核心搜索框卡片，大幅提升纵向空间利用率。
   2. **收敛快捷入口小标题**：默认隐藏下方的「最近入口 / 4个入口」标题横条，仅在搜索产生匹配结果时动态展开「搜索结果 X 条」，使页面更干净清爽。
   3. **校准搜索图标居中对齐**：使用绝对定位 `top: 50%; transform: translateY(-50%)` 精准居中包装容器，并重置图标垂直对齐基线，彻底解决搜索框放大镜图标略微偏下歪斜的问题。
-
-
-## [0.2.16]
-
 - 接入 CPA 网关与云端鉴权门禁深度加固：
   1. **模型与上游全面对齐 CPA**：将 Rust Core（`account.rs`）与 Node 服务端（`postgres-server.js`、`server.js`）的默认模型全面切换为 `gemini-3.8-flash-high`，服务端 upstream 默认指向 CPA 网关（`https://cpa.tannerlab.cn/v1`）。
   2. **未登录明确报错拦截**：在 `orchestrator.rs` 中强化云端调用鉴权判定，未登录状态下调用云端对话推理显式拦截报错（`"使用云端智能能力请先登录 Solum 账号"`），拒绝静默伪装成功。
@@ -29,8 +25,8 @@
 - 对齐 AndroidBridge 升级 TannerLab 通行证认证界面与交互：
   1. **主卡片视觉升维**：设置中心将「TannerLab 统一通行证认证」升为首要卡片，独立醒目呈现，传统账号密码输入框默认折叠弱化。
   2. **消除手动粘贴弹窗**：对齐 AndroidBridge（DroidRunner）原生体验，去除强制弹出的授权码输入模态框；通过 Deep Link（`solum://oauth/callback`）自动监听唤醒，并在后台自动换取令牌完成登录。超时或异常时方平滑提供 fallback。
-- 发布版本递增为 `0.2.16/1026`。
-- 2026-09-11：生成 `Solum-v0.2.16.apk`；包名 `dev.solum.app`，版本 `0.2.16 (1026)`，minSdk 26 / targetSdk 36，ABI `arm64-v8a`；AlarmReceiver、BootReceiver、SolumNotificationListener 均存在，APK Signature Scheme v2 有效。文件 46,575,697 字节，SHA-256 `93F691E0600E153D796DF09EA464ED5F50F365F3F560E61BA46952C99FB6B110`，签名证书 SHA-256 `F3467B14C3CA39A88D74B85F10800565D0A81BF67FCF392147EC6B4F6AEFCA87`。构建与静态发布核对全部 PASS；按铁律清理旧版本包并归档至 `Deliverables/Solum-v0.2.16.apk`。
+- 发布版本维持 `0.2.16/1026`。
+- 2026-09-11：生成 `Solum-v0.2.16.apk`；包名 `dev.solum.app`，版本 `0.2.16 (1026)`，minSdk 26 / targetSdk 36，ABI `arm64-v8a`；AlarmReceiver、BootReceiver、SolumNotificationListener 均存在，APK Signature Scheme v2 有效。文件 46,572,825 字节，SHA-256 `CCF510C2C8BA8FCAE0AD8263C7D9AAC95BD0D0CD9B77204681AB7550F8427284`，签名证书 SHA-256 `F3467B14C3CA39A88D74B85F10800565D0A81BF67FCF392147EC6B4F6AEFCA87`。构建与静态发布核对全部 PASS；按铁律清理旧版本包并归档至 `Deliverables/Solum-v0.2.16.apk`。
 
 ## [0.2.15]
 
