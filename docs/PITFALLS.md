@@ -35,6 +35,10 @@
 - 窗口函数先于 `LIMIT` 执行：把 `octet_length(ciphertext)` 累计窗口和密文选择写进同一层查询，`since` 之后的整段历史都会被解包。pull 必须先在有界候选集上算尺寸，再对入选行取密文。
 - 集成测试不自行初始化角色/schema，需按 compose migrate 同款流程预置全新测试库；断言含全局 identity 序列号（如 42/74），复用跑过的库会假失败。
 - 无本地 Postgres/Docker 时，可在 VPS 起 `--rm` Postgres 容器（仅绑 127.0.0.1）+ SSH 隧道跑集成测试，用后即删。
+- **服务端 LLM Upstream 容器网络与 CPA Guard 连通**：
+  - 客户端不直连供应商或 CPA，而是经由 Solum Center（`solum-cloud` 容器）代理；
+  - 客户端更新默认模型（如从 `qwen3.5-2b` 迁移到 `gemini-3.8-flash-high`）时，**必须同步检查并更新 VPS 生产环境（`/home/a2749024255/solum-release-XXXX/`）的 `.env` 配置**（`SOLUM_DEFAULT_MODEL`、`SOLUM_ALLOWED_MODELS`、`SOLUM_LLM_BASE_URL`、`SOLUM_LLM_API_KEY`）并重启容器，否则客户端登录后请求 Center 会直接报 502 upstream unavailable 或模型不在目录；
+  - `solum-cloud` 容器访问宿主机上的 CPA Guard 时，若 Guard 仅监听 `127.0.0.1`，容器内（`172.17.0.x`）无法直连回环；宿主机 `cpa-stream-guard` 直连端点必须监听 `0.0.0.0:8317`，容器内 upstream 使用 `http://172.17.0.1:8317/v1`。
 
 ## 安全
 
