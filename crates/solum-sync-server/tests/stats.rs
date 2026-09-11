@@ -91,6 +91,7 @@ fn spawn_accounts(db: &std::path::Path, legacy_token: Option<&str>) -> Server {
         .env("SOLUM_AUTH_SECRET", AUTH_SECRET)
         .env("SOLUM_SYNC_SERVER_ADDR", &addr)
         .env("SOLUM_SYNC_SERVER_DB", db)
+        .env("SOLUM_SYNC_SERVER_RETENTION_DAYS", "0")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     if let Some(token) = legacy_token {
@@ -362,8 +363,8 @@ fn existing_single_tenant_rows_migrate_only_to_legacy() {
     let db = rusqlite::Connection::open(&db_path).unwrap();
     db.execute_batch(
         r#"
-        CREATE TABLE blobs(seq INTEGER PRIMARY KEY,device TEXT NOT NULL,blob BLOB NOT NULL,received_at TEXT NOT NULL DEFAULT '2026-08-12T00:00:00Z');
-        CREATE TABLE alerts(seq INTEGER PRIMARY KEY,event_id TEXT NOT NULL UNIQUE,source TEXT NOT NULL,monitor_id TEXT,name TEXT,status TEXT NOT NULL,latency_ms INTEGER,ping_latency_ms INTEGER,availability_7d REAL,checked_at TEXT NOT NULL,detail_url TEXT,received_at TEXT NOT NULL DEFAULT '2026-08-12T00:00:00Z');
+        CREATE TABLE blobs(seq INTEGER PRIMARY KEY,device TEXT NOT NULL,blob BLOB NOT NULL,received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
+        CREATE TABLE alerts(seq INTEGER PRIMARY KEY,event_id TEXT NOT NULL UNIQUE,source TEXT NOT NULL,monitor_id TEXT,name TEXT,status TEXT NOT NULL,latency_ms INTEGER,ping_latency_ms INTEGER,availability_7d REAL,checked_at TEXT NOT NULL,detail_url TEXT,received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
         INSERT INTO blobs(device,blob) VALUES ('old-device',X'0102');
         INSERT INTO alerts(event_id,source,status,checked_at) VALUES ('old-event','benefit-monitor','operational','2026-08-12T00:00:00Z');
         "#,

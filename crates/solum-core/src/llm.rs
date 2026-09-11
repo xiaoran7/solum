@@ -820,8 +820,10 @@ fn digest_counts_preserved(d: &crate::review::Digest, reply: &str) -> bool {
 /// malformed degrades to `Ok(None)` rather than failing ingest.
 pub fn llm_extract(r: &dyn Reasoner, text: &str, now: NaiveDateTime) -> Result<Option<Event>> {
     let system = format!(
-        "你是日程抽取器。{}把用户这句话解析成一个日程事件。只有确实可排期时才调用 create_event；\
-         相对时间按当前时刻换算，没说时刻用 09:00:00。如果不是可排期事件，不要调用工具。",
+        "你是日程与提醒抽取器。{}请深入理解用户语境：\
+         1. 若包含真实、确定的日程或定时提醒安排（例如“X分钟后提醒我洗澡”、“明天下午3点开会”），\
+            请准确按当前时刻换算相对时间（未指定时刻时默认 09:00:00），调用 create_event；\
+         2. 若用户表达的是假设、玩笑、反讽、情绪宣泄（例如“等我中了一千万记得提醒我买车”）或非排期闲聊，严禁调用 create_event 工具。",
         now_line(now)
     );
     let response = r.complete_with_tools(&system, text, &[event_tool_definition()])?;

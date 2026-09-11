@@ -434,17 +434,31 @@ impl Orchestrator {
                 }
             }
             Intent::IngestEvent => {
-                // Offline rules first (the reliability floor), then the cloud
-                // reasoner as a fallback for phrasing the rules can't parse.
-                let mut via_llm = false;
-                let mut extracted = self.extractor.extract(text, now)?;
-                if allow_ai && extracted.is_none() {
-                    if let Some(r) = &self.reasoner {
-                        // Cloud failure must not fail ingest — degrade to None.
-                        extracted = crate::llm::llm_extract(r.as_ref(), text, now).unwrap_or(None);
-                        via_llm = extracted.is_some();
-                    }
-                }
+                // LLM-first when available: let the cloud reasoner evaluate real intent,
+                // pragmatics, and complex temporal offsets. If offline, unconfigured, or
+                // on network failure, gracefully fall back to deterministic offline rules
+                // (the reliability floor).
+                let (extracted, via_llm, fallback_note) =
+                    if let (true, Some(r)) = (allow_ai, &self.reasoner) {
+                        match crate::llm::llm_extract(r.as_ref(), text, now) {
+                            Ok(llm_ev) => {
+                                let is_llm = llm_ev.is_some();
+                                (llm_ev, is_llm, None)
+                            }
+                            Err(_error) => {
+                                // Network/gateway error: trigger offline rule fallback as safety net
+                                let fallback_ev = self.extractor.extract(text, now)?;
+                                let note = fallback_ev
+                                    .is_some()
+                                    .then_some("（云端暂不可用，已通过本地规则为你创建）");
+                                (fallback_ev, false, note)
+                            }
+                        }
+                    } else {
+                        // Offline / guest / unconfigured / local-only: deterministic rules floor
+                        (self.extractor.extract(text, now)?, false, None)
+                    };
+
                 if let Some(ev) = extracted {
                     if is_daily_recurrence(text) {
                         let routine = self.persist_daily_routine(&ev, raw_input_id, now)?;
@@ -463,6 +477,8 @@ impl Orchestrator {
                         };
                         if via_llm {
                             outcome.message.push_str("（由云端解析）");
+                        } else if let Some(note) = fallback_note {
+                            outcome.message.push_str(note);
                         }
                         if let Some(routine) = routine {
                             outcome.ui = crate::genui::routine_ingested(&routine);
@@ -472,6 +488,8 @@ impl Orchestrator {
                         outcome.message = summarize_event(&ev, &stored, now);
                         if via_llm {
                             outcome.message.push_str("（由云端解析）");
+                        } else if let Some(note) = fallback_note {
+                            outcome.message.push_str(note);
                         }
                         if let Some(caveat) = recurrence_caveat(text) {
                             outcome.message.push_str(&format!("\n{caveat}"));
@@ -661,9 +679,7 @@ impl Orchestrator {
                         }
                     }
                     None => {
-                        return Err(CoreError::Llm(
-                            "使用云端智能能力请先登录 Solum 账号".into(),
-                        ));
+                        return Err(CoreError::Llm("使用云端智能能力请先登录 Solum 账号".into()));
                     }
                 };
             }
@@ -6095,5 +6111,118 @@ mod tests {
             CaptureState::Resolved,
             "the source remains visible after a confirmed action"
         );
+    }
+
+    struct FailingReasoner;
+    impl crate::extract::Reasoner for FailingReasoner {
+        fn complete(&self, _system: &str, _user: &str) -> Result<String> {
+            Err(CoreError::Llm("network timeout".into()))
+        }
+        fn complete_with_tools(
+            &self,
+            _system: &str,
+            _user: &str,
+            _tools: &[serde_json::Value],
+        ) -> Result<crate::extract::ReasonerResponse> {
+            Err(CoreError::Llm("network timeout".into()))
+        }
+    }
+
+    struct ToolCallEventReasoner {
+        title: String,
+        start: String,
+        kind: String,
+    }
+    impl crate::extract::Reasoner for ToolCallEventReasoner {
+        fn complete(&self, _system: &str, _user: &str) -> Result<String> {
+            Ok(String::new())
+        }
+        fn complete_with_tools(
+            &self,
+            _system: &str,
+            _user: &str,
+            _tools: &[serde_json::Value],
+        ) -> Result<crate::extract::ReasonerResponse> {
+            Ok(crate::extract::ReasonerResponse {
+                content: None,
+                tool_calls: vec![crate::extract::ReasonerToolCall {
+                    name: crate::llm::TOOL_CREATE_EVENT.into(),
+                    arguments: serde_json::json!({
+                        "title": self.title,
+                        "kind": self.kind,
+                        "start": self.start,
+                        "location": null,
+                        "people": []
+                    }),
+                }],
+            })
+        }
+    }
+
+    #[test]
+    fn llm_first_ingest_event_preferred_when_online() {
+        let mut o = Orchestrator::in_memory().unwrap();
+        // Online: configured with a tool-calling reasoner
+        o.set_reasoner(Box::new(ToolCallEventReasoner {
+            title: "洗澡".into(),
+            start: "2026-07-06T10:10:00".into(),
+            kind: "reminder".into(),
+        }));
+
+        let out = o.ingest("十分钟之后我要洗澡，记得提醒我", now()).unwrap();
+        assert_eq!(out.intent, Intent::IngestEvent);
+        let ev = out.event.expect("LLM-first extracted event");
+        assert_eq!(ev.title, "洗澡");
+        assert_eq!(ev.start, dt(2026, 7, 6, 10, 10));
+        assert!(out.message.contains("（由云端解析）"));
+        assert_eq!(o.all_events().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn llm_first_rejects_joke_without_creating_event() {
+        let mut o = Orchestrator::in_memory().unwrap();
+        // LLM reasons that this joke/venting should not call create_event tool
+        o.set_reasoner(Box::new(FakeReasoner {
+            reply: "哈哈，祝你早日中大奖！到时候可别忘了这回事。".into(),
+        }));
+
+        let out = o.ingest("等我中了一千万记得提醒我买跑车", now()).unwrap();
+        assert_eq!(out.intent, Intent::IngestEvent);
+        // LLM returned Ok(None) - no event created!
+        assert!(out.event.is_none());
+        assert!(o.all_events().unwrap().is_empty());
+        assert!(out.message.contains("已作为普通输入记录"));
+    }
+
+    #[test]
+    fn llm_network_error_gracefully_falls_back_to_offline_rules() {
+        let mut o = Orchestrator::in_memory().unwrap();
+        // Online configuration, but network drops/times out
+        o.set_reasoner(Box::new(FailingReasoner));
+
+        let out = o.ingest("十分钟之后我要洗澡，记得提醒我", now()).unwrap();
+        assert_eq!(out.intent, Intent::IngestEvent);
+        let ev = out.event.expect("offline rule fallback event");
+        assert!(ev.title.contains("洗澡"));
+        assert_eq!(ev.start, dt(2026, 7, 6, 10, 10));
+        // Falls back to offline rules, clearly noting that local rules saved the day
+        assert!(out.message.contains("云端暂不可用，已通过本地规则为你创建"));
+        assert_eq!(o.all_events().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn offline_without_reasoner_uses_deterministic_rules() {
+        let mut o = Orchestrator::in_memory().unwrap();
+        assert!(!o.has_reasoner());
+
+        let out = o.ingest("十分钟之后我要洗澡，记得提醒我", now()).unwrap();
+        assert_eq!(out.intent, Intent::IngestEvent);
+        let ev = out.event.expect("deterministic offline event");
+        assert!(ev.title.contains("洗澡"));
+        assert_eq!(ev.start, dt(2026, 7, 6, 10, 10));
+        // No cloud note, purely offline
+        assert!(!out.message.contains("云端解析"));
+        assert!(!out.message.contains("云端暂不可用"));
+        assert_eq!(o.all_events().unwrap().len(), 1);
     }
 }
