@@ -6468,8 +6468,7 @@ function renderSearchQuick() {
     ]));
   }
   box.appendChild(grid);
-  $("globalSearchHeading").textContent = "最近入口";
-  $("globalSearchCount").textContent = "4 个入口";
+  if ($("globalSearchHead")) $("globalSearchHead").hidden = true;
 }
 function runGlobalSearch() {
   const query = searchText($("globalSearchInput").value).toLocaleLowerCase();
@@ -6481,6 +6480,7 @@ function runGlobalSearch() {
   }).slice(0, 40);
   const box = $("globalSearchResults");
   box.textContent = "";
+  if ($("globalSearchHead")) $("globalSearchHead").hidden = false;
   $("globalSearchHeading").textContent = "搜索结果";
   $("globalSearchCount").textContent = `${matches.length} 条`;
   if (!matches.length) {

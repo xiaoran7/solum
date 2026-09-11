@@ -1317,7 +1317,13 @@
   .search-question { margin: 0 0 20px; font-size: 1.875rem; font-weight: 800; }
   .search-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
   .search-field { position: relative; display: flex; align-items: center; }
-  .search-field .ic { position: absolute; left: 16px; color: var(--muted); pointer-events: none; }
+  #globalSearchIcon {
+    position: absolute; left: 16px; top: 50%; transform: translateY(-50%);
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; pointer-events: none;
+  }
+  #globalSearchIcon .ic { color: var(--muted); vertical-align: 0; }
+  .search-field .ic { color: var(--muted); pointer-events: none; }
   #globalSearchInput { width: 100%; min-height: 48px; padding-left: 48px; border-radius: var(--r-lg); }
   #globalSearchBtn { min-width: 100px; border-radius: var(--r-lg); }
   .search-scope { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 14px; color: var(--muted); font-size: .8125rem; }
@@ -1803,10 +1809,6 @@
 
     <!-- 搜索 -->
     <section class="view" id="view-search"><div class="vwrap">
-      <div class="vhead"><div class="vt">
-        <h2>全局搜索</h2>
-        <p class="desc" style="display:block;position:static;box-shadow:none;border:0;padding:0;margin-top:12px;">从日程、记忆和行为记录中，快速检索所有重要上下文。</p>
-      </div></div>
       <div class="search-hero">
         <div class="search-kicker">SEARCH SOLUM</div>
         <h3 class="search-question">想查找什么？</h3>
@@ -1819,7 +1821,7 @@
         </form>
         <div class="search-scope" aria-label="搜索范围"><span>记忆库</span><span>日程计划</span><span>行为记录</span></div>
       </div>
-      <div class="search-index-head">
+      <div class="search-index-head" id="globalSearchHead" hidden>
         <h3 id="globalSearchHeading">最近条目</h3>
         <span id="globalSearchCount"></span>
       </div>
