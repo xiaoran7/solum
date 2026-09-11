@@ -14,6 +14,9 @@
   1. **模型与上游全面对齐 CPA**：将 Rust Core（`account.rs`）与 Node 服务端（`postgres-server.js`、`server.js`）的默认模型全面切换为 `gemini-3.8-flash-high`，服务端 upstream 默认指向 CPA 网关（`https://cpa.tannerlab.cn/v1`）。
   2. **未登录明确报错拦截**：在 `orchestrator.rs` 中强化云端调用鉴权判定，未登录状态下调用云端对话推理显式拦截报错（`"使用云端智能能力请先登录 Solum 账号"`），拒绝静默伪装成功。
   3. **锁定客户端手动配置**：界面隐藏自定义模型表单与直接配置面板，杜绝用户手动改动；同时完整保留底层自定义配置文件解析与测试 IPC 能力。
+- 对齐 AndroidBridge 升级 TannerLab 通行证认证界面与交互：
+  1. **主卡片视觉升维**：设置中心将「TannerLab 统一通行证认证」升为首要卡片，独立醒目呈现，传统账号密码输入框默认折叠弱化。
+  2. **消除手动粘贴弹窗**：对齐 AndroidBridge（DroidRunner）原生体验，去除强制弹出的授权码输入模态框；通过 Deep Link（`solum://oauth/callback`）自动监听唤醒，并在后台自动换取令牌完成登录。超时或异常时方平滑提供 fallback。
 
 ## [0.2.15]
 

@@ -719,6 +719,21 @@
     }
   }
 
+  .account-oauth-card {
+    display: flex; flex-direction: column; gap: 10px;
+    padding: 16px 18px; border: 1px solid var(--accent-line);
+    border-radius: var(--r-lg); background: var(--accent-soft);
+    margin-bottom: 14px;
+  }
+  .account-oauth-card-head { display: flex; align-items: flex-start; gap: 12px; }
+  .account-oauth-card-icon {
+    width: 36px; height: 36px; border-radius: var(--r-md);
+    background: var(--accent-fill); color: var(--on-accent-fill);
+    display: grid; place-items: center; flex: 0 0 auto;
+  }
+  .account-oauth-card-title { font-size: .9375rem; font-weight: 750; color: var(--ink); }
+  .account-oauth-card-desc { font-size: .7813rem; color: var(--muted); margin: 2px 0 0; line-height: 1.45; }
+
   .profile-sheet-header {
     display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px;
   }
@@ -2209,21 +2224,49 @@
         <p class="hint" style="margin:0 0 14px;max-width:66ch;">
           登录 Solum 账号后，可在不同设备间安全同步数据并开启云端智能服务。您的个人数据均在本地使用高强度端到端加密保护，密码绝不会上传或明文存储。</p>
         <div id="accountStatus" style="margin-bottom:14px;"></div>
-        <div class="formcol">
-          <div id="accountLoginForm">
-            <div class="field" hidden><label for="accountServer">中心地址</label>
-              <input type="text" id="accountServer" placeholder="https://…" autocomplete="off" spellcheck="false" /></div>
-            <div class="fieldrow">
-              <div class="field"><label for="accountUser">账号</label>
-                <input type="text" id="accountUser" autocomplete="off" spellcheck="false" /></div>
-              <div class="field"><label for="accountPass">密码</label>
-                <div class="password-wrap">
-                  <input type="password" id="accountPass" autocomplete="off" />
-                  <button type="button" class="btn-eye" aria-label="显示密码" title="显示密码" tabindex="-1"></button>
+
+        <!-- 现代化 TannerLab ID 通行证主认证卡片 -->
+        <div class="account-oauth-card" id="accountPassportCard">
+          <div class="account-oauth-card-head">
+            <span class="account-oauth-card-icon" id="accountPassportIcon"></span>
+            <div>
+              <strong class="account-oauth-card-title">TannerLab 统一通行证认证</strong>
+              <p class="account-oauth-card-desc">推荐使用统一身份通行证登录。自动唤起授权，完成后无需手动粘贴即可无缝登录。</p>
+            </div>
+          </div>
+          <div class="btnrow" style="margin-top:12px;">
+            <button class="btn primary" id="accountOAuthBtn" type="button">登录 TannerLab 通行证</button>
+            <button class="btn danger" id="accountLogoutBtn" type="button" hidden>退出登录</button>
+          </div>
+          <p class="account-gate-status" id="accountPassportStatus" role="alert" aria-live="polite" style="margin-top:8px;" hidden></p>
+        </div>
+
+        <div class="formcol" style="margin-top:16px;">
+          <!-- 传统独立账号密码方式（默认折叠弱化） -->
+          <details class="fold sub-fold" id="accountLegacyFold" style="border:1px dashed var(--line);border-radius:var(--r-md);padding:8px 12px;margin-bottom:12px;">
+            <summary style="font-size:0.84rem;color:var(--muted);cursor:pointer;">其他方式：传统独立账号密码登录</summary>
+            <div class="fold-body" style="padding-top:10px;">
+              <div id="accountLoginForm">
+                <div class="field" hidden><label for="accountServer">中心地址</label>
+                  <input type="text" id="accountServer" placeholder="https://…" autocomplete="off" spellcheck="false" /></div>
+                <div class="fieldrow">
+                  <div class="field"><label for="accountUser">账号</label>
+                    <input type="text" id="accountUser" autocomplete="off" spellcheck="false" /></div>
+                  <div class="field"><label for="accountPass">密码</label>
+                    <div class="password-wrap">
+                      <input type="password" id="accountPass" autocomplete="off" />
+                      <button type="button" class="btn-eye" aria-label="显示密码" title="显示密码" tabindex="-1"></button>
+                    </div>
+                  </div>
+                </div>
+                <div class="btnrow" style="margin-top:10px;">
+                  <button class="btn primary" id="accountLoginBtn">登录独立账号</button>
+                  <button class="btn" id="accountRegisterBtn">注册新账号</button>
                 </div>
               </div>
             </div>
-          </div>
+          </details>
+
           <div class="field" hidden><label for="accountModel">云端模型</label>
             <select id="accountModel"></select></div>
           <p class="account-model-note" id="accountModelNote" hidden></p>
@@ -2242,13 +2285,7 @@
             <p class="hint" style="margin:4px 0 0;">恢复码用于紧急找回账号；登录后可修改密码。</p>
           </div>
           <button class="btn sm" id="accountRecoverToggle" hidden>忘记密码？用恢复码登录</button>
-          <div class="btnrow">
-            <button class="btn primary" id="accountLoginBtn">登录</button>
-            <button class="btn" id="accountRegisterBtn">注册</button>
-            <button class="btn" id="accountOAuthBtn">使用 Tg-oauth 统一账号登录</button>
-            <button class="btn" id="accountModelBtn" hidden>保存模型</button>
-            <button class="btn" id="accountLogoutBtn" hidden>退出登录</button>
-          </div>
+          <button class="btn" id="accountModelBtn" hidden>保存模型</button>
           <div id="accountSecurityArea" hidden>
             <div class="statusline" style="margin-top:14px;">
               <span class="sdot" id="recoveryCodeDot"></span>
@@ -2502,8 +2539,13 @@
             <button type="button" class="btn-eye" aria-label="显示密码" title="显示密码" tabindex="-1"></button>
           </div>
         </div>
-        <button class="btn primary" id="accountGateSubmit" type="button">登录</button>
-        <button class="btn oauth-gate-btn" id="accountGateOAuthBtn" type="button">使用 Tg-oauth 统一账号登录</button>
+        <button class="btn primary oauth-gate-btn" id="accountGateOAuthBtn" type="button" style="width:100%;margin-bottom:8px;">登录 TannerLab 通行证</button>
+        <details class="fold sub-fold" style="border:1px dashed var(--line);border-radius:var(--r-md);padding:6px 10px;margin-bottom:8px;">
+          <summary style="font-size:0.8rem;color:var(--muted);cursor:pointer;">使用传统独立账号密码</summary>
+          <div style="padding-top:8px;">
+            <button class="btn" id="accountGateSubmit" type="button" style="width:100%;">登录独立账号</button>
+          </div>
+        </details>
         <p class="account-gate-status" id="accountGateStatus" role="alert" aria-live="polite"></p>
       </div>
       <div class="account-gate-divider"><span>或</span></div>

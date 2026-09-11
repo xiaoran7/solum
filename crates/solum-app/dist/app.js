@@ -5387,7 +5387,9 @@ async function refreshAccount() {
   $("accountLoginForm").hidden = accountLoggedIn;
   $("accountLoginBtn").hidden = accountLoggedIn;
   $("accountRegisterBtn").hidden = accountLoggedIn;
+  if ($("accountOAuthBtn")) $("accountOAuthBtn").hidden = accountLoggedIn;
   $("accountLogoutBtn").hidden = !accountLoggedIn;
+  if ($("accountLegacyFold")) $("accountLegacyFold").hidden = accountLoggedIn;
   $("accountModelBtn").hidden = true;
   $("accountSecurityArea").hidden = !accountLoggedIn;
   if (accountLoggedIn) {
@@ -5434,7 +5436,7 @@ async function submitSettingsLogin() {
   $("accountRegisterBtn").disabled = true;
   try {
     const summary = await invoke("account_login", {
-      serverUrl, username, password, model: $("accountModel").value.trim(),
+      serverUrl, username, password, model: solumActiveModel,
     });
     $("accountPass").value = ""; // 密码只用于本次登录与本地解封，界面也不留
     toast("已登录，云端改走账号代理", "ok");
@@ -5623,18 +5625,27 @@ async function startOAuthLogin() {
   const serverUrl = solumCenterUrl || "https://solum.tannerlab.cn";
   let autoCheckTimer = null;
   let onVisibilityChange = null;
+  const statusEl = $("accountPassportStatus");
+  const updateStatus = (msg, show = true) => {
+    if (!statusEl) return;
+    statusEl.hidden = !show;
+    statusEl.textContent = msg || "";
+  };
+
   try {
     accountAuthSubmitting = true;
+    updateStatus("正在连接统一身份认证中心…");
     toast("正在连接统一认证中心…", "info");
     const cfg = await invoke("account_oauth_config_get", { serverUrl });
     if (!cfg.enabled) {
       toast("中心服务器未启用 OAuth 登录", "danger");
+      updateStatus("中心服务器未启用 OAuth 登录");
       return;
     }
     const pkce = await invoke("account_oauth_pkce_generate");
     const redirectUri = `${cfg.issuer.replace(/\/+$/, '')}/callback`;
     const state = Math.random().toString(36).slice(2);
-    const authUrl = `${cfg.issuer.replace(/\/+$/, '')}/authorize?response_type=code&client_id=${encodeURIComponent(cfg.client_id)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=openid%20profile%20email&code_challenge=${encodeURIComponent(pkce.code_challenge)}&code_challenge_method=S256&state=${state}`;
+    const authUrl = `${cfg.issuer.replace(/\/+$/, '')}/authorize?response_type=code&client_id=${encodeURIComponent(cfg.client_id)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=openid%20profile%20email&code_challenge=${encodeURIComponent(pkce.code_challenge)}&code_challenge_method=S256&state=${state}&prompt=consent`;
 
     try {
       await invoke("open_external_url", { url: authUrl });
@@ -5642,7 +5653,8 @@ async function startOAuthLogin() {
       window.open(authUrl, "_blank");
     }
 
-    toast("已在浏览器打开授权页面，授权后将自动返回登录…", "info");
+    updateStatus("已打开系统浏览器授权页。授权确认后将自动返回完成登录…");
+    toast("已在浏览器打开授权页面，完成授权后自动登录…", "info");
 
     let codePromiseResolve = null;
     const codePromise = new Promise((resolve) => {
@@ -5657,6 +5669,7 @@ async function startOAuthLogin() {
           if (match) {
             if (match.error) {
               toast(`OAuth 授权失败: ${match.error}`, "danger");
+              updateStatus(`OAuth 授权失败: ${match.error}`);
               if (codePromiseResolve) codePromiseResolve(null);
             } else if (match.code) {
               if (codePromiseResolve) codePromiseResolve(match.code.trim());
@@ -5673,19 +5686,26 @@ async function startOAuthLogin() {
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onVisibilityChange);
 
-    const modalPromptPromise = promptModal(
-      "Tg-oauth 统一登录",
-      "已在系统外部浏览器打开授权页面。\n完成授权后将自动返回；如未自动跳转，可在此粘贴授权码：",
-      "授权后自动登录，或在此粘贴授权码（Code）"
-    );
-
-    modalPromptPromise.then((manualCode) => {
-      if (manualCode && codePromiseResolve) {
-        codePromiseResolve(manualCode.trim());
-      }
+    // 对齐 AndroidBridge：不在前端强制弹窗打扰用户输入。
+    // 监听 Deep Link 自动回跳；若 60s 依然未收到系统回调，再提供手动粘贴作为 fallback。
+    let fallbackTimeout = null;
+    const timeoutPromise = new Promise((resolve) => {
+      fallbackTimeout = setTimeout(() => {
+        resolve("__timeout__");
+      }, 60000);
     });
 
-    const code = await Promise.race([codePromise, modalPromptPromise]);
+    let code = await Promise.race([codePromise, timeoutPromise]);
+    if (fallbackTimeout) clearTimeout(fallbackTimeout);
+
+    if (code === "__timeout__") {
+      updateStatus("未检测到自动回跳，如浏览器未自动唤醒应用，请手动粘贴授权码");
+      code = await promptModal(
+        "TannerLab 统一登录",
+        "如果浏览器授权完成后未能自动返回本应用，请在此粘贴授权链接中的授权码（Code）：",
+        "在此粘贴授权码（Code）"
+      );
+    }
 
     if (autoCheckTimer) { clearInterval(autoCheckTimer); autoCheckTimer = null; }
     if (onVisibilityChange) {
@@ -5693,13 +5713,14 @@ async function startOAuthLogin() {
       window.removeEventListener("focus", onVisibilityChange);
       onVisibilityChange = null;
     }
-    closeModal();
 
     if (!code || !code.trim()) {
+      updateStatus("已取消授权登录");
       toast("已取消 OAuth 登录", "info");
       return;
     }
 
+    updateStatus("已获取授权码，正在完成安全登录…");
     let recoveryCode = null;
     let attempt = 0;
     while (attempt < 2) {
@@ -5715,7 +5736,8 @@ async function startOAuthLogin() {
             recovery_code: recoveryCode,
           },
         });
-        toast("使用 Tg-oauth 统一账号登录成功", "ok");
+        toast("登录 TannerLab 通行证成功", "ok");
+        updateStatus("", false);
         if (typeof closeAccountGate === 'function') closeAccountGate();
         accountFormSeeded = false;
         await refreshAccount();
@@ -5733,17 +5755,20 @@ async function startOAuthLogin() {
           );
           if (!recoveryCode || !recoveryCode.trim()) {
             toast("未输入恢复码，无法解密现有数据空间", "danger");
+            updateStatus("未输入恢复码，无法解密现有数据空间");
             break;
           }
           continue;
         } else {
           toast(safeUserError(e, "OAuth 登录失败，请重试。"), "danger");
+          updateStatus(safeUserError(e, "OAuth 登录失败，请重试。"));
           break;
         }
       }
     }
   } catch (e) {
     toast(safeUserError(e, "无法获取 OAuth 配置"), "danger");
+    updateStatus(safeUserError(e, "无法获取 OAuth 配置"));
   } finally {
     if (autoCheckTimer) clearInterval(autoCheckTimer);
     if (onVisibilityChange) {
