@@ -192,6 +192,48 @@ fn decode_even_hex(value: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// Park a freshly issued display code locally until the UI has shown it.
+///
+/// Account login restarts the whole app before the webview can render
+/// anything, so the code issued at first login cannot be handed to the
+/// current page. It is written to this local-only file instead, and the next
+/// startup shows it until the user acknowledges saving it. The file shares
+/// the trust domain of the local sync-key file (plaintext on disk) and is
+/// deleted on acknowledgement or when a new code is issued.
+pub fn save_pending_display(path: &std::path::Path, display_code: &str) -> Result<()> {
+    let normalized = normalize_code(display_code);
+    if normalized.chars().count() != CODE_LEN {
+        return Err(CoreError::Invalid("待展示恢复码格式不正确".into()));
+    }
+    crate::fsatomic::write_atomic(path, &normalized)
+}
+
+/// Read the parked display code, if any. Content that no longer normalizes
+/// to a 20-character code is treated as absent: a corrupt code cannot be
+/// typed correctly anyway, and acknowledgement will clean the file up.
+pub fn load_pending_display(path: &std::path::Path) -> Result<Option<String>> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(CoreError::Storage(error.to_string())),
+    };
+    let normalized = normalize_code(&raw);
+    if normalized.chars().count() != CODE_LEN {
+        return Ok(None);
+    }
+    Ok(Some(normalized))
+}
+
+/// Delete the parked display code after the user acknowledged saving it (or
+/// after a re-issue made it stale). Missing file counts as success.
+pub fn clear_pending_display(path: &std::path::Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(CoreError::Storage(error.to_string())),
+    }
+}
+
 /// Transport seam mirroring `RecoveryEnvelopeTransport`: keeps the whole
 /// recovery-code state machine testable without a socket.
 pub trait RecoveryCodeTransport {
@@ -456,6 +498,44 @@ mod tests {
         let issuance = issue_recovery_code(USER_ID, &master).unwrap();
         assert!(unwrap_master_key(USER_ID, "SHORT", &issuance.envelope).is_err());
         assert!(unwrap_master_key(USER_ID, "ABCDEFGHIJKLMNOPQRST", &[]).is_err());
+    }
+
+    fn temp_pending_path(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "solum-recovery-pending-{}-{}",
+            label,
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join("pending-recovery-code.txt")
+    }
+
+    #[test]
+    fn pending_display_roundtrips_and_normalizes() {
+        let path = temp_pending_path("roundtrip");
+        let issuance = issue_recovery_code(USER_ID, &test_master_key()).unwrap();
+        // Display form (with dashes) is parked in canonical compact form.
+        save_pending_display(&path, &issuance.display_code).unwrap();
+        assert_eq!(
+            load_pending_display(&path).unwrap().as_deref(),
+            Some(normalize_code(&issuance.display_code).as_str())
+        );
+        clear_pending_display(&path).unwrap();
+        assert_eq!(load_pending_display(&path).unwrap(), None);
+        // Clearing an already-absent file stays a success.
+        clear_pending_display(&path).unwrap();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn pending_display_rejects_bad_code_and_corrupt_content() {
+        let path = temp_pending_path("bad");
+        assert!(save_pending_display(&path, "SHORT").is_err());
+        // Nothing was written by the failed save.
+        assert_eq!(load_pending_display(&path).unwrap(), None);
+        std::fs::write(&path, "乱写的垃圾内容").unwrap();
+        assert_eq!(load_pending_display(&path).unwrap(), None);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     fn hex_encode(bytes: &[u8]) -> String {

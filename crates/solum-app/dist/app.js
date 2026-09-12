@@ -5750,7 +5750,7 @@ async function startOAuthLogin() {
         if (errStr.includes("NEEDS_RECOVERY_CODE") || errStr.includes("恢复码")) {
           recoveryCode = await promptModal(
             "输入数据恢复码",
-            "检测到该账号已有加密数据空间。\n请输入您的 20 字符数据恢复码（格式如 XXXXX-XXXXX-XXXXX-XXXXX）以解密：",
+            "此账号的数据是端到端加密的：新设备第一次登录，必须输入当初首次登录时展示过的 20 位数据恢复码（格式 XXXXX-XXXXX-XXXXX-XXXXX）才能解开。\n旧设备还能登录时：在旧设备「设置 → Solum 账号」里点「重新生成恢复码」，用新码在本设备解密即可。\n如果恢复码丢了、旧设备也访问不了，加密数据将无法找回（服务器也无法解密）。",
             "XXXXX-XXXXX-XXXXX-XXXXX"
           );
           if (!recoveryCode || !recoveryCode.trim()) {
@@ -5821,6 +5821,40 @@ $("accountModelBtn").addEventListener("click", async () => {
 
 /* ============================== 恢复码与改密 ============================== */
 let recoveryCodeChecking = false;
+
+// OAuth 登录成功即重启应用，首登签发的恢复码由 Rust 落盘暂存；这里在启动
+// 登录态就绪后读取并弹窗提醒，用户确认已抄写前每次启动都会再次提醒。
+async function maybeShowPendingRecoveryCode() {
+  if (!accountLoggedIn) return;
+  let code = null;
+  try { code = await invoke("recovery_code_pending"); } catch (_) { return; }
+  if (!code) return;
+  const copyBtn = el("button", {
+    type: "button",
+    class: "btn ghost",
+    text: "复制恢复码",
+    style: "margin-top:8px;",
+    click: async () => {
+      try {
+        await navigator.clipboard.writeText(code);
+        toast("已复制到剪贴板，请粘贴到笔记或密码管理器保存", "ok");
+      } catch (_) { toast("复制失败，请手动抄写", "danger"); }
+    }
+  });
+  const body = el("div", {}, [
+    el("p", { style: "white-space:pre-wrap;line-height:1.5;color:var(--text-muted);",
+      text: "这是你的数据恢复码：端到端加密数据的唯一钥匙，只在设备上生成，息壤服务器与任何人都无法找回。换新设备登录时，必须凭它解开同步数据。" }),
+    el("div", { style: "font-family:var(--mono,monospace);font-size:1.2rem;letter-spacing:1px;margin:10px 0;user-select:all;",
+      text: code }),
+    el("div", { style: "display:flex;justify-content:flex-end;" }, [copyBtn]),
+    el("p", { class: "hint", style: "margin-top:8px;",
+      text: "请立即抄写到纸笔或密码管理器。点「我已保存恢复码」后不再提醒；点「稍后再说」，下次启动会继续提醒。" }),
+  ]);
+  openModal("请保存你的数据恢复码", body, "我已保存恢复码", async () => {
+    try { await invoke("recovery_code_pending_ack"); } catch (_) { /* 下次启动继续提醒 */ }
+    toast("恢复码已确认保存", "ok");
+  }, { okStyle: "primary" });
+}
 
 function setRecoverMode(on) {
   $("accountLoginForm").hidden = on || accountLoggedIn;
@@ -7092,6 +7126,8 @@ initClock().then(async () => {
     openAccountGate("登录状态已过期，请重新登录", { dismissible: false, allowGuest: true });
     $("accountGateStatus").textContent = "登录状态已过期失效，请重新登录以恢复云端服务。";
   }
+  // 首登签发的数据恢复码若尚未确认保存，登录态就绪后立即弹窗提醒。
+  if (accountLoggedIn) { void maybeShowPendingRecoveryCode(); }
   renderChatSessions();
   renderActiveChatSession();
   restoreCurrentChatDraft();

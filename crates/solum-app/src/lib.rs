@@ -1265,7 +1265,8 @@ async fn account_oauth_login(
         .lock()
         .map_err(|_| "备份恢复会话状态异常".to_string())? = None;
 
-    let session = tauri::async_runtime::spawn_blocking(move || {
+    let (session, issued_recovery_code) = tauri::async_runtime::spawn_blocking(move || {
+        let mut issued_recovery_code: Option<String> = None;
         let session = solum_core::account::authenticate_via_oauth(
             &args.server_url,
             &args.code,
@@ -1290,7 +1291,7 @@ async fn account_oauth_login(
                 solum_core::account::revoke_remote(&session);
                 return Err(format!("本机加密空间初始化失败: {error}"));
             }
-            return Ok::<_, String>(session);
+            return Ok::<_, String>((session, issued_recovery_code));
         }
 
         // 2. Local config does not exist. Check if server has recovery code envelope.
@@ -1326,6 +1327,9 @@ async fn account_oauth_login(
             transport
                 .put_envelope(&session, &issuance.envelope, &issuance.verify_hash)
                 .map_err(|e| format!("保存初始恢复信封失败: {e}"))?;
+            // The code is shown once; login restarts the app before the
+            // webview could render it, so park it for the next startup.
+            issued_recovery_code = Some(issuance.display_code);
             key_bytes
         };
 
@@ -1343,7 +1347,7 @@ async fn account_oauth_login(
             return Err(format!("加密空间准备失败: {error}"));
         }
 
-        Ok::<_, String>(session)
+        Ok::<_, String>((session, issued_recovery_code))
     })
     .await
     .map_err(|e| format!("OAuth 登录后台任务失败: {e}"))??;
@@ -1360,6 +1364,18 @@ async fn account_oauth_login(
         drop(_sync_switch_guard);
         schedule_pending_session_revoke(session);
         return Err(error.to_string());
+    }
+    if let Some(display_code) = issued_recovery_code {
+        let pending_path = session.stable_user_id().and_then(|user_id| {
+            solum_core::paths::account_profile_file(user_id, "pending-recovery-code.txt")
+        });
+        if let Some(pending_path) = pending_path {
+            if let Err(error) =
+                solum_core::recovery_code::save_pending_display(&pending_path, &display_code)
+            {
+                eprintln!("failed to park recovery code for next-startup display: {error}");
+            }
+        }
     }
     restart_account_app(&app)
 }
@@ -1434,10 +1450,68 @@ async fn recovery_code_issue() -> CmdResult<String> {
         transport
             .put_envelope(&session, &issuance.envelope, &issuance.verify_hash)
             .map_err(|e| e.to_string())?;
+        // The panel shows the code right now; parking it additionally keeps a
+        // one-time next-startup reminder in case the app closes before the
+        // user has actually written it down. Re-issuing also invalidates any
+        // older parked code by overwriting it.
+        if let Some(pending_path) =
+            solum_core::paths::account_profile_file(user_id, "pending-recovery-code.txt")
+        {
+            if let Err(error) = solum_core::recovery_code::save_pending_display(
+                &pending_path,
+                &issuance.display_code,
+            ) {
+                eprintln!("failed to park recovery code for next-startup display: {error}");
+            }
+        }
         Ok(issuance.display_code)
     })
     .await
     .map_err(|e| format!("恢复码生成线程失败: {e}"))?
+}
+
+/// Peek the recovery code parked by the last account login or re-issue, if
+/// the user has not acknowledged saving it yet. Read-only on purpose: closing
+/// the reminder without saving must keep the code parked for next startup.
+#[tauri::command]
+async fn recovery_code_pending() -> CmdResult<Option<String>> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let Some(session) = solum_core::account::AccountSession::load_full() else {
+            return Ok(None);
+        };
+        let Some(user_id) = session.stable_user_id() else {
+            return Ok(None);
+        };
+        let Some(path) =
+            solum_core::paths::account_profile_file(user_id, "pending-recovery-code.txt")
+        else {
+            return Ok(None);
+        };
+        solum_core::recovery_code::load_pending_display(&path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("恢复码待展示读取线程失败: {e}"))?
+}
+
+/// Acknowledge the parked recovery code as saved; deletes the local reminder.
+#[tauri::command]
+async fn recovery_code_pending_ack() -> CmdResult<()> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let Some(session) = solum_core::account::AccountSession::load_full() else {
+            return Ok(());
+        };
+        let Some(user_id) = session.stable_user_id() else {
+            return Ok(());
+        };
+        let Some(path) =
+            solum_core::paths::account_profile_file(user_id, "pending-recovery-code.txt")
+        else {
+            return Ok(());
+        };
+        solum_core::recovery_code::clear_pending_display(&path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("恢复码确认线程失败: {e}"))?
 }
 
 /// Sign in with username + recovery code when the password is forgotten.
@@ -6273,6 +6347,8 @@ pub fn run() {
             recovery_code_status,
             recovery_code_issue,
             recovery_code_login,
+            recovery_code_pending,
+            recovery_code_pending_ack,
             privacy_consent_status,
             privacy_consent_accept,
             privacy_consent_decline,
