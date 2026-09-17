@@ -610,6 +610,332 @@ pub fn fetch_oauth_config(server_url: &str) -> Result<OAuthConfig> {
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HuaweiOAuthConfig {
+    pub enabled: bool,
+    pub client_id: String,
+    pub authorize_url: String,
+    pub redirect_uri: String,
+    pub scope: String,
+}
+
+/// Fetch Huawei OAuth configuration from server
+pub fn fetch_huawei_config(server_url: &str) -> Result<HuaweiOAuthConfig> {
+    let server = normalize_server_url(server_url)?;
+    let client = HttpAccountClient::new();
+    let response = client
+        .get_json(&format!("{server}/v1/auth/huawei/config"), "")
+        .map_err(|e| CoreError::Llm(format!("获取华为登录配置失败: {e}")))?;
+
+    let enabled = response
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let client_id = response
+        .get("client_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let authorize_url = response
+        .get("authorize_url")
+        .and_then(Value::as_str)
+        .unwrap_or("https://oauth-login.cloud.huawei.com/oauth2/v3/authorize")
+        .to_string();
+    let redirect_uri = response
+        .get("redirect_uri")
+        .and_then(Value::as_str)
+        .unwrap_or("solum://oauth/callback")
+        .to_string();
+    let scope = response
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or("openid profile")
+        .to_string();
+
+    Ok(HuaweiOAuthConfig {
+        enabled,
+        client_id,
+        authorize_url,
+        redirect_uri,
+        scope,
+    })
+}
+
+/// Authenticate via Huawei Authorization Code
+pub fn authenticate_via_huawei(
+    server_url: &str,
+    code: &str,
+    redirect_uri: &str,
+    model: &str,
+) -> Result<AccountSession> {
+    let server = normalize_server_url(server_url)?;
+    let model = normalize_cloud_model(model)?;
+    if code.trim().is_empty() {
+        return Err(CoreError::Invalid("华为授权码不能为空".into()));
+    }
+    let client = HttpAccountClient::new();
+    let response = client
+        .post_json(
+            &format!("{server}/v1/auth/huawei/exchange"),
+            None,
+            json!({
+                "code": code.trim(),
+                "redirect_uri": redirect_uri.trim()
+            }),
+        )
+        .map_err(|e| match e {
+            AccountHttpError::Unauthorized => CoreError::Llm("华为授权失败或已过期".into()),
+            other => CoreError::Llm(format!("华为登录失败: {other}")),
+        })?;
+    let session = parse_auth_response(&response, &server, "", &model)?;
+    if session.stable_user_id().is_none() {
+        return Err(CoreError::Llm("账号服务器返回缺少 user_id".into()));
+    }
+    Ok(session)
+}
+
+/// Request SMS verification code for a phone number
+pub fn request_sms_code(server_url: &str, phone: &str) -> Result<()> {
+    let server = normalize_server_url(server_url)?;
+    let phone_clean = phone.trim();
+    if phone_clean.is_empty() {
+        return Err(CoreError::Invalid("请输入手机号".into()));
+    }
+    let client = HttpAccountClient::new();
+    let _ = client
+        .post_json(
+            &format!("{server}/v1/auth/sms/send"),
+            None,
+            json!({ "phone": phone_clean }),
+        )
+        .map_err(|e| match e {
+            AccountHttpError::Other(msg) if msg.contains("429") || msg.contains("rate") => {
+                CoreError::Llm("短信发送太频繁，请稍后再试".into())
+            }
+            AccountHttpError::Other(msg) if msg.contains("format") => {
+                CoreError::Invalid("手机号格式不正确，请输入大陆11位手机号".into())
+            }
+            other => CoreError::Llm(format!("发送短信验证码失败: {other}")),
+        })?;
+    Ok(())
+}
+
+/// Register with email and password
+pub fn register_email(
+    server_url: &str,
+    email: &str,
+    password: &str,
+    model: &str,
+) -> Result<AccountSession> {
+    let server = normalize_server_url(server_url)?;
+    let model = normalize_cloud_model(model)?;
+    let email_clean = email.trim().to_lowercase();
+    if email_clean.is_empty() {
+        return Err(CoreError::Invalid("请输入邮箱地址".into()));
+    }
+    if !email_clean.contains('@') || !email_clean.contains('.') {
+        return Err(CoreError::Invalid("邮箱格式不正确".into()));
+    }
+    if password.len() < 8 {
+        return Err(CoreError::Invalid("密码至少需要 8 个字符".into()));
+    }
+    let client = HttpAccountClient::new();
+    let response = client
+        .post_json(
+            &format!("{server}/v1/auth/email/register"),
+            None,
+            json!({
+                "email": email_clean,
+                "password": password
+            }),
+        )
+        .map_err(|e| match e {
+            AccountHttpError::Other(msg)
+                if msg.contains("email_already_registered") || msg.contains("409") =>
+            {
+                CoreError::Llm("该邮箱已被注册，请直接登录".into())
+            }
+            AccountHttpError::Other(msg) if msg.contains("format") => {
+                CoreError::Invalid("邮箱格式不正确".into())
+            }
+            other => CoreError::Llm(format!("邮箱注册失败: {other}")),
+        })?;
+    let session = parse_auth_response(&response, &server, &email_clean, &model)?;
+    if session.stable_user_id().is_none() {
+        return Err(CoreError::Llm("账号服务器注册结果缺少 user_id".into()));
+    }
+    Ok(session)
+}
+
+/// Login with email and password
+pub fn login_email(
+    server_url: &str,
+    email: &str,
+    password: &str,
+    model: &str,
+) -> Result<AccountSession> {
+    let server = normalize_server_url(server_url)?;
+    let model = normalize_cloud_model(model)?;
+    let email_clean = email.trim().to_lowercase();
+    if email_clean.is_empty() || password.is_empty() {
+        return Err(CoreError::Invalid("请输入邮箱和密码".into()));
+    }
+    let client = HttpAccountClient::new();
+    let response = client
+        .post_json(
+            &format!("{server}/v1/auth/email/login"),
+            None,
+            json!({
+                "email": email_clean,
+                "password": password
+            }),
+        )
+        .map_err(|e| match e {
+            AccountHttpError::Unauthorized => CoreError::Llm("邮箱或密码不正确".into()),
+            other => CoreError::Llm(format!("登录失败: {other}")),
+        })?;
+    let session = parse_auth_response(&response, &server, &email_clean, &model)?;
+    if session.stable_user_id().is_none() {
+        return Err(CoreError::Llm("登录结果缺少 user_id".into()));
+    }
+    Ok(session)
+}
+
+/// Register with phone, SMS code and password
+pub fn register_phone(
+    server_url: &str,
+    phone: &str,
+    code: &str,
+    password: &str,
+    model: &str,
+) -> Result<AccountSession> {
+    let server = normalize_server_url(server_url)?;
+    let model = normalize_cloud_model(model)?;
+    let phone_clean = phone.trim();
+    let code_clean = code.trim();
+    if phone_clean.is_empty() {
+        return Err(CoreError::Invalid("请输入手机号".into()));
+    }
+    if code_clean.is_empty() {
+        return Err(CoreError::Invalid("请输入短信验证码".into()));
+    }
+    if password.len() < 8 {
+        return Err(CoreError::Invalid("密码至少需要 8 个字符".into()));
+    }
+    let client = HttpAccountClient::new();
+    let response = client
+        .post_json(
+            &format!("{server}/v1/auth/phone/register"),
+            None,
+            json!({
+                "phone": phone_clean,
+                "code": code_clean,
+                "password": password
+            }),
+        )
+        .map_err(|e| match e {
+            AccountHttpError::Other(msg) if msg.contains("409") || msg.contains("already") => {
+                CoreError::Llm("该手机号已注册，请直接登录".into())
+            }
+            AccountHttpError::Other(msg) if msg.contains("expired") || msg.contains("invalid") => {
+                CoreError::Llm("短信验证码错误或已过期".into())
+            }
+            other => CoreError::Llm(format!("手机号注册失败: {other}")),
+        })?;
+    let session = parse_auth_response(&response, &server, phone_clean, &model)?;
+    if session.stable_user_id().is_none() {
+        return Err(CoreError::Llm("账号服务器注册结果缺少 user_id".into()));
+    }
+    Ok(session)
+}
+
+/// Login with phone and password
+pub fn login_phone_password(
+    server_url: &str,
+    phone: &str,
+    password: &str,
+    model: &str,
+) -> Result<AccountSession> {
+    let server = normalize_server_url(server_url)?;
+    let model = normalize_cloud_model(model)?;
+    let phone_clean = phone.trim();
+    if phone_clean.is_empty() || password.is_empty() {
+        return Err(CoreError::Invalid("请输入手机号和密码".into()));
+    }
+    let client = HttpAccountClient::new();
+    let response = client
+        .post_json(
+            &format!("{server}/v1/auth/phone/login"),
+            None,
+            json!({
+                "phone": phone_clean,
+                "password": password
+            }),
+        )
+        .map_err(|e| match e {
+            AccountHttpError::Unauthorized => CoreError::Llm("手机号或密码不正确".into()),
+            other => CoreError::Llm(format!("登录失败: {other}")),
+        })?;
+    let session = parse_auth_response(&response, &server, phone_clean, &model)?;
+    if session.stable_user_id().is_none() {
+        return Err(CoreError::Llm("登录结果缺少 user_id".into()));
+    }
+    Ok(session)
+}
+
+/// Login with phone and SMS code (or quick register)
+pub fn login_phone_code(
+    server_url: &str,
+    phone: &str,
+    code: &str,
+    model: &str,
+) -> Result<AccountSession> {
+    let server = normalize_server_url(server_url)?;
+    let model = normalize_cloud_model(model)?;
+    let phone_clean = phone.trim();
+    let code_clean = code.trim();
+    if phone_clean.is_empty() || code_clean.is_empty() {
+        return Err(CoreError::Invalid("请输入手机号和验证码".into()));
+    }
+    let client = HttpAccountClient::new();
+    let response = client
+        .post_json(
+            &format!("{server}/v1/auth/phone/login"),
+            None,
+            json!({
+                "phone": phone_clean,
+                "code": code_clean
+            }),
+        )
+        .map_err(|e| match e {
+            AccountHttpError::Unauthorized | AccountHttpError::Other(_) => {
+                CoreError::Llm("验证码错误或已失效，请重新获取".into())
+            }
+            AccountHttpError::Retryable(err) => {
+                CoreError::Llm(format!("网络请求失败，请稍后重试: {err}"))
+            }
+        })?;
+    let session = parse_auth_response(&response, &server, phone_clean, &model)?;
+    if session.stable_user_id().is_none() {
+        return Err(CoreError::Llm("登录结果缺少 user_id".into()));
+    }
+    Ok(session)
+}
+
+/// Delete account (compliance requirement)
+pub fn delete_account(server_url: &str, access_token: &str) -> Result<()> {
+    let server = normalize_server_url(server_url)?;
+    let client = HttpAccountClient::new();
+    let _ = client
+        .post_json(
+            &format!("{server}/v1/account/delete"),
+            Some(access_token),
+            json!({}),
+        )
+        .map_err(|e| CoreError::Llm(format!("注销账号失败: {e}")))?;
+    Ok(())
+}
+
 /// Exchange OAuth authorization code for an AccountSession with Solum Center.
 pub fn authenticate_via_oauth(
     server_url: &str,

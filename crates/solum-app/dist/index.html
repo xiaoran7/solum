@@ -1260,7 +1260,7 @@
   .account-gate-form { display: grid; gap: 10px; }
   #accountGateConfirmField { display: grid; gap: 10px; }
   .account-gate-form label { margin-top: 4px; color: var(--ink-2); font-size: .8125rem; font-weight: 650; }
-  .account-gate-status { min-height: 20px; margin: 0; color: var(--danger); font-size: .8125rem; }
+  .account-gate-status { min-height: 20px; margin: 0; color: var(--danger); font-size: .8125rem; text-align: center; }
   .account-gate-divider { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; margin: 10px 0; color: var(--muted); font-size: .75rem; }
   .account-gate-divider::before, .account-gate-divider::after { content: ""; height: 1px; background: var(--line); }
   .account-guest-btn { width: 100%; justify-content: center; }
@@ -1269,6 +1269,21 @@
   .password-wrap { position: relative; display: flex; align-items: center; }
   .password-wrap input { width: 100%; padding-right: 38px; }
   .btn-eye { position: absolute; right: 8px; border: none; background: none; cursor: pointer; color: var(--muted); padding: 4px; }
+  .phone-input-wrap { display: flex; align-items: center; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--card); overflow: hidden; }
+  .phone-prefix { padding: 8px 12px; font-weight: 600; color: var(--ink-2); background: var(--bg-muted, rgba(125,125,125,0.08)); border-right: 1px solid var(--line); font-size: 0.875rem; }
+  .phone-input-wrap input { border: none !important; border-radius: 0 !important; width: 100%; box-shadow: none !important; }
+  .sms-code-wrap { display: flex; gap: 8px; align-items: center; }
+  .sms-code-wrap input { flex: 1; }
+  .sms-send-btn { white-space: nowrap; min-width: 110px; font-size: 0.8125rem; }
+  .huawei-login-btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 44px; border-radius: var(--r-md); border: 1px solid rgba(207,11,32,0.25); background: rgba(207,11,32,0.06); color: #cf0b20; font-weight: 650; cursor: pointer; transition: all .15s ease; }
+  .huawei-login-btn:hover { background: rgba(207,11,32,0.12); border-color: #cf0b20; }
+  .huawei-logo-svg { width: 22px; height: 22px; flex-shrink: 0; }
+  .account-agreement-wrap { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 4px; font-size: 0.7813rem; color: var(--muted); line-height: 1.45; }
+  .account-agreement-wrap input[type="checkbox"] { margin-top: 2px; cursor: pointer; width: 15px; height: 15px; accent-color: var(--accent); }
+  .account-agreement-link { color: var(--accent); cursor: pointer; text-decoration: underline; font-weight: 600; }
+  .account-auth-subtypes { display: flex; gap: 16px; margin: -2px 0 6px; font-size: 0.8125rem; }
+  .account-auth-subtypes button { border: none; background: none; color: var(--muted); cursor: pointer; padding: 2px 0; border-bottom: 2px solid transparent; font-weight: 550; }
+  .account-auth-subtypes button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 700; }
 
   #privacyGate {
     position: fixed; inset: 0; background: var(--bg); display: none; flex-direction: column;
@@ -1472,7 +1487,7 @@
     .account-gate-form { gap: 11px; }
     .account-gate-form label { margin-top: 3px; font-size: .8125rem; }
     .account-gate-form input { min-height: 48px; font-size: 1rem; }
-    #accountGateSubmit, #accountGateOAuthBtn, #accountGuestBtn { min-height: 48px; }
+    #accountGateSubmit, #accountGateHuaweiBtn { min-height: 48px; }
     .account-gate-divider { margin: 12px 0; }
     .account-gate-foot { max-width: 32em; margin-top: 11px; line-height: 1.62; text-wrap: pretty; }
   }
@@ -2227,17 +2242,17 @@
           登录 Solum 账号后，可在不同设备间安全同步数据并开启云端智能服务。您的个人数据均在本地使用高强度端到端加密保护，密码绝不会上传或明文存储。</p>
         <div id="accountStatus" style="margin-bottom:14px;"></div>
 
-        <!-- 现代化 TannerLab ID 通行证主认证卡片 -->
+        <!-- 现代化华为账号快捷登录主认证卡片 -->
         <div class="account-oauth-card" id="accountPassportCard">
           <div class="account-oauth-card-head">
             <span class="account-oauth-card-icon" id="accountPassportIcon"></span>
             <div>
-              <strong class="account-oauth-card-title">TannerLab 统一通行证认证</strong>
-              <p class="account-oauth-card-desc">推荐使用统一身份通行证登录。自动唤起授权，完成后无需手动粘贴即可无缝登录。</p>
+              <strong class="account-oauth-card-title">华为账号快捷登录</strong>
+              <p class="account-oauth-card-desc">支持使用华为账号一键授权登录，跨设备安全同步端到端加密数据。</p>
             </div>
           </div>
           <div class="btnrow" style="margin-top:12px;">
-            <button class="btn primary" id="accountOAuthBtn" type="button">登录 TannerLab 通行证</button>
+            <button class="btn primary" id="accountOAuthBtn" type="button">华为账号登录</button>
             <button class="btn danger" id="accountLogoutBtn" type="button" hidden>退出登录</button>
           </div>
           <p class="account-gate-status" id="accountPassportStatus" role="alert" aria-live="polite" style="margin-top:8px;" hidden></p>
@@ -2296,6 +2311,7 @@
             <div class="btnrow">
               <button class="btn" id="recoveryCodeIssueBtn">生成恢复码</button>
               <button class="btn" id="accountChangePassBtn">修改密码</button>
+              <button class="btn danger-fill sm" id="accountDeleteBtn" title="永久删除个人数据与账号">注销账号</button>
             </div>
             <div class="hint" style="margin:4px 0 0 16px;" id="recoveryCodeHint">
               恢复码是备用安全钥匙：请抄写并妥善保管。</div>
@@ -2494,46 +2510,78 @@
   </div>
 </div>
 
-<!-- 身份工作区：登录 / 注册 / 访客 -->
+<!-- 身份工作区：手机号登录 / 注册 / 华为登录 -->
 <div id="accountGate" role="dialog" aria-modal="true" aria-labelledby="accountGateTitle" hidden>
   <div class="account-gate-shell">
     <section class="account-gate-context">
       <div class="account-gate-brand">
-        <svg class="solum-logo-svg" viewBox="0 0 256 256" width="30" height="30" aria-hidden="true"><use href="#solumMark"/></svg>
-        <span>Solum</span><span class="sdot amber"></span>
+        <svg class="solum-logo-svg" viewBox="0 0 256 256" width="32" height="32" aria-hidden="true"><use href="#solumMark"/></svg>
+        <span>Solum · 息壤</span><span class="sdot amber"></span>
       </div>
       <div>
-        <p class="account-gate-kicker">本地优先的个人工作台</p>
-        <h1 id="accountGateTitle">你的事，先留在你手里</h1>
-        <p>先在本机记录与整理；需要跨设备时，再登录开启加密同步。</p>
+        <p class="account-gate-kicker">本地优先的智能安全工作台</p>
+        <h1 id="accountGateTitle">随时记录，私密随行</h1>
+        <p>个人数据与笔记完全留在本地端到端加密保护；登录后开启跨设备加密同步与云端智能助手。</p>
       </div>
       <div class="account-privacy-note">
         <span id="accountGatePrivacyIcon"></span>
-        <span><strong>本地优先</strong><small>聊天原文、人格与审计记录不会进入中心库。</small></span>
+        <span><strong>端到端本地加密</strong><small>聊天原文、个人日记与审计记录仅本人可解密。</small></span>
       </div>
     </section>
     <section class="account-gate-panel">
       <div class="account-gate-mobile-brand" aria-hidden="true">
-        <svg class="solum-logo-svg" viewBox="0 0 256 256" width="28" height="28"><use href="#solumMark"/></svg>
+        <svg class="solum-logo-svg" viewBox="0 0 256 256" width="30" height="30"><use href="#solumMark"/></svg>
         <span>Solum · 息壤</span>
       </div>
-      <button class="btn icon account-gate-close" id="accountGateClose" type="button" aria-label="关闭账户面板" title="关闭" hidden></button>
+      <!-- 强制登录：移除跳过/关闭按钮 -->
+      <button class="btn icon account-gate-close" id="accountGateClose" type="button" aria-label="关闭" title="关闭" style="display:none;"></button>
       <div class="account-gate-heading">
-        <p id="accountGateReason">登录完整使用 Solum</p>
-        <h2 id="accountGateModeTitle">欢迎回来</h2>
+        <p id="accountGateReason">登录后使用完整功能</p>
+        <h2 id="accountGateModeTitle">账号登录</h2>
       </div>
       <div class="account-mode-switch" role="tablist" aria-label="账户方式">
         <button type="button" role="tab" id="accountGateLoginTab" aria-selected="true">登录</button>
         <button type="button" role="tab" id="accountGateRegisterTab" aria-selected="false">注册</button>
       </div>
       <div class="account-gate-form">
-        <label for="accountGateUser">账号</label>
-        <input type="text" id="accountGateUser" autocomplete="username" placeholder="输入账号" spellcheck="false" />
-        <label for="accountGatePass">密码</label>
-        <div class="password-wrap">
-          <input type="password" id="accountGatePass" minlength="8" autocomplete="current-password" placeholder="至少 8 个字符" />
-          <button type="button" class="btn-eye" aria-label="显示密码" title="显示密码" tabindex="-1"></button>
+        <!-- 登录时的快捷方式切换（隐藏手机号免密，默认邮箱密码登录） -->
+        <div class="account-auth-subtypes" id="accountLoginSubtypes" style="display:none;">
+          <button type="button" id="accountSubtypeCodeBtn">短信验证码登录</button>
+          <button type="button" class="active" id="accountSubtypePassBtn">密码登录</button>
         </div>
+
+        <!-- 手机号与短信验证码输入区（暂时隐藏，保留DOM备用） -->
+        <div id="accountGatePhoneWrap" style="display:none;">
+          <label for="accountGatePhone">手机号码</label>
+          <div class="phone-input-wrap">
+            <span class="phone-prefix">+86</span>
+            <input type="tel" id="accountGatePhone" maxlength="11" autocomplete="tel" placeholder="请输入 11 位手机号码" spellcheck="false" />
+          </div>
+          <div id="accountGateSmsField">
+            <label for="accountGateSmsCode">短信验证码</label>
+            <div class="sms-code-wrap">
+              <input type="text" id="accountGateSmsCode" maxlength="6" autocomplete="one-time-code" placeholder="6 位验证码" />
+              <button type="button" class="btn sms-send-btn" id="accountGateSendSmsBtn">获取验证码</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 邮箱输入区（主要登录/注册方式） -->
+        <div id="accountGateEmailWrap">
+          <label for="accountGateEmail" id="accountGateEmailLabel">邮箱账号</label>
+          <input type="email" id="accountGateEmail" autocomplete="email" placeholder="name@example.com" spellcheck="false" />
+        </div>
+
+        <!-- 密码行 -->
+        <div id="accountGatePassField">
+          <label for="accountGatePass" id="accountGatePassLabel">登录密码</label>
+          <div class="password-wrap">
+            <input type="password" id="accountGatePass" minlength="8" autocomplete="current-password" placeholder="至少 8 个字符" />
+            <button type="button" class="btn-eye" aria-label="显示密码" title="显示密码" tabindex="-1"></button>
+          </div>
+        </div>
+
+        <!-- 注册确认密码行（仅注册模式显示） -->
         <div id="accountGateConfirmField" hidden>
           <label for="accountGateConfirm">确认密码</label>
           <div class="password-wrap">
@@ -2541,18 +2589,28 @@
             <button type="button" class="btn-eye" aria-label="显示密码" title="显示密码" tabindex="-1"></button>
           </div>
         </div>
-        <button class="btn primary oauth-gate-btn" id="accountGateOAuthBtn" type="button" style="width:100%;margin-bottom:8px;">登录 TannerLab 通行证</button>
-        <details class="fold sub-fold" style="border:1px dashed var(--line);border-radius:var(--r-md);padding:6px 10px;margin-bottom:8px;">
-          <summary style="font-size:0.8rem;color:var(--muted);cursor:pointer;">使用传统独立账号密码</summary>
-          <div style="padding-top:8px;">
-            <button class="btn" id="accountGateSubmit" type="button" style="width:100%;">登录独立账号</button>
-          </div>
-        </details>
+
+        <!-- 隐私与用户协议勾选（国内上架硬合规） -->
+        <div class="account-agreement-wrap">
+          <input type="checkbox" id="accountAgreementCheck" />
+          <label for="accountAgreementCheck">我已阅读并同意 <a class="account-agreement-link" id="accountUserTermsLink">《用户服务协议》</a> 与 <a class="account-agreement-link" id="accountPrivacyPolicyLink">《隐私政策》</a></label>
+        </div>
+
+        <!-- 主提交按钮 -->
+        <button class="btn primary" id="accountGateSubmit" type="button" style="width:100%;margin-top:6px;min-height:44px;font-size:0.95rem;">登录</button>
+
         <p class="account-gate-status" id="accountGateStatus" role="alert" aria-live="polite"></p>
       </div>
-      <div class="account-gate-divider"><span>或</span></div>
-      <button class="btn account-guest-btn" id="accountGuestBtn" type="button">继续使用访客模式</button>
-      <p class="account-gate-foot">访客内容只保存在本机，与账号空间分开。</p>
+
+      <div class="account-gate-divider"><span>其他登录方式</span></div>
+      <!-- 华为账号一键快捷登录按钮 -->
+      <button class="huawei-login-btn" id="accountGateHuaweiBtn" type="button">
+        <svg class="huawei-logo-svg" viewBox="0 0 1024 1024">
+          <circle cx="512" cy="512" r="512" fill="#CF0B20"/>
+          <path fill="#FFFFFF" d="M512 210c-15.5 0-30 4.2-42.5 11.5L296 322c-27 15.6-43.5 44.5-43.5 75.7v228.6c0 31.2 16.5 60.1 43.5 75.7l173.5 100.5c12.5 7.3 27 11.5 42.5 11.5s30-4.2 42.5-11.5L728 702c27-15.6 43.5-44.5 43.5-75.7V397.7c0-31.2-16.5-60.1-43.5-75.7L554.5 221.5C542 214.2 527.5 210 512 210zm0 85l145 84v168l-145 84-145-84V379l145-84z"/>
+        </svg>
+        <span>华为账号快捷登录</span>
+      </button>
     </section>
   </div>
 </div>

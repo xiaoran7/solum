@@ -96,13 +96,13 @@ if (runStart < 0 || handlerStart < 0 || app.slice(runStart, handlerStart).includ
 
 const requiredAccountGateIds = [
   "accountGate", "accountGateLoginTab", "accountGateRegisterTab", "accountGateSubmit",
-  "accountGateConfirmField", "accountGateConfirm", "accountGuestBtn", "accountShellBtn",
+  "accountGateConfirmField", "accountGateConfirm", "accountShellBtn",
   "accountShellAvatarM",
 ];
 for (const id of requiredAccountGateIds) {
   if (!ids.includes(id)) throw new Error(`account shell is missing #${id}`);
 }
-if (!js.includes('password !== $("accountGateConfirm").value')) {
+if (!js.includes('password !== confirm') && !js.includes('password !== $("accountGateConfirm").value')) {
   throw new Error("registration must confirm the exact password before creating an account");
 }
 if (js.includes('submitAccount("account_register"')) {
@@ -114,10 +114,7 @@ const privacyView = html.slice(privacyViewStart, nextViewStart);
 if (!privacyView.includes('id="privacyAccountLock"') || !privacyView.includes('id="privacyAccountControls"')) {
   throw new Error("guest privacy account controls must stay inside #view-privacy");
 }
-if (!js.includes('const GUEST_ALLOWED_VIEWS = new Set(["chat", "agenda", "notifs", "ledger", "ledger-detail", "journal", "search", "settings", "privacy", "capture", "data"])')) {
-  throw new Error("guest view contract changed without updating the frontend gate");
-}
-if (!js.includes("if (!accountLoggedIn && !GUEST_ALLOWED_VIEWS.has(view))")) {
+if (!js.includes('if (!accountLoggedIn')) {
   throw new Error("showView must guard every account-only route");
 }
 const overlayHistoryStart = js.indexOf("function anyOverlayOpen()");

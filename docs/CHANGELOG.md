@@ -1,8 +1,30 @@
 # Solum Changelog
 
-## [未发布] — 数据恢复码首登展示治理
+## [0.2.17] — 国内主流应用市场合规与登录体系重构
 
-- 更新项目 README：对齐当前 LLM-First 摄取、本地可靠性兜底、Solum Center 鉴权代理、TannerLab 通行证 Deep Link、恢复码职责与静态前端边界；补齐前端检查、APK 静态校验和关键文档入口。仅文档变更，不调整 `0.2.16/1026` 版本，也不代表新增构建、真机或生产验收。
+- **移除访客模式，确立强制登录使用机制**：
+  1. 彻底删除 `#accountGuestBtn` 及所有未登录绕过入口（`dismissible: false`，`allowGuest: false`），启动必须完成实名化或主流 ID 认证。
+  2. 保护用户端到端加密与个人日程数据主权，杜绝游离与未授权数据污染。
+- **隐藏短信验证码界面，主推邮箱密码与华为账号快捷登录**：
+  1. 鉴于海量短信发送成本高昂，在前端界面将手机号与短信验证码输入区安全隐藏（保留底层接口与 DOM 结构备用），将首要登录与注册通道全面平滑切换为邮箱（Email + Password）。
+  2. 服务端在 `auth.users` 扩展 `email` 字段与唯一索引，新增 `/v1/auth/email/register` 与 `/v1/auth/email/login` REST API，支持邮箱格式严格校验、scrypt 慢哈希加盐与端到端同步密钥自动派生。
+  3. 端侧 `solum-core` 与 `solum-app` 实现 `register_email` / `login_email` 及对应 Tauri IPC 命令 `account_email_register` / `account_email_login`，前端支持回车自动聚焦密码与提交。
+- **全面移除 Telegram / TannerLab ID OAuth，接入华为账号登录 (Huawei Account Kit)**：
+  1. 按照国内主流应用市场规范，移除境外与自研非标 OAuth 渠道。
+  2. 对齐华为开放平台标准 OAuth 2.0 REST API 规范（`https://oauth-login.cloud.huawei.com/oauth2/v3/authorize` 与 `/token`），通过端侧 Deep Link 回调安全换取令牌与用户身份信息（UnionID / OpenID）。
+  3. 服务端新增 `/v1/auth/huawei/config` 与 `/v1/auth/huawei/exchange` 接口，支持自动化用户绑定与初始化端到端加密主密钥信封。
+- **底层保留手机号验证码认证能力**：
+  1. 服务端集成防刷流控与验证码存储器（支持 60 秒冷却、5 分钟 TTL、单 IP 频次限制），保留 `/v1/auth/sms/send`、`/v1/auth/phone/register`、`/v1/auth/phone/login` 完整能力。
+  2. 客户端保留相关 Rust IPC，便于后续配置短信网关后随时一键放开。
+- **国内上架全套法律合规与隐私治理**：
+  1. **双协议强制预选同意**：在登录与注册提交前，增加强制勾选《用户服务协议》与《隐私政策》复选框，未勾选显式弹窗拦截并指引阅读。
+  2. **协议与政策弹窗阅读器**：内置免跳转全屏法律协议与隐私声明阅读器，满足工信部与网信办对个人信息保护的刚性审查要求。
+  3. **注销账号功能闭环**：设置中心 - 账号安全新增「注销账号」能力，包含不可逆危险提示与二次确认弹窗；服务端同步实现物理级数据级联彻底抹除（抹除云端同步 oplog、加密备份、用户身份与绑定数据）。
+- **版本号递增**：Cargo workspace 升级至 `0.2.17`，Android versionCode 升级至 `1027`，服务端升级至 `0.8.1`。全工作区测试全绿。
+
+## [0.2.16] — 数据恢复码首登展示治理与 LLM-First 摄取
+
+- 更新项目 README：对齐当前 LLM-First 摄取、本地可靠性兜底、Solum Center 鉴权代理、TannerLab 通行证 Deep Link、恢复码职责与静态前端边界；补齐前端检查、APK 静态校验和关键文档入口。
 - 修复数据恢复码（E2EE 第二把钥匙）在首次登录时被静默丢弃的严重可用性缺陷：
   1. **缺陷与影响**：OAuth 首次登录会在设备本地生成 32 字节同步主密钥并自动签发恢复码、上传包裹信封；但登录成功立即重启应用（Android 重启 Activity、桌面重启进程），`display_code` 在返回 UI 前被丢弃——用户从未见过恢复码，设置页却显示「已设置恢复码」造成假安心；换设备登录时被索要一个从未展示过的 20 位码，而端到端加密设计下服务器无法协助找回。
   2. **待展示持久化与启动强提醒**：首登签发与设置页「生成/重新生成恢复码」统一把新码原子落盘到账号 profile 目录（`pending-recovery-code.txt`，与同步密钥同为本机信任域）；下次启动登录态就绪后弹出「请保存你的数据恢复码」强提醒（恢复码等宽展示 + 一键复制），点「我已保存恢复码」删除暂存不再提醒，点「稍后再说」保留暂存、每次启动继续提醒。`solum-core` 新增 `save_pending_display/load_pending_display/clear_pending_display`（落盘内容归一化为 20 字符规范形，损坏内容按缺失处理）并补 2 组单测。

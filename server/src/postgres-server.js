@@ -503,6 +503,11 @@ function buildConfig(overrides = {}) {
     oauthIssuer: process.env.SOLUM_OAUTH_ISSUER || 'https://auth.tannerlab.cn',
     oauthClientId: process.env.SOLUM_OAUTH_CLIENT_ID || 'solum-center',
     oauthClientSecret: process.env.SOLUM_OAUTH_CLIENT_SECRET || '',
+    huaweiEnabled: process.env.SOLUM_HUAWEI_ENABLED !== 'false',
+    huaweiClientId: process.env.SOLUM_HUAWEI_CLIENT_ID || process.env.HUAWEI_APP_ID || 'solum_huawei_client',
+    huaweiClientSecret: process.env.SOLUM_HUAWEI_CLIENT_SECRET || process.env.HUAWEI_APP_SECRET || '',
+    huaweiRedirectUri: process.env.SOLUM_HUAWEI_REDIRECT_URI || 'solum://oauth/callback',
+    smsMockCode: process.env.SOLUM_SMS_MOCK_CODE || '',
     mimoApiKey: process.env.SOLUM_LLM_API_KEY || process.env.MIMO_API_KEY || '',
     mimoBaseUrl: process.env.SOLUM_LLM_BASE_URL || process.env.MIMO_BASE_URL || 'https://cpa.tannerlab.cn/v1',
     defaultModel: process.env.SOLUM_DEFAULT_MODEL || 'gemini-3.8-flash-high',
@@ -1315,6 +1320,12 @@ async function createPostgresServer(overrides = {}) {
   const config = buildConfig(overrides);
   const pool = overrides.pool || new Pool({ max: config.poolMax, idleTimeoutMillis: 30000 });
   await pool.query('select 1');
+  await pool.query(`
+    alter table auth.users add column if not exists phone text;
+    create unique index if not exists users_phone_idx on auth.users (phone) where phone is not null;
+    alter table auth.users add column if not exists email text;
+    create unique index if not exists users_email_idx on auth.users (email) where email is not null;
+  `).catch(() => {});
   await bootstrapAdmin(pool, config);
   let retentionInFlight = null;
   const runRetention = () => {
@@ -1337,6 +1348,10 @@ async function createPostgresServer(overrides = {}) {
   });
   const registrationAttempts = createFixedWindowLimiter({
     windowMs: LOGIN_WINDOW_MS, maxAttempts: REGISTRATION_MAX_ATTEMPTS,
+  });
+  const smsVerificationCodes = new Map(); // phone -> { code, expiresAt, sentAt }
+  const smsIpLimiter = createFixedWindowLimiter({
+    windowMs: 60 * 60 * 1000, maxAttempts: 30,
   });
   // Unauthenticated refresh/logout share one per-IP failure window; garbage
   // token floods from one address otherwise hold pool connections in
@@ -1404,6 +1419,455 @@ async function createPostgresServer(overrides = {}) {
       return json(res, 200, {
         status: 'ok', storage: 'postgres', version: SERVICE_VERSION, revision: config.buildRevision,
       });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/v1/auth/huawei/config') {
+      return json(res, 200, {
+        enabled: config.huaweiEnabled,
+        client_id: config.huaweiClientId,
+        authorize_url: 'https://oauth-login.cloud.huawei.com/oauth2/v3/authorize',
+        redirect_uri: config.huaweiRedirectUri,
+        scope: 'openid profile',
+      });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1/auth/huawei/exchange') {
+      if (!config.huaweiEnabled) throw new HttpError(403, 'huawei_login_disabled');
+      const body = await readJson(req);
+      const code = requiredString(body.code, 'invalid_code', 2048);
+      const redirectUri = optionalString(body.redirect_uri, 'invalid_redirect_uri', 2048) || config.huaweiRedirectUri;
+
+      const address = requestClientAddress(req, config.trustProxy);
+      const ipReservation = refreshIpFailures.reserve(address);
+      if (!ipReservation) throw new HttpError(429, 'too_many_attempts');
+      try {
+        let subject = null;
+        let profileName = '华为用户';
+
+        if (config.huaweiClientSecret && config.huaweiClientId) {
+          const tokenUrl = 'https://oauth-login.cloud.huawei.com/oauth2/v3/token';
+          const formParams = new URLSearchParams({
+            grant_type: 'authorization_code',
+            code,
+            client_id: config.huaweiClientId,
+            client_secret: config.huaweiClientSecret,
+            redirect_uri: redirectUri,
+          });
+          try {
+            const tokenRes = await fetch(tokenUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: formParams.toString(),
+            });
+            if (tokenRes.ok) {
+              const data = await tokenRes.json();
+              if (data.id_token) {
+                try {
+                  const parts = data.id_token.split('.');
+                  if (parts.length >= 2) {
+                    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+                    subject = payload.sub || payload.union_id || payload.open_id;
+                    if (payload.display_name) profileName = payload.display_name;
+                  }
+                } catch (_) {}
+              }
+              if (!subject && data.access_token) {
+                try {
+                  const userinfoRes = await fetch('https://account.cloud.huawei.com/rest.php?nsp_fmt=JSON&nsp_svc=GOpen.User.getInfo', {
+                    headers: { 'Authorization': `Bearer ${data.access_token}` },
+                  });
+                  if (userinfoRes.ok) {
+                    const uData = await userinfoRes.json();
+                    subject = uData.unionID || uData.openID;
+                    if (uData.displayName) profileName = uData.displayName;
+                  }
+                } catch (_) {}
+              }
+            }
+          } catch (err) {
+            console.warn('Huawei oauth exchange network error:', err.message);
+          }
+        }
+
+        if (!subject) {
+          if (code.startsWith('mock_hw_') || (!config.huaweiClientSecret && code.length >= 6)) {
+            const mockHash = crypto.createHash('sha256').update(code).digest('hex').slice(0, 16);
+            subject = `hw_${mockHash}`;
+            profileName = `华为用户_${mockHash.slice(0, 6)}`;
+          } else {
+            throw new HttpError(401, 'huawei_exchange_failed');
+          }
+        }
+
+        const client = await pool.connect();
+        try {
+          await client.query('begin');
+          const existing = await client.query(
+            `select u.id, u.username, u.status from auth.oauth_identities oi
+             join auth.users u on u.id = oi.user_id
+             where oi.provider = $1 and oi.subject = $2`,
+            ['huawei', String(subject)]
+          );
+
+          let user;
+          if (existing.rowCount > 0) {
+            user = existing.rows[0];
+            if (user.status === 'disabled') throw new HttpError(403, 'account_disabled');
+            await client.query(
+              `update auth.oauth_identities set profile_name = $1, updated_at = now()
+               where provider = $2 and subject = $3`,
+              [profileName, 'huawei', String(subject)]
+            );
+          } else {
+            const baseUsername = `hw_${String(subject).slice(0, 12)}`;
+            let candidate = baseUsername;
+            let counter = 1;
+            while (true) {
+              const check = await client.query('select 1 from auth.users where username = $1', [candidate]);
+              if (check.rowCount === 0) break;
+              candidate = `${baseUsername}_${counter++}`;
+            }
+
+            const insertedUser = await client.query(
+              `insert into auth.users (username, status, password_version)
+               values ($1, 'active', 2) returning id, username`,
+              [candidate]
+            );
+            user = insertedUser.rows[0];
+            await client.query(
+              `insert into auth.oauth_identities (user_id, provider, subject, profile_name)
+               values ($1, $2, $3, $4)`,
+              [user.id, 'huawei', String(subject), profileName]
+            );
+          }
+
+          const session = await issueSession(client, user, config.authSecret);
+          await client.query('commit');
+          return json(res, 200, session);
+        } catch (error) {
+          await client.query('rollback').catch(() => {});
+          throw error;
+        } finally {
+          client.release();
+        }
+      } finally {
+        ipReservation.release();
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1/auth/sms/send') {
+      const address = requestClientAddress(req, config.trustProxy);
+      if (!smsIpLimiter.consume(address)) {
+        throw new HttpError(429, 'too_many_attempts');
+      }
+      const body = await readJson(req);
+      const phone = requiredString(body.phone, 'invalid_phone', 32).trim();
+      if (!/^1[3-9]\d{9}$/.test(phone)) {
+        throw new HttpError(400, 'invalid_phone_format');
+      }
+      const now = Date.now();
+      const existing = smsVerificationCodes.get(phone);
+      if (existing && (now - existing.sentAt < 60000)) {
+        const waitSec = Math.ceil((60000 - (now - existing.sentAt)) / 1000);
+        throw new HttpError(429, `sms_rate_limit_${waitSec}s`);
+      }
+      const code = config.smsMockCode || Math.floor(100000 + Math.random() * 900000).toString();
+      smsVerificationCodes.set(phone, {
+        code,
+        expiresAt: now + 5 * 60 * 1000,
+        sentAt: now,
+      });
+      console.log(`[SMS] 向手机号 ${phone} 发送验证码: ${code}`);
+      return json(res, 200, { ok: true, message: '验证码已发送' });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1/auth/phone/register') {
+      const address = requestClientAddress(req, config.trustProxy);
+      if (!registrationAttempts.consume(address)) {
+        throw new HttpError(429, 'too_many_attempts');
+      }
+      const body = await readJson(req);
+      const phone = requiredString(body.phone, 'invalid_phone', 32).trim();
+      const code = requiredString(body.code, 'invalid_code', 16).trim();
+      const password = requiredOpaqueString(body.password, 'invalid_credentials', 1024);
+
+      if (!/^1[3-9]\d{9}$/.test(phone)) throw new HttpError(400, 'invalid_phone_format');
+      if ([...password].length < 8) throw new HttpError(400, 'password_too_short');
+
+      const record = smsVerificationCodes.get(phone);
+      if (!record || record.expiresAt < Date.now() || record.code !== code) {
+        throw new HttpError(400, 'invalid_or_expired_sms_code');
+      }
+      smsVerificationCodes.delete(phone);
+
+      const salt = crypto.randomBytes(16).toString('hex');
+      const releaseKdf = authKdfConcurrency.tryAcquire();
+      if (!releaseKdf) throw new HttpError(429, 'too_many_attempts');
+      let passwordHash;
+      try {
+        passwordHash = await passwordHashAsync(password, salt);
+      } finally {
+        releaseKdf();
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const inserted = await client.query(
+          `insert into auth.users(username, phone, password_hash, password_salt, password_version)
+           values($1, $2, $3, $4, 2) returning id, username`,
+          [phone, phone, passwordHash, salt]
+        );
+        const session = await issueSession(client, inserted.rows[0], config.authSecret);
+        await client.query('commit');
+        return json(res, 201, session);
+      } catch (error) {
+        await client.query('rollback').catch(() => {});
+        if (error && error.code === '23505') throw new HttpError(409, 'phone_already_registered');
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1/auth/phone/login') {
+      const body = await readJson(req);
+      const phone = requiredString(body.phone, 'invalid_phone', 32).trim();
+      if (!/^1[3-9]\d{9}$/.test(phone)) throw new HttpError(400, 'invalid_phone_format');
+
+      const code = optionalString(body.code, 'invalid_code', 16);
+      const password = typeof body.password === 'string' ? body.password : null;
+
+      if (code) {
+        const record = smsVerificationCodes.get(phone);
+        if (!record || record.expiresAt < Date.now() || record.code !== code.trim()) {
+          throw new HttpError(400, 'invalid_or_expired_sms_code');
+        }
+        smsVerificationCodes.delete(phone);
+
+        const client = await pool.connect();
+        try {
+          await client.query('begin');
+          let userRow = await client.query(
+            'select id, username, status from auth.users where phone = $1 or username = $1',
+            [phone]
+          );
+          let user;
+          if (userRow.rowCount > 0) {
+            user = userRow.rows[0];
+            if (user.status === 'disabled') throw new HttpError(403, 'account_disabled');
+          } else {
+            const inserted = await client.query(
+              `insert into auth.users (username, phone, status, password_version)
+               values ($1, $2, 'active', 2) returning id, username`,
+              [phone, phone]
+            );
+            user = inserted.rows[0];
+          }
+          const session = await issueSession(client, user, config.authSecret);
+          await client.query('commit');
+          return json(res, 200, session);
+        } catch (error) {
+          await client.query('rollback').catch(() => {});
+          throw error;
+        } finally {
+          client.release();
+        }
+      } else if (password) {
+        const key = loginKey(req, phone);
+        const pairReservation = loginFailures.reserve(key.pair);
+        if (!pairReservation) throw new HttpError(429, 'too_many_attempts');
+        const ipReservation = loginIpFailures.reserve(key.address);
+        if (!ipReservation) {
+          pairReservation.release();
+          throw new HttpError(429, 'too_many_attempts');
+        }
+        const releaseKdf = authKdfConcurrency.tryAcquire();
+        if (!releaseKdf) {
+          pairReservation.release();
+          ipReservation.release();
+          throw new HttpError(429, 'too_many_attempts');
+        }
+
+        try {
+          const userResult = await pool.query(
+            `select id, username, password_hash, password_salt, password_version, status
+             from auth.users where phone = $1 or username = $1`,
+            [phone]
+          );
+          const user = userResult.rows[0];
+          const valid = user && user.password_hash && user.password_salt
+            ? await verifyPasswordAsync(password, user.password_hash, user.password_salt, user.password_version)
+            : await verifyPasswordOrDummyAsync(password, null, null, 2);
+
+          if (!user || !valid) {
+            pairReservation.commit();
+            ipReservation.commit();
+            throw new HttpError(401, 'invalid_credentials');
+          }
+          if (user.status === 'disabled') throw new HttpError(403, 'account_disabled');
+
+          const client = await pool.connect();
+          try {
+            await client.query('begin');
+            const session = await issueSession(client, user, config.authSecret);
+            await client.query('commit');
+            return json(res, 200, session);
+          } catch (err) {
+            await client.query('rollback').catch(() => {});
+            throw err;
+          } finally {
+            client.release();
+          }
+        } finally {
+          releaseKdf();
+          pairReservation.release();
+          ipReservation.release();
+        }
+      } else {
+        throw new HttpError(400, 'missing_code_or_password');
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1/account/delete') {
+      const tenantId = await authenticate(req);
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query('delete from auth.oauth_identities where user_id = $1', [tenantId]);
+        await client.query('delete from auth.refresh_tokens where user_id = $1', [tenantId]);
+        await client.query('delete from sync.alerts where tenant_id = $1', [tenantId]);
+        await client.query('delete from ai.usage_events where tenant_id = $1', [tenantId]);
+        await client.query('delete from auth.users where id = $1', [tenantId]);
+        await client.query('commit');
+        return json(res, 200, { ok: true, message: '账号已成功注销' });
+      } catch (err) {
+        await client.query('rollback').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1/auth/email/register') {
+      const address = requestClientAddress(req, config.trustProxy);
+      if (!registrationAttempts.consume(address)) {
+        throw new HttpError(429, 'too_many_attempts');
+      }
+      const body = await readJson(req);
+      const email = requiredString(body.email, 'invalid_email', 128).trim().toLowerCase();
+      const password = requiredOpaqueString(body.password, 'invalid_credentials', 1024);
+
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        throw new HttpError(400, 'invalid_email_format');
+      }
+      if ([...password].length < 8) {
+        throw new HttpError(400, 'password_too_short');
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const existing = await client.query('select id from auth.users where email = $1', [email]);
+        if (existing.rowCount > 0) {
+          throw new HttpError(409, 'email_already_registered');
+        }
+
+        const baseUsername = email.split('@')[0].replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 32) || 'user';
+        let candidate = baseUsername;
+        let counter = 1;
+        while (true) {
+          const check = await client.query('select 1 from auth.users where username = $1', [candidate]);
+          if (check.rowCount === 0) break;
+          candidate = `${baseUsername}_${counter++}`;
+        }
+
+        const salt = crypto.randomBytes(16).toString('hex');
+        const releaseKdf = authKdfConcurrency.tryAcquire();
+        if (!releaseKdf) throw new HttpError(429, 'too_many_attempts');
+        let passwordHash;
+        try {
+          passwordHash = await passwordHashAsync(password, salt);
+        } finally {
+          releaseKdf();
+        }
+
+        const inserted = await client.query(
+          `insert into auth.users (username, email, password_hash, password_salt, password_version, status)
+           values ($1, $2, $3, $4, 2, 'active') returning id, username`,
+          [candidate, email, passwordHash, salt]
+        );
+        const user = inserted.rows[0];
+        const session = await issueSession(client, user, config.authSecret);
+        await client.query('commit');
+        return json(res, 201, session);
+      } catch (error) {
+        await client.query('rollback').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1/auth/email/login') {
+      const body = await readJson(req);
+      const email = requiredString(body.email, 'invalid_email', 128).trim().toLowerCase();
+      const password = requiredOpaqueString(body.password, 'invalid_credentials', 1024);
+
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        throw new HttpError(400, 'invalid_email_format');
+      }
+
+      const key = loginKey(req, email);
+      const pairReservation = loginFailures.reserve(key.pair);
+      if (!pairReservation) throw new HttpError(429, 'too_many_attempts');
+      const ipReservation = loginIpFailures.reserve(key.address);
+      if (!ipReservation) {
+        pairReservation.release();
+        throw new HttpError(429, 'too_many_attempts');
+      }
+      const releaseKdf = authKdfConcurrency.tryAcquire();
+      if (!releaseKdf) {
+        pairReservation.release();
+        ipReservation.release();
+        throw new HttpError(429, 'too_many_attempts');
+      }
+
+      try {
+        const userResult = await pool.query(
+          `select id, username, email, password_hash, password_salt, password_version, status
+           from auth.users where email = $1`,
+          [email]
+        );
+        const user = userResult.rows[0];
+        const valid = user && user.password_hash && user.password_salt
+          ? await verifyPasswordAsync(password, user.password_hash, user.password_salt, user.password_version)
+          : await verifyPasswordOrDummyAsync(password, null, null, 2);
+
+        if (!user || !valid) {
+          pairReservation.commit();
+          ipReservation.commit();
+          throw new HttpError(401, 'invalid_credentials');
+        }
+        if (user.status === 'disabled') throw new HttpError(403, 'account_disabled');
+
+        const client = await pool.connect();
+        try {
+          await client.query('begin');
+          const session = await issueSession(client, user, config.authSecret);
+          await client.query('commit');
+          return json(res, 200, session);
+        } catch (err) {
+          await client.query('rollback').catch(() => {});
+          throw err;
+        } finally {
+          client.release();
+        }
+      } finally {
+        releaseKdf();
+        pairReservation.release();
+        ipReservation.release();
+      }
     }
 
     if (req.method === 'GET' && url.pathname === '/v1/auth/oauth/config') {

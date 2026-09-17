@@ -4141,8 +4141,8 @@ $("privacyGateAcceptBtn").addEventListener("click", async (event) => {
     // Ask for OS notification delivery only after the in-app policy gate is
     // accepted; denial leaves the local UI usable.
     try { await invokePrivacyCommand("notification_permission_request", 8000); } catch (_) { }
-    if (!accountLoggedIn && !guestChoiceMade()) {
-      openAccountGate("隐私设置已保存，现在选择使用方式", { dismissible: false, allowGuest: true });
+    if (!accountLoggedIn) {
+      openAccountGate("隐私设置已保存，请登录后开始使用", { dismissible: false, allowGuest: false });
     }
   } catch (e) {
     // 写盘失败必须留在门里：放行等于产生一次没有记录的同意。
@@ -4839,27 +4839,79 @@ function handleAccountExpiry(error, command) {
   return accountExpiryFlight;
 }
 
+let accountLoginSubtype = "code"; // "code" (验证码免密登录) 或 "pass" (密码登录)
+let smsCountdownTimer = null;
+let smsCountdown = 60;
+
+function setAccountLoginSubtype(subtype) {
+  accountLoginSubtype = subtype === "pass" ? "pass" : "code";
+  const isCode = accountLoginSubtype === "code";
+  const btnCode = $("accountSubtypeCodeBtn");
+  const btnPass = $("accountSubtypePassBtn");
+  if (btnCode) btnCode.className = isCode ? "active" : "";
+  if (btnPass) btnPass.className = isCode ? "" : "active";
+
+  const smsField = $("accountGateSmsField");
+  const passField = $("accountGatePassField");
+  if (smsField) smsField.hidden = !isCode;
+  if (passField) passField.hidden = isCode;
+
+  if ($("accountGatePassLabel")) $("accountGatePassLabel").textContent = "登录密码";
+  if ($("accountGateModeTitle")) {
+    $("accountGateModeTitle").textContent = isCode ? "手机号免密登录" : "手机号密码登录";
+  }
+  if ($("accountGateSubmit")) {
+    $("accountGateSubmit").textContent = isCode ? "免密登录 / 一键注册" : "登录";
+  }
+}
+
 function setAccountGateMode(mode) {
   accountGateMode = mode === "register" ? "register" : "login";
   const registering = accountGateMode === "register";
-  $("accountGateLoginTab").setAttribute("aria-selected", registering ? "false" : "true");
-  $("accountGateRegisterTab").setAttribute("aria-selected", registering ? "true" : "false");
-  $("accountGateModeTitle").textContent = registering ? "创建你的空间" : "欢迎回来";
-  $("accountGateSubmit").textContent = registering ? "注册并进入" : "登录";
-  $("accountGatePass").autocomplete = registering ? "new-password" : "current-password";
-  $("accountGateConfirmField").hidden = !registering;
-  $("accountGateConfirm").required = registering;
-  $("accountGateConfirm").value = "";
-  $("accountGateStatus").textContent = "";
+  if ($("accountGateLoginTab")) $("accountGateLoginTab").setAttribute("aria-selected", registering ? "false" : "true");
+  if ($("accountGateRegisterTab")) $("accountGateRegisterTab").setAttribute("aria-selected", registering ? "true" : "false");
+
+  const subtypes = $("accountLoginSubtypes");
+  const phoneWrap = $("accountGatePhoneWrap");
+  const emailWrap = $("accountGateEmailWrap");
+  const smsField = $("accountGateSmsField");
+  const passField = $("accountGatePassField");
+  const confirmField = $("accountGateConfirmField");
+
+  // 手机号与短信验证码隐藏，默认优先使用邮箱账号
+  if (subtypes) subtypes.style.display = "none";
+  if (phoneWrap) phoneWrap.style.display = "none";
+  if (emailWrap) emailWrap.style.display = "";
+  if (smsField) smsField.hidden = true;
+  if (passField) passField.hidden = false;
+
+  if (registering) {
+    if (confirmField) confirmField.hidden = false;
+    if ($("accountGatePassLabel")) $("accountGatePassLabel").textContent = "设置密码（至少 8 位）";
+    if ($("accountGateModeTitle")) $("accountGateModeTitle").textContent = "新用户注册";
+    if ($("accountGateSubmit")) $("accountGateSubmit").textContent = "注册并进入";
+    if ($("accountGatePass")) $("accountGatePass").autocomplete = "new-password";
+  } else {
+    if (confirmField) confirmField.hidden = true;
+    if ($("accountGatePassLabel")) $("accountGatePassLabel").textContent = "登录密码";
+    if ($("accountGateModeTitle")) $("accountGateModeTitle").textContent = "账号登录";
+    if ($("accountGateSubmit")) $("accountGateSubmit").textContent = "登录";
+    if ($("accountGatePass")) $("accountGatePass").autocomplete = "current-password";
+  }
+
+  if ($("accountGateConfirm")) {
+    $("accountGateConfirm").required = registering;
+    $("accountGateConfirm").value = "";
+  }
+  if ($("accountGateStatus")) $("accountGateStatus").textContent = "";
 }
 
 function openAccountGate(reason, options) {
   if (accountLoggedIn) return;
   options = options || {};
-  $("accountGateReason").textContent = reason || "登录完整使用 Solum";
-  $("accountGateClose").hidden = !options.dismissible;
-  $("accountGuestBtn").hidden = !options.allowGuest;
-  $("accountGate").hidden = false;
+  if ($("accountGateReason")) $("accountGateReason").textContent = reason || "登录后使用完整功能";
+  if ($("accountGateClose")) $("accountGateClose").style.display = options.dismissible ? "" : "none";
+  if ($("accountGate")) $("accountGate").hidden = false;
   document.body.classList.add("account-gate-open");
   syncOverlayHistory();
   requestAnimationFrame(() => {
@@ -4870,15 +4922,17 @@ function openAccountGate(reason, options) {
         { opacity: 1, transform: "translateY(0) scale(1)" },
       ], { duration: 420, easing: "cubic-bezier(.22,1,.36,1)" });
     }
-    $("accountGateUser").focus();
+    const emailInput = $("accountGateEmail");
+    if (emailInput) emailInput.focus();
   });
 }
 
 function closeAccountGate() {
+  if (!accountLoggedIn) return;
   if ($("accountGate").hidden) return;
   $("accountGate").hidden = true;
   document.body.classList.remove("account-gate-open");
-  $("accountGateStatus").textContent = "";
+  if ($("accountGateStatus")) $("accountGateStatus").textContent = "";
   syncOverlayHistory();
 }
 
@@ -5453,49 +5507,137 @@ async function submitSettingsLogin() {
   }
 }
 
+let smsTimer = null;
+let smsSeconds = 60;
+function startSmsCountdown() {
+  const btn = $("accountGateSendSmsBtn");
+  if (!btn) return;
+  btn.disabled = true;
+  smsSeconds = 60;
+  btn.textContent = `${smsSeconds}s 后重新获取`;
+  if (smsTimer) clearInterval(smsTimer);
+  smsTimer = setInterval(() => {
+    smsSeconds--;
+    if (smsSeconds <= 0) {
+      clearInterval(smsTimer);
+      smsTimer = null;
+      btn.disabled = false;
+      btn.textContent = "获取验证码";
+    } else {
+      btn.textContent = `${smsSeconds}s 后重新获取`;
+    }
+  }, 1000);
+}
+
+async function sendSmsCode() {
+  const phone = $("accountGatePhone")?.value?.trim() || "";
+  if (!/^1[3-9]\d{9}$/.test(phone)) {
+    toast("请输入正确的大陆 11 位手机号码", "danger");
+    if ($("accountGateStatus")) $("accountGateStatus").textContent = "请输入正确的大陆 11 位手机号码";
+    $("accountGatePhone")?.focus();
+    return;
+  }
+  const btn = $("accountGateSendSmsBtn");
+  if (btn) btn.disabled = true;
+  try {
+    toast("正在发送短信验证码…", "info");
+    await invoke("account_sms_send", {
+      serverUrl: solumCenterUrl || null,
+      phone,
+    });
+    toast("验证码已发送，请注意查收短信", "ok");
+    if ($("accountGateStatus")) $("accountGateStatus").textContent = "验证码已发送，5分钟内有效";
+    startSmsCountdown();
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    toast(safeUserError(e, "发送短信验证码失败，请稍后重试"), "danger");
+    if ($("accountGateStatus")) $("accountGateStatus").textContent = safeUserError(e, "发送失败");
+  }
+}
+
 async function submitAccountGate() {
   if (accountAuthSubmitting || $("accountGateSubmit").disabled) return;
-  const username = $("accountGateUser").value.trim();
-  const password = $("accountGatePass").value;
+
+  const agreement = $("accountAgreementCheck");
+  if (agreement && !agreement.checked) {
+    toast("请先阅读并勾选同意《用户服务协议》和《隐私政策》", "warn", 3500);
+    if ($("accountGateStatus")) $("accountGateStatus").textContent = "请先勾选同意《用户服务协议》和《隐私政策》";
+    agreement.focus();
+    return;
+  }
+
+  const email = $("accountGateEmail")?.value?.trim() || "";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if ($("accountGateStatus")) $("accountGateStatus").textContent = "请输入有效的邮箱地址。";
+    $("accountGateEmail")?.focus();
+    return;
+  }
+
+  const password = $("accountGatePass")?.value || "";
+  if (!password) {
+    if ($("accountGateStatus")) $("accountGateStatus").textContent = "请输入登录密码。";
+    $("accountGatePass")?.focus();
+    return;
+  }
+
   const registering = accountGateMode === "register";
-  if (!username || !password) {
-    $("accountGateStatus").textContent = "请填写账号和密码。";
-    return;
-  }
-  if (registering && Array.from(password).length < 8) {
-    $("accountGateStatus").textContent = "注册密码至少需要 8 个字符。";
-    return;
-  }
-  if (registering && password !== $("accountGateConfirm").value) {
-    $("accountGateStatus").textContent = "两次输入的密码不一致。";
-    return;
-  }
-  accountAuthSubmitting = true;
-  $("accountGateSubmit").disabled = true;
-  $("accountGateSubmit").textContent = registering ? "正在创建…" : "正在登录…";
-  $("accountGateStatus").textContent = "正在建立你的加密空间…";
-  try {
-    await invoke(registering ? "account_register" : "account_login", {
-      serverUrl: solumCenterUrl,
-      username,
-      password,
-      model: solumActiveModel,
-    });
-    $("accountGatePass").value = "";
-    $("accountGateConfirm").value = "";
-    $("accountGateStatus").textContent = "身份已确认，正在进入账号空间…";
-  } catch (e) {
-    const rawMessage = String(e);
-    const message = safeUserError(e, registering ? "注册未完成，请检查网络后重试。" : "登录未完成，请检查网络后重试。");
-    if (registering && rawMessage.startsWith("账号已创建，但")) {
-      setAccountGateMode("login");
-      $("accountGatePass").value = "";
+
+  if (registering) {
+    const confirm = $("accountGateConfirm")?.value || "";
+    if (Array.from(password).length < 8) {
+      if ($("accountGateStatus")) $("accountGateStatus").textContent = "密码至少需要 8 个字符。";
+      $("accountGatePass")?.focus();
+      return;
     }
-    $("accountGateStatus").textContent = message;
-    $("accountGateSubmit").disabled = false;
-    $("accountGateSubmit").textContent = registering ? "注册并进入" : "登录";
-  } finally {
-    accountAuthSubmitting = false;
+    if (password !== confirm) {
+      if ($("accountGateStatus")) $("accountGateStatus").textContent = "两次输入的密码不一致。";
+      $("accountGateConfirm")?.focus();
+      return;
+    }
+
+    accountAuthSubmitting = true;
+    $("accountGateSubmit").disabled = true;
+    $("accountGateSubmit").textContent = "正在创建账号…";
+    if ($("accountGateStatus")) $("accountGateStatus").textContent = "正在建立端到端加密空间…";
+    try {
+      await invoke("account_email_register", {
+        args: {
+          server_url: solumCenterUrl || null,
+          email,
+          password,
+          model: solumActiveModel || "gemini-3.8-flash-high",
+        },
+      });
+      if ($("accountGateStatus")) $("accountGateStatus").textContent = "注册成功，正在进入…";
+    } catch (e) {
+      if ($("accountGateStatus")) $("accountGateStatus").textContent = safeUserError(e, "注册失败，请检查网络后重试。");
+      $("accountGateSubmit").disabled = false;
+      $("accountGateSubmit").textContent = "注册并进入";
+    } finally {
+      accountAuthSubmitting = false;
+    }
+  } else {
+    accountAuthSubmitting = true;
+    $("accountGateSubmit").disabled = true;
+    $("accountGateSubmit").textContent = "正在登录…";
+    if ($("accountGateStatus")) $("accountGateStatus").textContent = "正在验证账号密码…";
+    try {
+      await invoke("account_email_login", {
+        args: {
+          server_url: solumCenterUrl || null,
+          email,
+          password,
+          model: solumActiveModel || "gemini-3.8-flash-high",
+        },
+      });
+      if ($("accountGateStatus")) $("accountGateStatus").textContent = "登录成功，正在进入…";
+    } catch (e) {
+      if ($("accountGateStatus")) $("accountGateStatus").textContent = safeUserError(e, "邮箱或密码不正确。");
+      $("accountGateSubmit").disabled = false;
+      $("accountGateSubmit").textContent = "登录";
+    } finally {
+      accountAuthSubmitting = false;
+    }
   }
 }
 
@@ -5536,33 +5678,67 @@ if ($("profileSheetStatusIcon")) {
 }
 
 
-$("accountGatePrivacyIcon").appendChild(icon("lock", 20));
-$("accountGateClose").appendChild(icon("x", 18));
-$("accountGateLoginTab").addEventListener("click", () => setAccountGateMode("login"));
-$("accountGateRegisterTab").addEventListener("click", () => setAccountGateMode("register"));
-$("accountGateSubmit").addEventListener("click", submitAccountGate);
-$("accountGatePass").addEventListener("keydown", (event) => {
+$("accountGatePrivacyIcon")?.appendChild(icon("lock", 20));
+$("accountGateLoginTab")?.addEventListener("click", () => setAccountGateMode("login"));
+$("accountGateRegisterTab")?.addEventListener("click", () => setAccountGateMode("register"));
+$("accountSubtypeCodeBtn")?.addEventListener("click", () => setAccountLoginSubtype("code"));
+$("accountSubtypePassBtn")?.addEventListener("click", () => setAccountLoginSubtype("pass"));
+$("accountGateSendSmsBtn")?.addEventListener("click", sendSmsCode);
+$("accountGateSubmit")?.addEventListener("click", submitAccountGate);
+$("accountGateHuaweiBtn")?.addEventListener("click", startHuaweiLogin);
+$("accountOAuthBtn")?.addEventListener("click", startHuaweiLogin);
+$("accountUserTermsLink")?.addEventListener("click", (e) => { e.preventDefault(); openTermsOfService(); });
+$("accountPrivacyPolicyLink")?.addEventListener("click", (e) => { e.preventDefault(); showPrivacyPolicyModal(); });
+$("accountDeleteBtn")?.addEventListener("click", submitAccountDelete);
+
+$("accountGatePhone")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    if (accountGateMode === "register" || accountLoginSubtype === "code") {
+      $("accountGateSmsCode")?.focus();
+    } else {
+      $("accountGatePass")?.focus();
+    }
+  }
+});
+$("accountGateEmail")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    $("accountGatePass")?.focus();
+  }
+});
+$("accountGateSmsCode")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    if (accountGateMode === "register") {
+      $("accountGatePass")?.focus();
+    } else {
+      submitAccountGate();
+    }
+  }
+});
+$("accountGatePass")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    if (accountGateMode === "register") {
+      $("accountGateConfirm")?.focus();
+    } else {
+      submitAccountGate();
+    }
+  }
+});
+$("accountGateConfirm")?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") { event.preventDefault(); submitAccountGate(); }
 });
-$("accountGateConfirm").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") { event.preventDefault(); submitAccountGate(); }
-});
-$("accountGateClose").addEventListener("click", closeAccountGate);
-$("accountGateOAuthBtn").addEventListener("click", startOAuthLogin);
-$("accountOAuthBtn").addEventListener("click", startOAuthLogin);
-$("accountGuestBtn").addEventListener("click", () => {
-  try { localStorage.setItem(GUEST_CHOICE_KEY, "guest"); } catch (_) { }
-  closeAccountGate();
-  toast("已进入访客空间，数据只保存在本机", "ok");
-});
-$("accountShellBtn").addEventListener("click", () => {
+$("accountClose")?.addEventListener("click", closeAccountGate);
+$("accountShellBtn")?.addEventListener("click", () => {
   if (accountLoggedIn) showView("cloud");
-  else openAccountGate("登录后连接所有设备与完整能力", { dismissible: true, allowGuest: false });
+  else openAccountGate("请登录后使用 Solum 完整功能", { dismissible: false, allowGuest: false });
 });
-$("mobileAccountBtn").addEventListener("click", () => {
+$("mobileAccountBtn")?.addEventListener("click", () => {
   closeMobileTools();
   if (accountLoggedIn) showView("cloud");
-  else openAccountGate("登录后连接所有设备与完整能力", { dismissible: true, allowGuest: false });
+  else openAccountGate("请登录后使用 Solum 完整功能", { dismissible: false, allowGuest: false });
 });
 
 function promptModal(title, message, placeholder, defaultVal) {
@@ -5620,12 +5796,79 @@ function promptModal(title, message, placeholder, defaultVal) {
   });
 }
 
-async function startOAuthLogin() {
+function openTermsOfService() {
+  openInfoModal(
+    "用户服务协议",
+    `<div style="line-height:1.75;font-size:0.9rem;color:var(--ink-2);max-height:60vh;overflow-y:auto;padding-right:6px;">
+      <h4 style="margin:0 0 8px;color:var(--ink);">Solum（息壤）用户服务协议</h4>
+      <p>版本生效日期：2026年9月</p>
+      <p>欢迎使用由 Solum 团队提供的本地优先智能工作台服务。在您开始使用前，请仔细阅读本《用户服务协议》（以下简称“本协议”）。当您勾选同意并注册、登录或使用本软件时，即表示您已充分理解并同意接受本协议的全部条款。</p>
+      <p><strong>一、服务原则与架构</strong><br>
+      1.1 本软件遵循“本地优先（Local-first）、端到端加密、最小必要原则”。您的个人记账、日程日记、未开启同步的会话等数据默认持久化保存在您的本地物理设备中。<br>
+      1.2 当您选择使用云端同步备份或 AI 智能助手时，数据会在本地经过高强度密钥加密后传输，服务器端仅作为密文存储，无法查看、还原您的明文敏感信息。</p>
+      <p><strong>二、账号注册与使用</strong><br>
+      2.1 根据国家关于互联网用户账号信息管理的法律法规要求，您应当使用合法、有效的手机号码进行注册与实名认证，或使用通过官方认证的华为账号快捷登录。<br>
+      2.2 您应妥善保管自己的登录账号、密码以及数据端到端加密恢复码。因您个人原因导致的凭证泄露或恢复码遗失，相关加密数据可能无法恢复，本平台对此不承担责任。</p>
+      <p><strong>三、账号注销与数据清除</strong><br>
+      3.1 您享有随时注销账号的权利。您可以在「设置 → Solum 账号」中点击「注销账号」自主发起注销流程。<br>
+      3.2 账号注销完成后，我们在云端为您存储的所有加密备份文件、设备关联凭证与账号信息将立即被永久彻底物理删除，且不可恢复。</p>
+      <p><strong>四、用户行为规范</strong><br>
+      您在使用本软件过程中不得利用本服务制作、复制、发布、传播违反国家法律法规、危害国家安全、侵犯他人合法权益的内容。</p>
+    </div>`
+  );
+}
+
+function showPrivacyPolicyModal() {
+  const meta = privacyDoc ? `${privacyDoc.version} · ${privacyDoc.effective_date}` : "2026-09";
+  openInfoModal(
+    "隐私政策摘要",
+    `<div style="line-height:1.75;font-size:0.9rem;color:var(--ink-2);max-height:60vh;overflow-y:auto;padding-right:6px;">
+      <h4 style="margin:0 0 8px;color:var(--ink);">个人信息保护与隐私承诺（${meta}）</h4>
+      <p>Solum 非常重视您的个人隐私与数据安全，我们将严格遵守《中华人民共和国个人信息保护法》、《网络安全法》等法律法规：</p>
+      <p><strong>1. 我们如何收集和使用信息</strong><br>
+      • <strong>手机号码</strong>：用于账号注册、登录身份核验以及短信验证码发送。<br>
+      • <strong>华为账号授权</strong>：若您选择华为账号登录，我们仅获取您的华为账号 OpenID/UnionID 及基础公开昵称用于绑定账号。<br>
+      • <strong>设备信息与网络权限</strong>：仅用于维持多端设备加密同步状态与云端智能通信。<br>
+      • <strong>本地工作数据</strong>：您的日常日记、财务记账明细、个人通知等数据默认留在本机，未经您主动开启云端同步不会上传任何明文。</p>
+      <p><strong>2. 权限使用说明</strong><br>
+      • 通知权限：用于待办事项、日程与关键健康提醒在设备本地准时唤醒推送。<br>
+      • 网络权限：用于登录认证、拉取大模型智能回复以及加密备份的上传下载。</p>
+      <p><strong>3. 您的权利</strong><br>
+      您可以随时在应用内查看、导出您的所有数据，并可以随时在设置中一键注销您的账户与删除全部云端存储。</p>
+    </div>`
+  );
+}
+
+async function submitAccountDelete() {
+  const confirmed = await confirmModal(
+    "注销账号确认",
+    "注销账号是不可逆操作！\n\n注销后，您在 Solum 云端的所有加密备份、多端同步凭证与账户数据将被永久彻底物理销毁，无法找回。\n\n您确定要注销当前账号吗？"
+  );
+  if (!confirmed) return;
+  try {
+    toast("正在注销账号…", "info");
+    await invoke("account_delete");
+    toast("账号已成功注销，数据已清除", "ok");
+  } catch (e) {
+    toast(safeUserError(e, "注销账号失败"), "danger");
+  }
+}
+
+async function startHuaweiLogin() {
   if (accountAuthSubmitting) return;
+
+  const agreement = $("accountAgreementCheck");
+  if (!$("accountGate").hidden && agreement && !agreement.checked) {
+    toast("请先阅读并勾选同意《用户服务协议》和《隐私政策》", "warn", 3500);
+    if ($("accountGateStatus")) $("accountGateStatus").textContent = "请先勾选同意《用户服务协议》和《隐私政策》";
+    agreement.focus();
+    return;
+  }
+
   const serverUrl = solumCenterUrl || "https://solum.tannerlab.cn";
   let autoCheckTimer = null;
   let onVisibilityChange = null;
-  const statusEl = $("accountPassportStatus");
+  const statusEl = $("accountPassportStatus") || $("accountGateStatus");
   const updateStatus = (msg, show = true) => {
     if (!statusEl) return;
     statusEl.hidden = !show;
@@ -5634,18 +5877,19 @@ async function startOAuthLogin() {
 
   try {
     accountAuthSubmitting = true;
-    updateStatus("正在连接统一身份认证中心…");
-    toast("正在连接统一认证中心…", "info");
-    const cfg = await invoke("account_oauth_config_get", { serverUrl });
+    updateStatus("正在连接华为账号服务…");
+    toast("正在启动华为账号登录…", "info");
+
+    const cfg = await invoke("account_huawei_config_get", { serverUrl });
     if (!cfg.enabled) {
-      toast("中心服务器未启用 OAuth 登录", "danger");
-      updateStatus("中心服务器未启用 OAuth 登录");
+      toast("服务器暂未开启华为登录服务", "danger");
+      updateStatus("服务器暂未开启华为登录服务");
       return;
     }
-    const pkce = await invoke("account_oauth_pkce_generate");
-    const redirectUri = `${cfg.issuer.replace(/\/+$/, '')}/callback`;
+
+    const redirectUri = cfg.redirect_uri || "solum://oauth/callback";
     const state = Math.random().toString(36).slice(2);
-    const authUrl = `${cfg.issuer.replace(/\/+$/, '')}/authorize?response_type=code&client_id=${encodeURIComponent(cfg.client_id)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=openid%20profile%20email&code_challenge=${encodeURIComponent(pkce.code_challenge)}&code_challenge_method=S256&state=${state}&prompt=consent`;
+    const authUrl = `${cfg.authorize_url}?response_type=code&client_id=${encodeURIComponent(cfg.client_id)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(cfg.scope || 'openid profile')}&state=${state}`;
 
     try {
       await invoke("open_external_url", { url: authUrl });
@@ -5653,8 +5897,8 @@ async function startOAuthLogin() {
       window.open(authUrl, "_blank");
     }
 
-    updateStatus("已打开系统浏览器授权页。授权确认后将自动返回完成登录…");
-    toast("已在浏览器打开授权页面，完成授权后自动登录…", "info");
+    updateStatus("已打开华为账号授权页，授权完成后自动返回…");
+    toast("已打开华为账号授权页，完成授权后自动登录…", "info");
 
     let codePromiseResolve = null;
     const codePromise = new Promise((resolve) => {
@@ -5668,8 +5912,8 @@ async function startOAuthLogin() {
           const match = items.find((it) => it && (it.code || it.error));
           if (match) {
             if (match.error) {
-              toast(`OAuth 授权失败: ${match.error}`, "danger");
-              updateStatus(`OAuth 授权失败: ${match.error}`);
+              toast(`华为授权失败: ${match.error}`, "danger");
+              updateStatus(`华为授权失败: ${match.error}`);
               if (codePromiseResolve) codePromiseResolve(null);
             } else if (match.code) {
               if (codePromiseResolve) codePromiseResolve(match.code.trim());
@@ -5686,8 +5930,6 @@ async function startOAuthLogin() {
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onVisibilityChange);
 
-    // 对齐 AndroidBridge：不在前端强制弹窗打扰用户输入。
-    // 监听 Deep Link 自动回跳；若 60s 依然未收到系统回调，再提供手动粘贴作为 fallback。
     let fallbackTimeout = null;
     const timeoutPromise = new Promise((resolve) => {
       fallbackTimeout = setTimeout(() => {
@@ -5699,11 +5941,11 @@ async function startOAuthLogin() {
     if (fallbackTimeout) clearTimeout(fallbackTimeout);
 
     if (code === "__timeout__") {
-      updateStatus("未检测到自动回跳，如浏览器未自动唤醒应用，请手动粘贴授权码");
+      updateStatus("未检测到自动回跳，若授权已完成可手动输入授权码");
       code = await promptModal(
-        "TannerLab 统一登录",
-        "如果浏览器授权完成后未能自动返回本应用，请在此粘贴授权链接中的授权码（Code）：",
-        "在此粘贴授权码（Code）"
+        "华为账号登录",
+        "如果授权完成后未能自动返回本应用，请在此输入华为授权码（Code）：",
+        "在此输入授权码"
       );
     }
 
@@ -5715,28 +5957,27 @@ async function startOAuthLogin() {
     }
 
     if (!code || !code.trim()) {
-      updateStatus("已取消授权登录");
-      toast("已取消 OAuth 登录", "info");
+      updateStatus("已取消华为账号登录");
+      toast("已取消华为账号登录", "info");
       return;
     }
 
-    updateStatus("已获取授权码，正在完成安全登录…");
+    updateStatus("已获得授权，正在安全进入…");
     let recoveryCode = null;
     let attempt = 0;
     while (attempt < 2) {
       attempt++;
       try {
-        await invoke("account_oauth_login", {
+        await invoke("account_huawei_login", {
           args: {
             server_url: serverUrl,
             code: code.trim(),
-            code_verifier: pkce.code_verifier,
             redirect_uri: redirectUri,
             model: $("accountModel")?.value?.trim() || solumActiveModel,
             recovery_code: recoveryCode,
           },
         });
-        toast("登录 TannerLab 通行证成功", "ok");
+        toast("华为账号登录成功", "ok");
         updateStatus("", false);
         if (typeof closeAccountGate === 'function') closeAccountGate();
         accountFormSeeded = false;
@@ -5750,25 +5991,24 @@ async function startOAuthLogin() {
         if (errStr.includes("NEEDS_RECOVERY_CODE") || errStr.includes("恢复码")) {
           recoveryCode = await promptModal(
             "输入数据恢复码",
-            "此账号的数据是端到端加密的：新设备第一次登录，必须输入当初首次登录时展示过的 20 位数据恢复码（格式 XXXXX-XXXXX-XXXXX-XXXXX）才能解开。\n旧设备还能登录时：在旧设备「设置 → Solum 账号」里点「重新生成恢复码」，用新码在本设备解密即可。\n如果恢复码丢了、旧设备也访问不了，加密数据将无法找回（服务器也无法解密）。",
+            "此账号已有端到端加密数据：新设备首次登录，请输入 20 字符恢复码以解密。\n如为初始使用，请重新尝试登录。",
             "XXXXX-XXXXX-XXXXX-XXXXX"
           );
           if (!recoveryCode || !recoveryCode.trim()) {
-            toast("未输入恢复码，无法解密现有数据空间", "danger");
-            updateStatus("未输入恢复码，无法解密现有数据空间");
+            toast("未输入恢复码，无法解密现有空间", "danger");
             break;
           }
           continue;
         } else {
-          toast(safeUserError(e, "OAuth 登录失败，请重试。"), "danger");
-          updateStatus(safeUserError(e, "OAuth 登录失败，请重试。"));
+          toast(safeUserError(e, "华为登录失败，请重试。"), "danger");
+          updateStatus(safeUserError(e, "华为登录失败，请重试。"));
           break;
         }
       }
     }
   } catch (e) {
-    toast(safeUserError(e, "无法获取 OAuth 配置"), "danger");
-    updateStatus(safeUserError(e, "无法获取 OAuth 配置"));
+    toast(safeUserError(e, "华为登录异常"), "danger");
+    updateStatus(safeUserError(e, "华为登录异常"));
   } finally {
     if (autoCheckTimer) clearInterval(autoCheckTimer);
     if (onVisibilityChange) {
@@ -5783,10 +6023,10 @@ $("accountLoginBtn").addEventListener("click", async () => {
   await submitSettingsLogin();
 });
 
-$("accountRegisterBtn").addEventListener("click", () => {
+$("accountRegisterBtn")?.addEventListener("click", () => {
   setAccountGateMode("register");
-  $("accountGateUser").value = $("accountUser").value.trim();
-  openAccountGate("创建账号并进入独立的加密空间", { dismissible: true, allowGuest: false });
+  if ($("accountGatePhone")) $("accountGatePhone").value = $("accountUser") ? $("accountUser").value.trim() : "";
+  openAccountGate("使用手机号注册新账号", { dismissible: true, allowGuest: false });
 });
 
 $("accountLogoutBtn").addEventListener("click", async () => {
@@ -6888,8 +7128,8 @@ let viewHistoryArmed = false;
 function showView(view, options) {
   options = options || {};
   if (!$("view-" + view)) view = "chat";
-  if (!accountLoggedIn && !GUEST_ALLOWED_VIEWS.has(view)) {
-    requireAccount(`“${groupOfView(view).label}”中的完整能力需要登录`);
+  if (!accountLoggedIn) {
+    openAccountGate(`请先登录 Solum 账号以使用完整功能`, { dismissible: false, allowGuest: false });
     return false;
   }
   if (currentView !== view) rememberScroll();
@@ -7148,9 +7388,7 @@ initClock().then(async () => {
     endRouteRefresh(initialView);
   }
   if (!accountLoggedIn && !$("privacyGate").classList.contains("open")) {
-    if (!authExpiredRedirect && !guestChoiceMade()) {
-      openAccountGate("登录完整使用 Solum，或先从本地访客空间开始", { dismissible: false, allowGuest: true });
-    }
+    openAccountGate("欢迎使用 Solum，请登录后开启完整功能", { dismissible: false, allowGuest: false });
   }
 });
 let clockRefreshFlight = null;
