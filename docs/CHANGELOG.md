@@ -20,7 +20,11 @@
   1. **双协议强制预选同意**：在登录与注册提交前，增加强制勾选《用户服务协议》与《隐私政策》复选框，未勾选显式弹窗拦截并指引阅读。
   2. **协议与政策弹窗阅读器**：内置免跳转全屏法律协议与隐私声明阅读器，满足工信部与网信办对个人信息保护的刚性审查要求。
   3. **注销账号功能闭环**：设置中心 - 账号安全新增「注销账号」能力，包含不可逆危险提示与二次确认弹窗；服务端同步实现物理级数据级联彻底抹除（抹除云端同步 oplog、加密备份、用户身份与绑定数据）。
-- **版本号递增**：Cargo workspace 升级至 `0.2.17`，Android versionCode 升级至 `1027`，服务端升级至 `0.8.1`。全工作区测试全绿。
+- **版本号递增与发布核验**：Cargo workspace 升级至 `0.2.17`，Android versionCode 升级至 `1027`，服务端升级至 `0.8.1`。全工作区测试全绿。
+- **发布产物归档（v0.2.17）**：
+  - 2026-09-17：生成 `Solum-v0.2.17.apk`；包名 `dev.solum.app`，版本 `0.2.17 (1027)`，minSdk 26 / targetSdk 36，ABI `arm64-v8a`；AlarmReceiver、BootReceiver、SolumNotificationListener 均存在，APK Signature Scheme v2 有效。
+  - 文件 47,191,129 字节，SHA-256 `1181DBDE56CC3B22BEE5EDAB6E80BEF273D521E1EC659302C122A8D463C50603`，签名证书 SHA-256 `F3467B14C3CA39A88D74B85F10800565D0A81BF67FCF392147EC6B4F6AEFCA87`。
+  - 构建与静态发布核对全部 PASS；按铁律自动清理旧版本 `Solum-v0.2.16.apk`，归档至 `Deliverables/Solum-v0.2.17.apk`。
 
 ## [0.2.16] — 数据恢复码首登展示治理与 LLM-First 摄取
 
