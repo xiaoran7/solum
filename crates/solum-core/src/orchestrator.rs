@@ -3162,6 +3162,21 @@ impl Tool for DataImportTool {
         RiskLevel::Dangerous
     }
 
+    fn request_summary(&self, _args: &str) -> String {
+        // Constant-sized even for malformed/oversized input. The Guard still
+        // fingerprints the complete arguments independently of this label.
+        "导入本机备份（正文不记入审计）".into()
+    }
+
+    fn audit_summary(&self, args: &str) -> String {
+        self.request_summary(args)
+    }
+
+    fn audit_error_summary(&self, _error: &CoreError) -> String {
+        // Import errors may quote document-controlled table/field names.
+        "导入失败（详细原因不记入审计）".into()
+    }
+
     fn preview(&self, args: &str, _ctx: &ToolCtx) -> String {
         match Self::document(args).and_then(|doc| crate::export::plan_import(&doc)) {
             Ok(plan) => {
@@ -5167,6 +5182,64 @@ mod tests {
         assert!(message.contains("写入"), "{message}");
         assert_eq!(target.store.list_events().unwrap().len(), 1);
         assert_eq!(target.audit_log().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn import_audit_never_retains_document_body_or_error_fields() {
+        const PRIVATE: &str = "synthetic-private-import-marker";
+        let mut source = Orchestrator::in_memory().unwrap();
+        source.ingest("明天下午3点开会", now()).unwrap();
+        let mut doc = crate::export::build_export(&source.store, now()).unwrap();
+        // An ignored presentation field must not be persisted by auditing.
+        doc["private_note"] = serde_json::json!(PRIVATE.repeat(1024));
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let mut target = Orchestrator::in_memory().unwrap();
+        assert!(target.run_tool("data_import", &args, None, now()).is_err());
+        let pending = target
+            .request_confirmation("data_import", &args, now())
+            .unwrap();
+        assert!(pending.request.summary.len() <= 128);
+        assert!(!pending.request.summary.contains(PRIVATE));
+        let token = target.confirm(&pending.id, now()).unwrap();
+        // Redaction must not weaken exact argument binding.
+        let changed = format!("{args} ");
+        assert!(target
+            .run_tool("data_import", &changed, Some(token.clone()), now())
+            .is_err());
+        target
+            .run_tool("data_import", &args, Some(token), now())
+            .unwrap();
+
+        let mut bad = doc.clone();
+        bad["_restore"][PRIVATE] = serde_json::json!([]);
+        let bad_args = serde_json::json!({ "document": bad }).to_string();
+        let pending = target
+            .request_confirmation("data_import", &bad_args, now())
+            .unwrap();
+        let token = target.confirm(&pending.id, now()).unwrap();
+        let error = target
+            .run_tool("data_import", &bad_args, Some(token), now())
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(PRIVATE),
+            "caller keeps actionable diagnostics"
+        );
+
+        let audit = target.audit_log().unwrap();
+        assert_eq!(audit.len(), 4);
+        for row in audit {
+            assert!(row.summary.len() <= 128);
+            assert!(row.detail.len() <= 256);
+            assert!(!row.summary.contains(PRIVATE));
+            assert!(!row.detail.contains(PRIVATE));
+        }
+        let exported = crate::export::build_export(&target.store, now()).unwrap();
+        assert!(!exported.to_string().contains(PRIVATE));
+        let malformed = format!("{{{PRIVATE}");
+        assert!(target
+            .run_tool("data_import", &malformed, None, now())
+            .is_err());
+        assert!(!target.export_json(now()).unwrap().contains(PRIVATE));
     }
 
     fn spend_draft() -> crate::widget::WidgetDefinitionDraft {

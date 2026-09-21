@@ -351,8 +351,15 @@ fn main() -> Result<()> {
         }
         Cmd::Forget { layer, id } => {
             let layer = parse_layer(&layer)?;
-            o.forget(layer, id).map_err(to_err)?;
-            println!("已从记忆中删除 {}#{}（不可通过对话恢复）", layer.as_str(), id);
+            let args = serde_json::json!({ "layer": layer.as_str(), "id": id }).to_string();
+            confirm_and_run_tool(
+                &mut o,
+                "memory_forget",
+                &args,
+                &mut std::io::stdin().lock(),
+                &mut std::io::stdout().lock(),
+                || resolve_now(cli.now.as_deref()),
+            )?;
         }
         Cmd::FactEdit { id, content } => {
             let content = content.join(" ");
@@ -909,8 +916,14 @@ fn main() -> Result<()> {
             println!("🎭 已回滚到人格 v{}：{}", p.version, p.summary());
         }
         Cmd::PersonaClear => {
-            o.clear_persona().map_err(to_err)?;
-            println!("已删除全部人格版本（不可恢复）");
+            confirm_and_run_tool(
+                &mut o,
+                "persona_clear",
+                "{}",
+                &mut std::io::stdin().lock(),
+                &mut std::io::stdout().lock(),
+                || resolve_now(cli.now.as_deref()),
+            )?;
         }
         Cmd::Health => {
             let samples = o.health_samples().map_err(to_err)?;
@@ -997,6 +1010,38 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Preview first; EOF, blank input, and anything except an explicit `yes`
+/// cancel without minting a token. Re-read the clock after the user responds.
+fn confirm_and_run_tool(
+    o: &mut Orchestrator,
+    tool: &str,
+    args: &str,
+    input: &mut impl std::io::BufRead,
+    output: &mut impl std::io::Write,
+    mut clock: impl FnMut() -> Result<NaiveDateTime>,
+) -> Result<()> {
+    let pending = o
+        .request_confirmation(tool, args, clock()?)
+        .map_err(to_err)?;
+    writeln!(output, "{}", pending.request.effect_preview)?;
+    write!(output, "输入 yes 确认执行，其他输入或回车取消：")?;
+    output.flush()?;
+    let mut answer = String::new();
+    // Bound confirmation input; a longer line cannot equal the accepted word.
+    use std::io::BufRead;
+    std::io::Read::take(input, 64).read_line(&mut answer)?;
+    if answer.trim() != "yes" {
+        writeln!(output, "已取消，未执行删除。")?;
+        return Ok(());
+    }
+    let token = o.confirm(&pending.id, clock()?).map_err(to_err)?;
+    let message = o
+        .run_tool(tool, args, Some(token), clock()?)
+        .map_err(to_err)?;
+    writeln!(output, "{message}")?;
+    Ok(())
+}
+
 fn to_err(e: solum_core::CoreError) -> anyhow::Error {
     anyhow!(e.to_string())
 }
@@ -1051,5 +1096,116 @@ impl SecondZero for NaiveDateTime {
         self.with_second(0)
             .and_then(|d| d.with_nanosecond(0))
             .unwrap_or(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deletion_confirmation_cancels_by_default_and_audits_explicit_approval() {
+        let now = parse_flexible("2026-07-06T10:00:00").unwrap();
+        for tool in ["memory_forget", "persona_clear"] {
+            let mut o = Orchestrator::in_memory().unwrap();
+            o.ingest("明天下午3点开会", now).unwrap();
+            o.set_persona(
+                solum_core::persona::PersonaDraft {
+                    tone: "简洁".into(),
+                    ..Default::default()
+                },
+                None,
+                now,
+            )
+            .unwrap();
+            let event = o
+                .ledger()
+                .unwrap()
+                .into_iter()
+                .find(|row| row.layer == MemoryLayer::Event)
+                .unwrap();
+            let args = if tool == "memory_forget" {
+                serde_json::json!({"layer": "event", "id": event.id}).to_string()
+            } else {
+                "{}".into()
+            };
+            for answer in ["", "\n", "no\n"] {
+                confirm_and_run_tool(
+                    &mut o,
+                    tool,
+                    &args,
+                    &mut answer.as_bytes(),
+                    &mut Vec::new(),
+                    || Ok(now),
+                )
+                .unwrap();
+                assert!(o
+                    .ledger()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row.layer == MemoryLayer::Event));
+                assert_eq!(o.persona_versions().unwrap().len(), 1);
+                assert!(o.audit_log().unwrap().is_empty());
+            }
+            let mut output = Vec::new();
+            confirm_and_run_tool(
+                &mut o,
+                tool,
+                &args,
+                &mut "yes\n".as_bytes(),
+                &mut output,
+                || Ok(now),
+            )
+            .unwrap();
+            assert!(String::from_utf8(output).unwrap().contains("输入 yes"));
+            if tool == "memory_forget" {
+                assert!(!o
+                    .ledger()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row.layer == MemoryLayer::Event));
+            } else {
+                assert!(o.persona_versions().unwrap().is_empty());
+                assert!(o.persona().is_none());
+            }
+            let audit = o.audit_log().unwrap();
+            assert_eq!(audit.len(), 1);
+            assert_eq!(audit[0].tool, tool);
+            assert_eq!(audit[0].decision, "executed");
+            assert!(audit[0].token_id.is_some());
+        }
+    }
+
+    #[test]
+    fn deletion_confirmation_rechecks_time_after_input() {
+        let now = parse_flexible("2026-07-06T10:00:00").unwrap();
+        let mut o = Orchestrator::in_memory().unwrap();
+        o.set_persona(
+            solum_core::persona::PersonaDraft {
+                tone: "简洁".into(),
+                ..Default::default()
+            },
+            None,
+            now,
+        )
+        .unwrap();
+        let mut calls = 0;
+        let result = confirm_and_run_tool(
+            &mut o,
+            "persona_clear",
+            "{}",
+            &mut "yes\n".as_bytes(),
+            &mut Vec::new(),
+            || {
+                calls += 1;
+                Ok(if calls == 1 {
+                    now
+                } else {
+                    now + chrono::Duration::minutes(11)
+                })
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(o.persona_versions().unwrap().len(), 1);
     }
 }

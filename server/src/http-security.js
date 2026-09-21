@@ -17,7 +17,8 @@ function passwordHashAsync(password, salt) {
 }
 
 function secureEqualHex(left, right) {
-  if (typeof left !== 'string' || typeof right !== 'string' || left.length !== right.length) {
+  if (typeof left !== 'string' || typeof right !== 'string' || left.length !== right.length ||
+      !/^(?:[0-9a-f]{2})+$/i.test(left) || !/^(?:[0-9a-f]{2})+$/i.test(right)) {
     return false;
   }
   try {
@@ -136,10 +137,10 @@ function createFixedWindowLimiter({ windowMs, maxAttempts, maxKeys = DEFAULT_MAX
   }
   const entries = new Map();
 
-  function makeRoom() {
+  function makeRoom(now) {
     if (entries.size < maxKeys) return true;
     for (const [key, record] of entries) {
-      if (record.inFlight === 0) {
+      if (record.inFlight === 0 && now - record.startedAt >= windowMs) {
         entries.delete(key);
         return true;
       }
@@ -148,7 +149,7 @@ function createFixedWindowLimiter({ windowMs, maxAttempts, maxKeys = DEFAULT_MAX
   }
 
   function createRecord(key, now) {
-    if (!makeRoom()) return null;
+    if (!makeRoom(now)) return null;
     const record = { count: 0, inFlight: 0, startedAt: now };
     entries.set(key, record);
     return record;

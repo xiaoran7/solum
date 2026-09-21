@@ -82,6 +82,10 @@ pub trait Tool: Send {
     fn audit_summary(&self, args: &str) -> String {
         self.request_summary(args)
     }
+    /// Error diagnostics can also contain private arguments or document fields.
+    fn audit_error_summary(&self, error: &CoreError) -> String {
+        format!("tool error: {error}")
+    }
     /// Human-readable description of what *would* happen — shown at confirmation
     /// time. Must not mutate anything.
     fn preview(&self, args: &str, ctx: &ToolCtx) -> String;
@@ -336,7 +340,7 @@ impl Guard {
             token_id: Some(token.id),
             detail: match &result {
                 Ok(_) => "ok".to_string(),
-                Err(e) => format!("tool error: {e}"),
+                Err(e) => tool.audit_error_summary(e),
             },
         });
         result

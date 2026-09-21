@@ -1258,7 +1258,13 @@
   .account-mode-switch button { min-height: 42px; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; font: inherit; cursor: pointer; font-weight: 600; }
   .account-mode-switch button[aria-selected="true"] { border-bottom-color: var(--accent-fill); color: var(--ink); font-weight: 750; }
   .account-gate-form { display: grid; gap: 10px; }
-  #accountGateConfirmField { display: grid; gap: 10px; }
+  #accountGatePhoneWrap,
+  #accountGateEmailWrap,
+  #accountGatePassField,
+  #accountGateConfirmField { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+  #accountGateEmailWrap input,
+  #accountGatePassField input,
+  #accountGateConfirmField input { width: 100%; }
   .account-gate-form label { margin-top: 4px; color: var(--ink-2); font-size: .8125rem; font-weight: 650; }
   .account-gate-status { min-height: 20px; margin: 0; color: var(--danger); font-size: .8125rem; text-align: center; }
   .account-gate-divider { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; margin: 10px 0; color: var(--muted); font-size: .75rem; }
@@ -1485,6 +1491,10 @@
     .account-mode-switch { margin-bottom: 22px; }
     .account-mode-switch button { min-height: 44px; font-size: .875rem; }
     .account-gate-form { gap: 11px; }
+    #accountGatePhoneWrap,
+    #accountGateEmailWrap,
+    #accountGatePassField,
+    #accountGateConfirmField { display: flex; flex-direction: column; gap: 6px; width: 100%; }
     .account-gate-form label { margin-top: 3px; font-size: .8125rem; }
     .account-gate-form input { min-height: 48px; font-size: 1rem; }
     #accountGateSubmit, #accountGateHuaweiBtn { min-height: 48px; }

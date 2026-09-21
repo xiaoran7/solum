@@ -507,7 +507,6 @@ function buildConfig(overrides = {}) {
     huaweiClientId: process.env.SOLUM_HUAWEI_CLIENT_ID || process.env.HUAWEI_APP_ID || 'solum_huawei_client',
     huaweiClientSecret: process.env.SOLUM_HUAWEI_CLIENT_SECRET || process.env.HUAWEI_APP_SECRET || '',
     huaweiRedirectUri: process.env.SOLUM_HUAWEI_REDIRECT_URI || 'solum://oauth/callback',
-    smsMockCode: process.env.SOLUM_SMS_MOCK_CODE || '',
     mimoApiKey: process.env.SOLUM_LLM_API_KEY || process.env.MIMO_API_KEY || '',
     mimoBaseUrl: process.env.SOLUM_LLM_BASE_URL || process.env.MIMO_BASE_URL || 'https://cpa.tannerlab.cn/v1',
     defaultModel: process.env.SOLUM_DEFAULT_MODEL || 'gemini-3.8-flash-high',
@@ -1349,10 +1348,6 @@ async function createPostgresServer(overrides = {}) {
   const registrationAttempts = createFixedWindowLimiter({
     windowMs: LOGIN_WINDOW_MS, maxAttempts: REGISTRATION_MAX_ATTEMPTS,
   });
-  const smsVerificationCodes = new Map(); // phone -> { code, expiresAt, sentAt }
-  const smsIpLimiter = createFixedWindowLimiter({
-    windowMs: 60 * 60 * 1000, maxAttempts: 30,
-  });
   // Unauthenticated refresh/logout share one per-IP failure window; garbage
   // token floods from one address otherwise hold pool connections in
   // transactions just like login floods did.
@@ -1423,7 +1418,7 @@ async function createPostgresServer(overrides = {}) {
 
     if (req.method === 'GET' && url.pathname === '/v1/auth/huawei/config') {
       return json(res, 200, {
-        enabled: config.huaweiEnabled,
+        enabled: Boolean(config.huaweiEnabled && config.huaweiClientId && config.huaweiClientSecret),
         client_id: config.huaweiClientId,
         authorize_url: 'https://oauth-login.cloud.huawei.com/oauth2/v3/authorize',
         redirect_uri: config.huaweiRedirectUri,
@@ -1432,7 +1427,9 @@ async function createPostgresServer(overrides = {}) {
     }
 
     if (req.method === 'POST' && url.pathname === '/v1/auth/huawei/exchange') {
-      if (!config.huaweiEnabled) throw new HttpError(403, 'huawei_login_disabled');
+      if (!config.huaweiEnabled || !config.huaweiClientId || !config.huaweiClientSecret) {
+        throw new HttpError(403, 'huawei_login_disabled');
+      }
       const body = await readJson(req);
       const code = requiredString(body.code, 'invalid_code', 2048);
       const redirectUri = optionalString(body.redirect_uri, 'invalid_redirect_uri', 2048) || config.huaweiRedirectUri;
@@ -1441,63 +1438,30 @@ async function createPostgresServer(overrides = {}) {
       const ipReservation = refreshIpFailures.reserve(address);
       if (!ipReservation) throw new HttpError(429, 'too_many_attempts');
       try {
-        let subject = null;
-        let profileName = '华为用户';
-
-        if (config.huaweiClientSecret && config.huaweiClientId) {
-          const tokenUrl = 'https://oauth-login.cloud.huawei.com/oauth2/v3/token';
-          const formParams = new URLSearchParams({
-            grant_type: 'authorization_code',
-            code,
-            client_id: config.huaweiClientId,
-            client_secret: config.huaweiClientSecret,
-            redirect_uri: redirectUri,
-          });
-          try {
-            const tokenRes = await fetch(tokenUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-              body: formParams.toString(),
-            });
-            if (tokenRes.ok) {
-              const data = await tokenRes.json();
-              if (data.id_token) {
-                try {
-                  const parts = data.id_token.split('.');
-                  if (parts.length >= 2) {
-                    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-                    subject = payload.sub || payload.union_id || payload.open_id;
-                    if (payload.display_name) profileName = payload.display_name;
-                  }
-                } catch (_) {}
-              }
-              if (!subject && data.access_token) {
-                try {
-                  const userinfoRes = await fetch('https://account.cloud.huawei.com/rest.php?nsp_fmt=JSON&nsp_svc=GOpen.User.getInfo', {
-                    headers: { 'Authorization': `Bearer ${data.access_token}` },
-                  });
-                  if (userinfoRes.ok) {
-                    const uData = await userinfoRes.json();
-                    subject = uData.unionID || uData.openID;
-                    if (uData.displayName) profileName = uData.displayName;
-                  }
-                } catch (_) {}
-              }
-            }
-          } catch (err) {
-            console.warn('Huawei oauth exchange network error:', err.message);
-          }
+        if (redirectUri !== config.huaweiRedirectUri) throw new HttpError(400, 'invalid_redirect_uri');
+        const tokenRes = await fetch('https://oauth-login.cloud.huawei.com/oauth2/v3/token', {
+          method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ grant_type: 'authorization_code', code,
+            client_id: config.huaweiClientId, client_secret: config.huaweiClientSecret,
+            redirect_uri: config.huaweiRedirectUri }).toString(),
+        });
+        if (!tokenRes.ok) throw new HttpError(401, 'huawei_exchange_failed');
+        const { parsed: token } = await readJsonObjectResponse(tokenRes, 65536);
+        if (typeof token.access_token !== 'string' || !token.access_token || token.access_token.length > 8192) {
+          throw new HttpError(401, 'huawei_exchange_failed');
         }
-
-        if (!subject) {
-          if (code.startsWith('mock_hw_') || (!config.huaweiClientSecret && code.length >= 6)) {
-            const mockHash = crypto.createHash('sha256').update(code).digest('hex').slice(0, 16);
-            subject = `hw_${mockHash}`;
-            profileName = `华为用户_${mockHash.slice(0, 6)}`;
-          } else {
-            throw new HttpError(401, 'huawei_exchange_failed');
-          }
+        const userinfoRes = await fetch('https://account.cloud.huawei.com/rest.php?nsp_fmt=JSON&nsp_svc=GOpen.User.getInfo', {
+          redirect: 'error', signal: AbortSignal.timeout(10000),
+          headers: { Authorization: `Bearer ${token.access_token}` },
+        });
+        if (!userinfoRes.ok) throw new HttpError(401, 'huawei_exchange_failed');
+        const { parsed: profile } = await readJsonObjectResponse(userinfoRes, 65536);
+        const subject = profile.unionID || profile.openID;
+        if (typeof subject !== 'string' || !subject.trim() || subject.length > 256 || profile.error) {
+          throw new HttpError(401, 'huawei_exchange_failed');
         }
+        const profileName = typeof profile.displayName === 'string' ? profile.displayName.slice(0, 128) : '华为用户';
 
         const client = await pool.connect();
         try {
@@ -1519,6 +1483,7 @@ async function createPostgresServer(overrides = {}) {
               [profileName, 'huawei', String(subject)]
             );
           } else {
+            if (config.registrationMode !== 'open') throw new HttpError(403, 'registration_closed');
             const baseUsername = `hw_${String(subject).slice(0, 12)}`;
             let candidate = baseUsername;
             let counter = 1;
@@ -1551,83 +1516,14 @@ async function createPostgresServer(overrides = {}) {
           client.release();
         }
       } finally {
-        ipReservation.release();
+        ipReservation.commit();
       }
     }
 
-    if (req.method === 'POST' && url.pathname === '/v1/auth/sms/send') {
-      const address = requestClientAddress(req, config.trustProxy);
-      if (!smsIpLimiter.consume(address)) {
-        throw new HttpError(429, 'too_many_attempts');
-      }
-      const body = await readJson(req);
-      const phone = requiredString(body.phone, 'invalid_phone', 32).trim();
-      if (!/^1[3-9]\d{9}$/.test(phone)) {
-        throw new HttpError(400, 'invalid_phone_format');
-      }
-      const now = Date.now();
-      const existing = smsVerificationCodes.get(phone);
-      if (existing && (now - existing.sentAt < 60000)) {
-        const waitSec = Math.ceil((60000 - (now - existing.sentAt)) / 1000);
-        throw new HttpError(429, `sms_rate_limit_${waitSec}s`);
-      }
-      const code = config.smsMockCode || Math.floor(100000 + Math.random() * 900000).toString();
-      smsVerificationCodes.set(phone, {
-        code,
-        expiresAt: now + 5 * 60 * 1000,
-        sentAt: now,
-      });
-      console.log(`[SMS] 向手机号 ${phone} 发送验证码: ${code}`);
-      return json(res, 200, { ok: true, message: '验证码已发送' });
-    }
-
-    if (req.method === 'POST' && url.pathname === '/v1/auth/phone/register') {
-      const address = requestClientAddress(req, config.trustProxy);
-      if (!registrationAttempts.consume(address)) {
-        throw new HttpError(429, 'too_many_attempts');
-      }
-      const body = await readJson(req);
-      const phone = requiredString(body.phone, 'invalid_phone', 32).trim();
-      const code = requiredString(body.code, 'invalid_code', 16).trim();
-      const password = requiredOpaqueString(body.password, 'invalid_credentials', 1024);
-
-      if (!/^1[3-9]\d{9}$/.test(phone)) throw new HttpError(400, 'invalid_phone_format');
-      if ([...password].length < 8) throw new HttpError(400, 'password_too_short');
-
-      const record = smsVerificationCodes.get(phone);
-      if (!record || record.expiresAt < Date.now() || record.code !== code) {
-        throw new HttpError(400, 'invalid_or_expired_sms_code');
-      }
-      smsVerificationCodes.delete(phone);
-
-      const salt = crypto.randomBytes(16).toString('hex');
-      const releaseKdf = authKdfConcurrency.tryAcquire();
-      if (!releaseKdf) throw new HttpError(429, 'too_many_attempts');
-      let passwordHash;
-      try {
-        passwordHash = await passwordHashAsync(password, salt);
-      } finally {
-        releaseKdf();
-      }
-
-      const client = await pool.connect();
-      try {
-        await client.query('begin');
-        const inserted = await client.query(
-          `insert into auth.users(username, phone, password_hash, password_salt, password_version)
-           values($1, $2, $3, $4, 2) returning id, username`,
-          [phone, phone, passwordHash, salt]
-        );
-        const session = await issueSession(client, inserted.rows[0], config.authSecret);
-        await client.query('commit');
-        return json(res, 201, session);
-      } catch (error) {
-        await client.query('rollback').catch(() => {});
-        if (error && error.code === '23505') throw new HttpError(409, 'phone_already_registered');
-        throw error;
-      } finally {
-        client.release();
-      }
+    // SMS authentication remains unavailable until a real delivery provider is integrated.
+    if (req.method === 'POST' && (url.pathname === '/v1/auth/sms/send' ||
+        url.pathname === '/v1/auth/phone/register')) {
+      throw new HttpError(503, 'sms_unavailable');
     }
 
     if (req.method === 'POST' && url.pathname === '/v1/auth/phone/login') {
@@ -1636,43 +1532,10 @@ async function createPostgresServer(overrides = {}) {
       if (!/^1[3-9]\d{9}$/.test(phone)) throw new HttpError(400, 'invalid_phone_format');
 
       const code = optionalString(body.code, 'invalid_code', 16);
-      const password = typeof body.password === 'string' ? body.password : null;
+      const password = body.password === undefined ? null : requiredOpaqueString(body.password, 'invalid_credentials', 1024);
 
       if (code) {
-        const record = smsVerificationCodes.get(phone);
-        if (!record || record.expiresAt < Date.now() || record.code !== code.trim()) {
-          throw new HttpError(400, 'invalid_or_expired_sms_code');
-        }
-        smsVerificationCodes.delete(phone);
-
-        const client = await pool.connect();
-        try {
-          await client.query('begin');
-          let userRow = await client.query(
-            'select id, username, status from auth.users where phone = $1 or username = $1',
-            [phone]
-          );
-          let user;
-          if (userRow.rowCount > 0) {
-            user = userRow.rows[0];
-            if (user.status === 'disabled') throw new HttpError(403, 'account_disabled');
-          } else {
-            const inserted = await client.query(
-              `insert into auth.users (username, phone, status, password_version)
-               values ($1, $2, 'active', 2) returning id, username`,
-              [phone, phone]
-            );
-            user = inserted.rows[0];
-          }
-          const session = await issueSession(client, user, config.authSecret);
-          await client.query('commit');
-          return json(res, 200, session);
-        } catch (error) {
-          await client.query('rollback').catch(() => {});
-          throw error;
-        } finally {
-          client.release();
-        }
+        throw new HttpError(503, 'sms_unavailable');
       } else if (password) {
         const key = loginKey(req, phone);
         const pairReservation = loginFailures.reserve(key.pair);
@@ -1692,13 +1555,13 @@ async function createPostgresServer(overrides = {}) {
         try {
           const userResult = await pool.query(
             `select id, username, password_hash, password_salt, password_version, status
-             from auth.users where phone = $1 or username = $1`,
+             from auth.users where phone = $1`,
             [phone]
           );
           const user = userResult.rows[0];
           const valid = user && user.password_hash && user.password_salt
-            ? await verifyPasswordAsync(password, user.password_hash, user.password_salt, user.password_version)
-            : await verifyPasswordOrDummyAsync(password, null, null, 2);
+            ? await verifyPasswordAsync(password, user.password_salt, user.password_hash, user.password_version)
+            : await verifyPasswordOrDummyAsync(password, null);
 
           if (!user || !valid) {
             pairReservation.commit();
@@ -1750,6 +1613,7 @@ async function createPostgresServer(overrides = {}) {
     }
 
     if (req.method === 'POST' && url.pathname === '/v1/auth/email/register') {
+      if (config.registrationMode !== 'open') throw new HttpError(403, 'registration_closed');
       const address = requestClientAddress(req, config.trustProxy);
       if (!registrationAttempts.consume(address)) {
         throw new HttpError(429, 'too_many_attempts');
@@ -1841,8 +1705,8 @@ async function createPostgresServer(overrides = {}) {
         );
         const user = userResult.rows[0];
         const valid = user && user.password_hash && user.password_salt
-          ? await verifyPasswordAsync(password, user.password_hash, user.password_salt, user.password_version)
-          : await verifyPasswordOrDummyAsync(password, null, null, 2);
+          ? await verifyPasswordAsync(password, user.password_salt, user.password_hash, user.password_version)
+          : await verifyPasswordOrDummyAsync(password, null);
 
         if (!user || !valid) {
           pairReservation.commit();
@@ -1971,6 +1835,7 @@ async function createPostgresServer(overrides = {}) {
               [email, profileName, 'tg-oauth', String(subject)]
             );
           } else {
+            if (config.registrationMode !== 'open') throw new HttpError(403, 'registration_closed');
             let usernameCandidate = String(profileName).replace(/[\u0000-\u001f\u007f]/g, '').trim();
             if (!usernameCandidate || usernameCandidate.length > 120) {
               usernameCandidate = `user_${String(subject).slice(0, 16)}`;
@@ -2149,9 +2014,10 @@ async function createPostgresServer(overrides = {}) {
       if (!ipReservation) throw new HttpError(429, 'too_many_attempts');
       const hash = tokenHash(refresh);
       const sessionId = refreshTokenSessionId(refresh, config.authSecret);
-      const client = await pool.connect();
+      let client;
       let transactionOpen = false;
       try {
+        client = await pool.connect();
         await client.query('begin');
         transactionOpen = true;
         const preliminary = await selectRefreshFamily(client, sessionId, hash);
@@ -2231,7 +2097,8 @@ async function createPostgresServer(overrides = {}) {
         }
         throw error;
       } finally {
-        client.release();
+        ipReservation.release();
+        if (client) client.release();
       }
     }
 
