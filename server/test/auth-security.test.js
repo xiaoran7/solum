@@ -34,7 +34,7 @@ async function fixture(t, overrides = {}, serverFactory = createPostgresServer) 
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const post = (route, body) => fetch(base + route, { method: 'POST',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  return { post, base, queries, password, pool };
+  return { post, base, queries, password, pool, app, captchaService: app.captchaService, emailVerificationService: app.emailVerificationService };
 }
 
 test('unconfigured external authentication fails closed without issuing a session', async t => {
@@ -161,4 +161,111 @@ test('refresh grace success and connection failure settle IP reservations', asyn
   assert.equal(failed.status, 500);
   await failed.json();
   assert.equal(pending, 0, 'pool failures must release their reservation');
+});
+
+test('captcha endpoint issues challenges and enforces verification rules', async t => {
+  const { base } = await fixture(t);
+  const getRes = await fetch(base + '/v1/auth/captcha');
+  assert.equal(getRes.status, 200);
+  const data = await getRes.json();
+  assert.ok(typeof data.captcha_id === 'string' && data.captcha_id.startsWith('cap_'));
+  assert.ok(typeof data.image === 'string' && data.image.startsWith('data:image/svg+xml'));
+});
+
+test('email send-code and register enforce captcha and email verification code', async t => {
+  const { post, base, pool, captchaService } = await fixture(t, {
+    registrationMode: 'open',
+    exposeCodeForTest: true,
+  });
+
+  // 1. Get a captcha
+  const capRes = await (await fetch(base + '/v1/auth/captcha')).json();
+  assert.ok(capRes.captcha_id);
+
+  // 2. Reject sending code if captcha is wrong
+  const badCap = await post('/v1/auth/email/send-code', {
+    email: 'newuser@example.test',
+    captcha_id: capRes.captcha_id,
+    captcha_answer: 'wrong_answer_xyz',
+  });
+  assert.equal(badCap.status, 400);
+  assert.equal((await badCap.json()).error, 'invalid_captcha');
+
+  // 3. Register directly without code fails
+  const noCodeReg = await post('/v1/auth/email/register', {
+    email: 'newuser@example.test',
+    password: 'password123',
+  });
+  assert.equal(noCodeReg.status, 400);
+
+  // 4. Send code with valid captcha using test challenge
+  const testCap = captchaService.create();
+  const storeEntry = captchaService.store.get(testCap.captchaId);
+  assert.ok(storeEntry);
+
+  // Mock send-code by calling directly with valid answer
+  const goodSend = await post('/v1/auth/email/send-code', {
+    email: 'missing@example.test',
+    captcha_id: testCap.captchaId,
+    captcha_answer: testCap.answer,
+  });
+  assert.equal(goodSend.status, 200);
+  const sendData = await goodSend.json();
+  assert.equal(sendData.ok, true);
+  assert.equal(sendData.cooldown, 60);
+  const code = sendData.code;
+  assert.ok(typeof code === 'string' && code.length === 6);
+
+  // 5. Cooldown triggers on immediate resend
+  const cap2 = captchaService.create();
+  const cooldownSend = await post('/v1/auth/email/send-code', {
+    email: 'missing@example.test',
+    captcha_id: cap2.captchaId,
+    captcha_answer: cap2.answer,
+  });
+  assert.equal(cooldownSend.status, 429);
+  assert.equal((await cooldownSend.json()).error, 'cooldown_active');
+
+  // 6. Registration fails with wrong code
+  const badCodeReg = await post('/v1/auth/email/register', {
+    email: 'missing@example.test',
+    password: 'password123',
+    code: '000000',
+  });
+  assert.equal(badCodeReg.status, 400);
+  assert.equal((await badCodeReg.json()).error, 'invalid_verification_code');
+
+  // 7. Registration succeeds with correct code
+  const origQuery = pool.query;
+  pool.query = async (sql, params) => {
+    if (sql.includes('insert into auth.users')) {
+      return { rows: [{ id: '22222222-2222-4222-8222-222222222222', username: 'newuser' }], rowCount: 1 };
+    }
+    if (sql.includes('insert into auth.refresh_tokens') || sql.includes('begin') || sql.includes('commit')) {
+      return { rows: [], rowCount: 1 };
+    }
+    if (sql.includes('from auth.users where username')) {
+      return { rows: [], rowCount: 0 };
+    }
+    return origQuery(sql, params);
+  };
+
+  const goodReg = await post('/v1/auth/email/register', {
+    email: 'missing@example.test',
+    password: 'password123',
+    code,
+  });
+  assert.equal(goodReg.status, 201);
+  const session = await goodReg.json();
+  assert.ok(typeof session.access_token === 'string');
+  assert.ok(typeof session.user?.id === 'string');
+
+  // 8. Code is consumed, reusing it fails
+  const reuseReg = await post('/v1/auth/email/register', {
+    email: 'missing@example.test',
+    password: 'password123',
+    code,
+  });
+  assert.equal(reuseReg.status, 400);
+  assert.equal((await reuseReg.json()).error, 'invalid_verification_code');
 });

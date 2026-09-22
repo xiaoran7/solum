@@ -19,6 +19,8 @@ const {
   verifyPasswordAsync,
   verifyPasswordOrDummyAsync,
 } = require('./http-security');
+const { CaptchaService } = require('./captcha');
+const { EmailVerificationService } = require('./mailer');
 
 const ACCESS_TTL_SECONDS = 15 * 60;
 const REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -535,6 +537,18 @@ function buildConfig(overrides = {}) {
     backupPendingTtlHours: Number(process.env.SOLUM_BACKUP_PENDING_TTL_HOURS ||
       DEFAULT_BACKUP_PENDING_TTL_HOURS),
     buildRevision: process.env.SOLUM_BUILD_REVISION || 'unknown',
+    smtpEnabled: process.env.SOLUM_EMAIL_CODE_ENABLED !== 'false' && process.env.SOLUM_SMTP_ENABLED !== 'false',
+    smtpHost: process.env.SOLUM_MAIL_HOST || process.env.SOLUM_SMTP_HOST || process.env.SMTP_HOST || '',
+    smtpPort: Number(process.env.SOLUM_MAIL_PORT || process.env.SOLUM_SMTP_PORT || process.env.SMTP_PORT || 465),
+    smtpSecure: process.env.SOLUM_MAIL_SECURE !== undefined
+      ? process.env.SOLUM_MAIL_SECURE !== 'false'
+      : (process.env.SOLUM_SMTP_SECURE !== undefined ? process.env.SOLUM_SMTP_SECURE !== 'false' : undefined),
+    smtpUser: process.env.SOLUM_MAIL_USERNAME || process.env.SOLUM_SMTP_USER || process.env.SMTP_USER || '',
+    smtpPass: process.env.SOLUM_MAIL_PASSWORD || process.env.SOLUM_SMTP_PASS || process.env.SMTP_PASS || '',
+    smtpFrom: process.env.SOLUM_MAIL_FROM || process.env.SOLUM_SMTP_FROM || process.env.SMTP_FROM || '',
+    smtpFromName: process.env.SOLUM_MAIL_FROM_NAME || 'Solum',
+    smtpSubjectPrefix: process.env.SOLUM_MAIL_SUBJECT_PREFIX || '[Solum] ',
+    exposeCodeForTest: false,
     ...overrides,
   };
   if (config.authSecret.length < 32) throw new Error('SOLUM_AUTH_SECRET must be at least 32 characters');
@@ -1356,6 +1370,9 @@ async function createPostgresServer(overrides = {}) {
   });
   const authKdfConcurrency = createConcurrencyLimiter(MAX_CONCURRENT_AUTH_KDFS);
 
+  const captchaService = new CaptchaService();
+  const emailVerificationService = new EmailVerificationService(config);
+
   async function authenticate(req) {
     const tenantId = verifyAccessToken(bearer(req), config.authSecret);
     if (!tenantId) throw new HttpError(401, 'unauthorized');
@@ -1621,12 +1638,18 @@ async function createPostgresServer(overrides = {}) {
       const body = await readJson(req);
       const email = requiredString(body.email, 'invalid_email', 128).trim().toLowerCase();
       const password = requiredOpaqueString(body.password, 'invalid_credentials', 1024);
+      const code = requiredString(body.code, 'invalid_verification_code', 16);
 
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
         throw new HttpError(400, 'invalid_email_format');
       }
       if ([...password].length < 8) {
         throw new HttpError(400, 'password_too_short');
+      }
+
+      const verifyRes = emailVerificationService.verifyCode(email, code);
+      if (!verifyRes || !verifyRes.ok) {
+        throw new HttpError(400, 'invalid_verification_code');
       }
 
       const client = await pool.connect();
@@ -1881,6 +1904,53 @@ async function createPostgresServer(overrides = {}) {
         throw error;
       } finally {
         ipReservation.release();
+      }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/v1/auth/captcha') {
+      const challenge = captchaService.create();
+      return json(res, 200, {
+        captcha_id: challenge.captchaId,
+        image: challenge.image,
+        expires_in: 300,
+      });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1/auth/email/send-code') {
+      const body = await readJson(req);
+      requireExactKeys(body, ['email', 'captcha_id', 'captcha_answer'], 'invalid_request');
+      const email = requiredString(body.email, 'invalid_email', 256).toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'invalid_email');
+      const captchaId = requiredString(body.captcha_id, 'invalid_captcha', 64);
+      const captchaAnswer = requiredString(body.captcha_answer, 'invalid_captcha', 64);
+
+      const capResult = captchaService.verify(captchaId, captchaAnswer);
+      if (!capResult || !capResult.ok) {
+        throw new HttpError(400, 'invalid_captcha');
+      }
+
+      const client = await pool.connect();
+      try {
+        const existing = await client.query('select 1 from auth.users where email = $1', [email]);
+        if (existing.rowCount > 0) throw new HttpError(409, 'email_already_registered');
+      } finally {
+        client.release();
+      }
+
+      try {
+        const sendResult = await emailVerificationService.sendCode({
+          email,
+          smtpConfig: {
+            ...config,
+            exposeCodeForTest: config.exposeCodeForTest,
+          },
+        });
+        return json(res, 200, sendResult);
+      } catch (err) {
+        if (err.code === 'cooldown_active') {
+          throw new HttpError(429, 'cooldown_active');
+        }
+        throw err;
       }
     }
 
@@ -3044,6 +3114,8 @@ async function createPostgresServer(overrides = {}) {
   return {
     server,
     pool,
+    captchaService,
+    emailVerificationService,
     async close() {
       clearInterval(retentionTimer);
       await new Promise((resolve) => server.close(resolve));
