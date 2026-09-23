@@ -188,6 +188,4 @@ impl Orchestrator {
         let doc = crate::export_v3::build_portable_export(&self.store, now, platform)?;
         Ok(serde_json::to_string_pretty(&doc)?)
     }
-
-
 }

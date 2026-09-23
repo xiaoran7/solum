@@ -25,7 +25,10 @@ pub(crate) struct WebStorageNames {
     pub(crate) document_db_name: String,
 }
 
-pub(crate) fn web_storage_names(profile_id: &str, generation: Option<&str>) -> CmdResult<WebStorageNames> {
+pub(crate) fn web_storage_names(
+    profile_id: &str,
+    generation: Option<&str>,
+) -> CmdResult<WebStorageNames> {
     if profile_id != "guest" && !solum_core::account::is_valid_user_id(profile_id) {
         return Err("WebView profile id 无效".into());
     }
@@ -208,4 +211,3 @@ pub(crate) fn restore_webview_status(
         ready: session.ready,
     })
 }
-

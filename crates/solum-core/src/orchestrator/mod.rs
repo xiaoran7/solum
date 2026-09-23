@@ -278,17 +278,14 @@ impl Orchestrator {
     pub fn has_reasoner(&self) -> bool {
         self.reasoner.is_some()
     }
-
-
 }
 
-
 mod closed_loop;
+mod notifications;
 mod queries;
 mod routines_insights;
-mod notifications;
-mod widgets_persona;
 pub(crate) mod tools;
+mod widgets_persona;
 pub(crate) use tools::*;
 
 #[cfg(test)]

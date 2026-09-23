@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "solum", version, about = "Personal Agent — Phase 1 CLI")]
@@ -221,4 +221,3 @@ pub(crate) enum NotifIntelligenceCmd {
     /// Run one ordinary-lane batch now (uses the cloud only when notification-cloud is enabled).
     Process,
 }
-

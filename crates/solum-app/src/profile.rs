@@ -1,5 +1,6 @@
 // crates/solum-app/src/profile.rs
 use std::path::{Path, PathBuf};
+use tauri::Manager;
 
 pub(crate) struct ResolvedProfilePaths {
     pub(crate) db_path: String,

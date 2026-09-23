@@ -5,10 +5,10 @@ mod helpers;
 #[cfg(test)]
 mod tests;
 
-use std::path::Path;
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use solum_core::Orchestrator;
+use std::path::Path;
 
 use crate::args::Cli;
 use crate::dispatch::dispatch;

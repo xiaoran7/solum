@@ -378,4 +378,3 @@ pub(crate) fn sync_round(state: &AppState) -> CmdResult<solum_core::sync::SyncOu
 pub(crate) fn sync_now(state: State<AppState>) -> CmdResult<solum_core::sync::SyncOutcome> {
     sync_round(&state)
 }
-

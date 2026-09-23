@@ -4,7 +4,7 @@ use solum_core::model::fmt_ts;
 use solum_core::proactivity::{ProactivityDimension, ProactivityLevel};
 use solum_core::Orchestrator;
 
-use crate::args::{Cmd, SoulousCmd, NotifIntelligenceCmd};
+use crate::args::{Cmd, NotifIntelligenceCmd, SoulousCmd};
 use crate::helpers::*;
 
 pub fn dispatch(

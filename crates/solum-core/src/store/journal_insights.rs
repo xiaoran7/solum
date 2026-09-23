@@ -606,6 +606,4 @@ impl Store {
             .optional()?;
         Ok(hit.is_some())
     }
-
-
 }

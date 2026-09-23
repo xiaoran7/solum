@@ -794,6 +794,4 @@ impl Orchestrator {
         }
         Ok((digest.render(), false))
     }
-
-
 }

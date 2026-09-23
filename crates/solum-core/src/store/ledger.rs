@@ -131,7 +131,10 @@ impl Store {
     const LEDGER_KEYSET_TAIL: &str = "WHERE (?1 IS NULL OR {col} < ?2 OR ({col} = ?2 AND id > ?3))
          ORDER BY {col} DESC, id ASC LIMIT ?4";
 
-    pub(crate) fn keyset_params(after: Option<&LedgerCursor>, probe: usize) -> [rusqlite::types::Value; 4] {
+    pub(crate) fn keyset_params(
+        after: Option<&LedgerCursor>,
+        probe: usize,
+    ) -> [rusqlite::types::Value; 4] {
         [
             after.map(|c| c.created_at_str.clone()).into(),
             after.map(|c| c.created_at_str.clone()).into(),
@@ -319,7 +322,11 @@ impl Store {
             .collect())
     }
 
-    pub(crate) fn ledger_facts(&self, after: Option<&LedgerCursor>, probe: usize) -> Result<Vec<MemoryEntry>> {
+    pub(crate) fn ledger_facts(
+        &self,
+        after: Option<&LedgerCursor>,
+        probe: usize,
+    ) -> Result<Vec<MemoryEntry>> {
         let tail = Self::LEDGER_KEYSET_TAIL.replace("{col}", "created_at");
         let mut stmt = self
             .conn
@@ -500,6 +507,4 @@ impl Store {
         }
         Ok(())
     }
-
-
 }

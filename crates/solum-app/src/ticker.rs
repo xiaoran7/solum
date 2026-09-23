@@ -7,12 +7,10 @@ use solum_health_connect::HealthConnectExt;
 use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
-use solum_core::notification_intelligence::{
-    CaptureLane, CaptureState, NotificationCapture,
-};
-use solum_core::wearable::HealthSample;
-use crate::state::*;
 use crate::commands::*;
+use crate::state::*;
+use solum_core::notification_intelligence::{CaptureLane, CaptureState, NotificationCapture};
+use solum_core::wearable::HealthSample;
 
 // ---- resident ticker --------------------------------------------------------------
 
@@ -690,4 +688,3 @@ pub(crate) fn resync_alarms(app: &tauri::AppHandle) {
 }
 
 // ---- entry point ------------------------------------------------------------------
-

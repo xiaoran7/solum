@@ -574,6 +574,4 @@ impl Orchestrator {
     pub fn set_notif_cloud_enabled(&self, enabled: bool) -> Result<()> {
         self.store.set_notif_cloud_enabled(enabled)
     }
-
-
 }

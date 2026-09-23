@@ -5,7 +5,7 @@ const htmlPath = new URL("../crates/solum-app/dist/index.html", import.meta.url)
 const appJsPath = new URL("../crates/solum-app/dist/app.js", import.meta.url);
 const i18nJsPath = new URL("../crates/solum-app/dist/i18n.js", import.meta.url);
 const tauriConfPath = new URL("../crates/solum-app/tauri.conf.json", import.meta.url);
-const appPath = new URL("../crates/solum-app/src/lib.rs", import.meta.url);
+const appSrcDir = new URL("../crates/solum-app/src/", import.meta.url);
 const accountCorePath = new URL("../crates/solum-core/src/account.rs", import.meta.url);
 const defaultAvatarPath = new URL("../crates/solum-app/dist/assets/avatars/default-sprout.png", import.meta.url);
 const notificationPipelinePath = new URL(
@@ -16,7 +16,20 @@ const html = fs.readFileSync(htmlPath, "utf8");
 const appJs = fs.readFileSync(appJsPath, "utf8");
 const i18nJs = fs.readFileSync(i18nJsPath, "utf8");
 const tauriConf = fs.readFileSync(tauriConfPath, "utf8");
-const app = fs.readFileSync(appPath, "utf8");
+
+function readAllRs(dir) {
+  let content = "";
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = new URL(entry.name + (entry.isDirectory() ? "/" : ""), dir);
+    if (entry.isDirectory()) {
+      content += "\n" + readAllRs(full);
+    } else if (entry.isFile() && entry.name.endsWith(".rs")) {
+      content += "\n" + fs.readFileSync(full, "utf8");
+    }
+  }
+  return content;
+}
+const app = readAllRs(appSrcDir);
 const accountCore = fs.readFileSync(accountCorePath, "utf8");
 const notificationPipeline = fs.readFileSync(notificationPipelinePath, "utf8");
 

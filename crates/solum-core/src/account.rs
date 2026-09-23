@@ -461,9 +461,11 @@ impl AccountHttp for HttpAccountClient {
         url: &str,
         access_token: &str,
     ) -> std::result::Result<Value, AccountHttpError> {
-        self.agent
-            .get(url)
-            .set("Authorization", &format!("Bearer {access_token}"))
+        let mut request = self.agent.get(url);
+        if !access_token.is_empty() {
+            request = request.set("Authorization", &format!("Bearer {access_token}"));
+        }
+        request
             .call()
             .map_err(map_http_error)?
             .into_json()
@@ -720,21 +722,108 @@ pub fn request_sms_code(server_url: &str, phone: &str) -> Result<()> {
     Ok(())
 }
 
-/// Register with email and password
-pub fn register_email(
+/// Captcha challenge data from server
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptchaChallenge {
+    pub captcha_id: String,
+    pub image: String,
+}
+
+/// Fetch a new SVG captcha challenge from server
+pub fn get_captcha(server_url: &str) -> Result<CaptchaChallenge> {
+    let server = normalize_server_url(server_url)?;
+    let client = HttpAccountClient::new();
+    let response = client
+        .get_json(&format!("{server}/v1/auth/captcha"), "")
+        .map_err(|e| CoreError::Llm(format!("获取验证码失败: {e}")))?;
+
+    let captcha_id = response
+        .get("captcha_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CoreError::Llm("返回数据缺少 captcha_id".into()))?
+        .to_string();
+    let image = response
+        .get("image")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CoreError::Llm("返回数据缺少 image".into()))?
+        .to_string();
+
+    Ok(CaptchaChallenge { captcha_id, image })
+}
+
+/// Send email verification code
+pub fn send_email_code(
     server_url: &str,
     email: &str,
-    password: &str,
-    model: &str,
-) -> Result<AccountSession> {
+    captcha_id: &str,
+    captcha_answer: &str,
+) -> Result<()> {
     let server = normalize_server_url(server_url)?;
-    let model = normalize_cloud_model(model)?;
     let email_clean = email.trim().to_lowercase();
     if email_clean.is_empty() {
         return Err(CoreError::Invalid("请输入邮箱地址".into()));
     }
     if !email_clean.contains('@') || !email_clean.contains('.') {
         return Err(CoreError::Invalid("邮箱格式不正确".into()));
+    }
+    if captcha_id.trim().is_empty() || captcha_answer.trim().is_empty() {
+        return Err(CoreError::Invalid("请输入图形验证码".into()));
+    }
+
+    let client = HttpAccountClient::new();
+    client
+        .post_json(
+            &format!("{server}/v1/auth/email/send-code"),
+            None,
+            json!({
+                "email": email_clean,
+                "captcha_id": captcha_id.trim(),
+                "captcha_answer": captcha_answer.trim(),
+            }),
+        )
+        .map_err(|e| match e {
+            AccountHttpError::Other(msg) if msg.contains("invalid_captcha") => {
+                CoreError::Invalid("图形验证码错误或已过期，请点击刷新重试".into())
+            }
+            AccountHttpError::Other(msg)
+                if msg.contains("cooldown_active") || msg.contains("429") =>
+            {
+                CoreError::Llm("发送太频繁，请稍后再试".into())
+            }
+            AccountHttpError::Other(msg)
+                if msg.contains("email_already_registered") || msg.contains("409") =>
+            {
+                CoreError::Llm("该邮箱已被注册，请直接登录".into())
+            }
+            AccountHttpError::Other(msg) if msg.contains("format") => {
+                CoreError::Invalid("邮箱格式不正确".into())
+            }
+            other => CoreError::Llm(format!("发送邮件验证码失败: {other}")),
+        })?;
+
+    Ok(())
+}
+
+/// Register with email, password and verification code
+pub fn register_email(
+    server_url: &str,
+    email: &str,
+    password: &str,
+    code: &str,
+    model: &str,
+) -> Result<AccountSession> {
+    let server = normalize_server_url(server_url)?;
+    let model = normalize_cloud_model(model)?;
+    let email_clean = email.trim().to_lowercase();
+    let code_clean = code.trim();
+    if email_clean.is_empty() {
+        return Err(CoreError::Invalid("请输入邮箱地址".into()));
+    }
+    if !email_clean.contains('@') || !email_clean.contains('.') {
+        return Err(CoreError::Invalid("邮箱格式不正确".into()));
+    }
+    if code_clean.is_empty() {
+        return Err(CoreError::Invalid("请输入邮箱验证码".into()));
     }
     if password.len() < 8 {
         return Err(CoreError::Invalid("密码至少需要 8 个字符".into()));
@@ -746,7 +835,8 @@ pub fn register_email(
             None,
             json!({
                 "email": email_clean,
-                "password": password
+                "password": password,
+                "code": code_clean
             }),
         )
         .map_err(|e| match e {
@@ -754,6 +844,9 @@ pub fn register_email(
                 if msg.contains("email_already_registered") || msg.contains("409") =>
             {
                 CoreError::Llm("该邮箱已被注册，请直接登录".into())
+            }
+            AccountHttpError::Other(msg) if msg.contains("invalid_verification_code") => {
+                CoreError::Invalid("邮箱验证码错误或已失效".into())
             }
             AccountHttpError::Other(msg) if msg.contains("format") => {
                 CoreError::Invalid("邮箱格式不正确".into())

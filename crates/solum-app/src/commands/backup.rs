@@ -1,6 +1,9 @@
 use super::*;
 
-pub(crate) fn take_backup_upload(state: &AppState, session_id: &str) -> CmdResult<BackupUploadAppSession> {
+pub(crate) fn take_backup_upload(
+    state: &AppState,
+    session_id: &str,
+) -> CmdResult<BackupUploadAppSession> {
     let mut guard = state
         .backup_upload
         .lock()
@@ -499,4 +502,3 @@ pub(crate) fn write_export_json(db_path: &str, json: &str, prefix: &str) -> CmdR
     solum_core::fsatomic::write_atomic(&file, json).map_err(|e| e.to_string())?;
     Ok(file.display().to_string())
 }
-

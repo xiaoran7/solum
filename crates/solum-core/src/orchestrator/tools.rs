@@ -85,7 +85,10 @@ pub(crate) fn intent_str(intent: Intent) -> &'static str {
 /// D3: recognize a purge-shaped dangerous command and derive its arguments.
 /// Requires a purge verb (already guaranteed by the danger routing), a layer
 /// keyword, and optionally a time range ("上周/N天前"; absent = 全部).
-pub(crate) fn parse_purge_request(text: &str, now: NaiveDateTime) -> Option<(MemoryLayer, NaiveDateTime)> {
+pub(crate) fn parse_purge_request(
+    text: &str,
+    now: NaiveDateTime,
+) -> Option<(MemoryLayer, NaiveDateTime)> {
     let layer = if text.contains("行为日志") || text.contains("日志") {
         MemoryLayer::Behavior
     } else if text.contains("建议") {
@@ -230,7 +233,10 @@ pub(crate) fn recurrence_caveat(text: &str) -> Option<&'static str> {
 /// Combine a reschedule request with the target event: whichever half the
 /// phrase didn't specify keeps the event's original value ("改到4点" keeps
 /// the date, "改到周五" keeps the clock time).
-pub(crate) fn compose_new_start(ev: &Event, req: &crate::extract::RescheduleRequest) -> NaiveDateTime {
+pub(crate) fn compose_new_start(
+    ev: &Event,
+    req: &crate::extract::RescheduleRequest,
+) -> NaiveDateTime {
     let date = req.new_date.unwrap_or_else(|| ev.start.date());
     let time = req
         .new_time
@@ -298,8 +304,6 @@ pub(crate) const TARGET_FILLERS: &[&str] = &[
 pub(crate) fn kind_label(kind: crate::model::EventKind) -> &'static str {
     kind.label()
 }
-
-
 
 // ---- built-in tools ---------------------------------------------------------
 
@@ -942,4 +946,3 @@ impl Tool for EmailSendTool {
         crate::email::send_configured(&draft)
     }
 }
-

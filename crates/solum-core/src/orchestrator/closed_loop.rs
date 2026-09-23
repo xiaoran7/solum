@@ -525,6 +525,4 @@ impl Orchestrator {
         })?;
         Ok((ev, stored))
     }
-
-
 }

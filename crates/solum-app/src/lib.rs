@@ -9,7 +9,7 @@
 //! ; confirming in the dialog calls  +  on the Rust
 //! side).
 //!
-//! The clock is injectable end-to-end: every command accepts an optional 
+//! The clock is injectable end-to-end: every command accepts an optional
 //! string (from the UI's "模拟时钟"); absent means the real system clock.
 //!
 //! Phase 2 turns the shell into a resident host: a background ticker (system
@@ -43,9 +43,9 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
-use chrono::{Duration, Local, NaiveDateTime, SecondsFormat, Utc};
 #[cfg(test)]
 use chrono::NaiveDate;
+use chrono::{Duration, Local, NaiveDateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use solum_alarm::AlarmExt;
 use solum_health_connect::HealthConnectExt;
@@ -65,7 +65,6 @@ use solum_core::proactivity::{ProactivityDimension, ProactivityLevel};
 use solum_core::suggest::{Suggestion, SuggestionStatus};
 use solum_core::wearable::{HealthMetric, HealthSample};
 use solum_core::Orchestrator;
-
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -285,6 +284,8 @@ pub fn run() {
             account_status_get,
             account_login,
             account_register,
+            account_captcha_get,
+            account_email_send_code,
             account_email_register,
             account_email_login,
             account_sms_send,
@@ -359,7 +360,6 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running Solum");
 }
-
 
 #[cfg(test)]
 #[cfg(test)]

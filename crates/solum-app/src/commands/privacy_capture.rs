@@ -1,4 +1,7 @@
 use super::*;
+use chrono::TimeZone;
+#[cfg(mobile)]
+use tauri_plugin_notification::NotificationExt;
 
 // ---- 首启隐私门 + 应用内隐私政策（自 Solum Harmony 回移）----------------------
 
@@ -462,7 +465,7 @@ pub(crate) async fn capture_android_ocr_pick(window: tauri::WebviewWindow) -> Cm
 }
 
 #[cfg(target_os = "android")]
-pub(crate) fn android_activity_bool(
+pub(crate) async fn android_activity_bool(
     window: tauri::WebviewWindow,
     method: &'static str,
 ) -> CmdResult<bool> {
@@ -718,4 +721,3 @@ pub(crate) async fn calendar_open_insert(
         .map_err(|error| format!("打开系统日历失败：{error}"))?
     }
 }
-

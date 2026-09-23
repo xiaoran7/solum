@@ -244,7 +244,10 @@ pub(crate) async fn account_oauth_config_get(
 }
 
 #[tauri::command]
-pub(crate) async fn open_external_url(window: tauri::WebviewWindow, url: String) -> CmdResult<bool> {
+pub(crate) async fn open_external_url(
+    window: tauri::WebviewWindow,
+    url: String,
+) -> CmdResult<bool> {
     #[cfg(target_os = "android")]
     {
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
@@ -464,7 +467,10 @@ pub(crate) struct AccountHuaweiLoginArgs {
 }
 
 #[tauri::command]
-pub(crate) async fn account_sms_send(server_url: Option<String>, phone: String) -> CmdResult<String> {
+pub(crate) async fn account_sms_send(
+    server_url: Option<String>,
+    phone: String,
+) -> CmdResult<String> {
     let server = server_url.unwrap_or_else(|| solum_core::account::SOLUM_CENTER_URL.to_string());
     tauri::async_runtime::spawn_blocking(move || {
         solum_core::account::request_sms_code(&server, &phone).map_err(|e| e.to_string())
@@ -474,11 +480,63 @@ pub(crate) async fn account_sms_send(server_url: Option<String>, phone: String) 
     Ok("验证码已发送".into())
 }
 
+#[derive(Serialize)]
+pub(crate) struct AccountCaptchaGetResult {
+    captcha_id: String,
+    image: String,
+}
+
+#[tauri::command]
+pub(crate) async fn account_captcha_get(
+    server_url: Option<String>,
+) -> CmdResult<AccountCaptchaGetResult> {
+    let server = server_url.unwrap_or_else(|| solum_core::account::SOLUM_CENTER_URL.to_string());
+    let challenge = tauri::async_runtime::spawn_blocking(move || {
+        solum_core::account::get_captcha(&server).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("获取图形验证码失败: {e}"))??;
+
+    Ok(AccountCaptchaGetResult {
+        captcha_id: challenge.captcha_id,
+        image: challenge.image,
+    })
+}
+
+#[derive(Deserialize)]
+pub(crate) struct AccountEmailSendCodeArgs {
+    server_url: Option<String>,
+    email: String,
+    captcha_id: String,
+    captcha_answer: String,
+}
+
+#[tauri::command]
+pub(crate) async fn account_email_send_code(args: AccountEmailSendCodeArgs) -> CmdResult<String> {
+    let server = args
+        .server_url
+        .unwrap_or_else(|| solum_core::account::SOLUM_CENTER_URL.to_string());
+    tauri::async_runtime::spawn_blocking(move || {
+        solum_core::account::send_email_code(
+            &server,
+            &args.email,
+            &args.captcha_id,
+            &args.captcha_answer,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("发送邮件验证码线程失败: {e}"))??;
+
+    Ok("验证码已发送至您的邮箱".into())
+}
+
 #[derive(Deserialize)]
 pub(crate) struct AccountEmailRegisterArgs {
     server_url: Option<String>,
     email: String,
     password: String,
+    code: String,
     model: Option<String>,
 }
 
@@ -517,6 +575,7 @@ pub(crate) async fn account_email_register(
             &server,
             &args.email,
             &args.password,
+            &args.code,
             &chosen_model,
         )
         .map_err(|e| e.to_string())?;
@@ -896,7 +955,10 @@ pub(crate) async fn account_huawei_login(
 }
 
 #[tauri::command]
-pub(crate) async fn account_delete(state: State<'_, AppState>, app: tauri::AppHandle) -> CmdResult<String> {
+pub(crate) async fn account_delete(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> CmdResult<String> {
     let _transition = AccountTransitionGuard::acquire(&state.account_transition)?;
     *state
         .backup_upload
@@ -925,7 +987,10 @@ pub(crate) async fn account_delete(state: State<'_, AppState>, app: tauri::AppHa
 /// Local sign-out first-class: best-effort server-side revocation, then restart
 /// into the offline guest profile. Legacy direct-key files never activate it.
 #[tauri::command]
-pub(crate) async fn account_logout(state: State<'_, AppState>, app: tauri::AppHandle) -> CmdResult<String> {
+pub(crate) async fn account_logout(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> CmdResult<String> {
     let _transition = AccountTransitionGuard::acquire(&state.account_transition)?;
     *state
         .backup_upload
@@ -1185,7 +1250,10 @@ pub(crate) async fn account_change_password(
 
 /// Change which model the proxy asks upstream for (login stays untouched).
 #[tauri::command]
-pub(crate) async fn account_model_save(state: State<'_, AppState>, model: String) -> CmdResult<String> {
+pub(crate) async fn account_model_save(
+    state: State<'_, AppState>,
+    model: String,
+) -> CmdResult<String> {
     let Some(mut session) = solum_core::account::AccountSession::load_full() else {
         return Err("请先登录账号".into());
     };
@@ -1218,4 +1286,3 @@ pub(crate) async fn account_model_save(state: State<'_, AppState>, model: String
     }
     Ok(summary)
 }
-

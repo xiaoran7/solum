@@ -148,7 +148,11 @@ pub(crate) fn proactivity_get(state: State<AppState>) -> CmdResult<Vec<Proactivi
 }
 
 #[tauri::command]
-pub(crate) fn proactivity_set(state: State<AppState>, dimension: String, level: String) -> CmdResult<()> {
+pub(crate) fn proactivity_set(
+    state: State<AppState>,
+    dimension: String,
+    level: String,
+) -> CmdResult<()> {
     require_full_account()?;
     let dim: ProactivityDimension = dimension.parse().map_err(core_err)?;
     let lvl: ProactivityLevel = level.parse().map_err(core_err)?;
@@ -402,7 +406,10 @@ pub(crate) fn notif_intelligence_add_priority_rule(
 }
 
 #[tauri::command]
-pub(crate) fn notif_intelligence_remove_priority_rule(state: State<AppState>, id: String) -> CmdResult<()> {
+pub(crate) fn notif_intelligence_remove_priority_rule(
+    state: State<AppState>,
+    id: String,
+) -> CmdResult<()> {
     require_full_account()?;
     lock!(state)
         .remove_notification_priority_rule(&id)
@@ -484,7 +491,10 @@ pub(crate) fn notif_intelligence_promote_capture(
 }
 
 #[tauri::command]
-pub(crate) fn notif_intelligence_process_now(state: State<AppState>, now: Option<String>) -> CmdResult<usize> {
+pub(crate) fn notif_intelligence_process_now(
+    state: State<AppState>,
+    now: Option<String>,
+) -> CmdResult<usize> {
     require_full_account()?;
     let now = parse_now(now)?;
     lock!(state)
@@ -493,7 +503,9 @@ pub(crate) fn notif_intelligence_process_now(state: State<AppState>, now: Option
 }
 
 #[tauri::command]
-pub(crate) fn notif_pipeline_status(app: tauri::AppHandle) -> CmdResult<solum_notif_access::PipelineStatus> {
+pub(crate) fn notif_pipeline_status(
+    app: tauri::AppHandle,
+) -> CmdResult<solum_notif_access::PipelineStatus> {
     require_full_account()?;
     app.notif_access()
         .pipeline_status()
@@ -523,4 +535,3 @@ pub(crate) fn notif_pipeline_open_background_settings(app: tauri::AppHandle) -> 
         .open_app_background_settings()
         .map_err(|e| e.to_string())
 }
-

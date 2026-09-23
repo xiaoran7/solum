@@ -128,7 +128,10 @@ impl Store {
     /// The merge body without its own BEGIN/COMMIT. Keeping this separate lets
     /// a fresh-profile restore wrap the guid-bearing rows and the portable
     /// local ledgers in one wider transaction.
-    pub(crate) fn apply_remote_ops_in_transaction(&self, ops: &[crate::sync::SyncOp]) -> Result<MergeCounts> {
+    pub(crate) fn apply_remote_ops_in_transaction(
+        &self,
+        ops: &[crate::sync::SyncOp],
+    ) -> Result<MergeCounts> {
         self.conn.execute(
             "INSERT INTO meta(key, value) VALUES ('sync_applying', '1')
              ON CONFLICT(key) DO UPDATE SET value = '1'",
@@ -1003,5 +1006,3 @@ pub(crate) fn purge_target(layer: MemoryLayer) -> Result<(&'static str, &'static
         }
     })
 }
-
-

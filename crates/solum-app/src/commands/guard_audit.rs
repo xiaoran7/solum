@@ -158,4 +158,3 @@ pub(crate) fn audit(state: State<AppState>) -> CmdResult<Vec<AuditDto>> {
         })
         .collect())
 }
-

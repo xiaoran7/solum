@@ -345,7 +345,7 @@
   /* ---- 主区 ---- */
   #main { display: flex; flex-direction: column; min-height: 0; min-width: 0; position: relative; }
   #banners:empty { display: none; }
-  #banners { padding: 14px 28px 0; }
+  #banners { padding: 14px 28px 0; margin-bottom: 16px; }
   .banner {
     display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
     background: var(--accent-soft); border: 1px solid var(--accent-line);
@@ -822,6 +822,35 @@
   .empty .et { color: var(--ink-2); font-weight: 550; }
   .empty .eh { font-size: var(--text-sm); max-width: 46ch; line-height: var(--leading-body); }
 
+  .capture-connector-row {
+    display: grid;
+    grid-template-columns: 84px minmax(0, 1fr);
+    align-items: start;
+    gap: 14px;
+    padding: 14px 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .capture-connector-row:last-child { border-bottom: none; }
+  .capture-connector-row .tag {
+    justify-self: start;
+    white-space: nowrap;
+    text-align: center;
+    min-width: 64px;
+    padding: 3px 8px;
+    margin-top: 1px;
+  }
+  .capture-connector-row .meta-col {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  .capture-connector-row .conn-title {
+    font-size: .9375rem;
+    font-weight: 650;
+    color: var(--ink);
+  }
+
   /* 通用行与列表 */
   .rows { display: flex; flex-direction: column; }
   .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 13px 10px; border-bottom: 1px solid var(--line); }
@@ -1142,7 +1171,7 @@
       position: absolute; top: 3px; left: calc(50% + 6px);
       font-size: .6875rem; padding: 0 5px; min-width: 16px;
     }
-    #banners { padding: 12px 16px 0; }
+    #banners { padding: 12px 16px 0; margin-bottom: 12px; }
     #subnavWrap { padding: 12px 16px 0; }
     .seg { flex-wrap: wrap; width: 100%; }
     .seg button { flex: 1; min-width: fit-content; }
@@ -1260,6 +1289,8 @@
   .account-gate-form { display: grid; gap: 10px; }
   #accountGatePhoneWrap,
   #accountGateEmailWrap,
+  #accountGateCaptchaField,
+  #accountGateEmailCodeField,
   #accountGatePassField,
   #accountGateConfirmField { display: flex; flex-direction: column; gap: 6px; width: 100%; }
   #accountGateEmailWrap input,
@@ -1275,17 +1306,28 @@
   .password-wrap { position: relative; display: flex; align-items: center; }
   .password-wrap input { width: 100%; padding-right: 38px; }
   .btn-eye { position: absolute; right: 8px; border: none; background: none; cursor: pointer; color: var(--muted); padding: 4px; }
-  .phone-input-wrap { display: flex; align-items: center; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--card); overflow: hidden; }
+  .phone-input-wrap { display: flex; align-items: center; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--card); overflow: hidden; box-sizing: border-box; }
   .phone-prefix { padding: 8px 12px; font-weight: 600; color: var(--ink-2); background: var(--bg-muted, rgba(125,125,125,0.08)); border-right: 1px solid var(--line); font-size: 0.875rem; }
   .phone-input-wrap input { border: none !important; border-radius: 0 !important; width: 100%; box-shadow: none !important; }
-  .sms-code-wrap { display: flex; gap: 8px; align-items: center; }
-  .sms-code-wrap input { flex: 1; }
-  .sms-send-btn { white-space: nowrap; min-width: 110px; font-size: 0.8125rem; }
+  .sms-code-wrap { display: flex; gap: 8px; align-items: center; width: 100%; min-width: 0; box-sizing: border-box; }
+  .sms-code-wrap input { flex: 1 1 auto; min-width: 0; }
+  .account-code-header { display: flex; justify-content: space-between; align-items: center; width: 100%; box-sizing: border-box; margin-bottom: 2px; }
+  .account-code-header label { margin: 0 !important; font-size: .8125rem; font-weight: 650; color: var(--ink-2); }
+  .sms-send-btn { white-space: nowrap; flex: 0 0 auto; padding: 0 10px; height: 30px; min-height: 30px; font-size: 0.78125rem; font-weight: 600; border-radius: var(--r-md); background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent-line); cursor: pointer; transition: all var(--t-fast) var(--ease); }
+  .sms-send-btn:disabled { opacity: 0.6; cursor: not-allowed; background: var(--bg-muted, rgba(125,125,125,0.1)); color: var(--muted); border-color: var(--line); }
+  .captcha-input-wrap { display: flex; gap: 8px; align-items: center; width: 100%; min-width: 0; box-sizing: border-box; }
+  .captcha-input-wrap input { flex: 1 1 auto; min-width: 0; }
+  .captcha-preview { height: 38px; width: 100px; flex: 0 0 100px; display: flex; align-items: center; justify-content: center; background: var(--inset, #1a221d); border-radius: var(--r-md); border: 1px solid var(--line-strong, var(--line)); overflow: hidden; cursor: pointer; user-select: none; font-size: 0.78125rem; color: var(--muted); transition: border-color var(--t-fast) var(--ease); box-sizing: border-box; }
+  .captcha-preview:hover { border-color: var(--accent-fill); }
+  .captcha-preview img, .captcha-preview svg { width: 100%; height: 100%; object-fit: fill; display: block; }
+  .captcha-refresh-btn { flex: 0 0 38px; padding: 6px; color: var(--muted); border: 1px solid var(--line); border-radius: var(--r-md); background: none; cursor: pointer; display: flex; align-items: center; justify-content: center; min-height: 38px; width: 38px; transition: all var(--t-fast) var(--ease); box-sizing: border-box; }
+  .captcha-refresh-btn:hover { color: var(--accent); border-color: var(--accent); }
   .huawei-login-btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 44px; border-radius: var(--r-md); border: 1px solid rgba(207,11,32,0.25); background: rgba(207,11,32,0.06); color: #cf0b20; font-weight: 650; cursor: pointer; transition: all .15s ease; }
   .huawei-login-btn:hover { background: rgba(207,11,32,0.12); border-color: #cf0b20; }
   .huawei-logo-svg { width: 22px; height: 22px; flex-shrink: 0; }
-  .account-agreement-wrap { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 4px; font-size: 0.7813rem; color: var(--muted); line-height: 1.45; }
-  .account-agreement-wrap input[type="checkbox"] { margin-top: 2px; cursor: pointer; width: 15px; height: 15px; accent-color: var(--accent); }
+  .account-agreement-wrap { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; font-size: 0.8125rem; color: var(--muted); line-height: 1.4; width: 100%; box-sizing: border-box; }
+  .account-agreement-wrap input[type="checkbox"] { appearance: auto; -webkit-appearance: checkbox; width: 17px !important; height: 17px !important; min-height: 17px !important; max-height: 17px !important; flex: 0 0 17px; margin: 0 !important; padding: 0 !important; border: none !important; box-shadow: none !important; background: none !important; cursor: pointer; accent-color: var(--accent); }
+  .account-agreement-wrap label { margin: 0 !important; font-size: 0.8125rem; color: var(--ink-2); cursor: pointer; user-select: none; }
   .account-agreement-link { color: var(--accent); cursor: pointer; text-decoration: underline; font-weight: 600; }
   .account-auth-subtypes { display: flex; gap: 16px; margin: -2px 0 6px; font-size: 0.8125rem; }
   .account-auth-subtypes button { border: none; background: none; color: var(--muted); cursor: pointer; padding: 2px 0; border-bottom: 2px solid transparent; font-weight: 550; }
@@ -1333,7 +1375,7 @@
   .drawer-pane.active { display: block; }
 
   /* 搜索英雄区 */
-  .search-hero { padding: 32px 28px; border: 1px solid var(--line); border-radius: var(--r-xl); background: var(--bg); box-shadow: var(--shadow-xs); }
+  .search-hero { margin: 16px 0 24px; padding: 32px 28px; border: 1px solid var(--line); border-radius: var(--r-xl); background: var(--bg); box-shadow: var(--shadow-xs); }
   .search-kicker { margin-bottom: 12px; color: var(--muted); font-size: .75rem; font-weight: 750; text-transform: uppercase; }
   .search-question { margin: 0 0 20px; font-size: 1.875rem; font-weight: 800; }
   .search-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
@@ -1350,7 +1392,7 @@
   .search-scope { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 14px; color: var(--muted); font-size: .8125rem; }
   .search-index-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin: 32px 0 14px; }
   .search-index-head h3 { margin: 0; font-size: 1.1875rem; font-weight: 750; }
-  .search-results { display: grid; gap: 10px; }
+  .search-results { display: grid; gap: 10px; margin-top: 20px; }
   .search-result, .search-quick {
     width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
     gap: 16px; padding: 16px 18px; border-radius: var(--r-lg); color: var(--ink); cursor: pointer; text-align: left;
@@ -1468,38 +1510,48 @@
     #chatInput { min-width: 0; font-size: 1rem; }
 
     #accountGate {
-      place-items: stretch; padding: 0; overflow: hidden; background: var(--bg); backdrop-filter: none;
+      place-items: stretch; padding: 0; overflow-x: hidden; overflow-y: auto; background: var(--bg); backdrop-filter: none; width: 100vw; max-width: 100vw;
     }
     .account-gate-shell {
-      width: 100%; min-height: 100dvh; display: block; overflow-y: auto;
-      border: 0; border-radius: 0; background: var(--bg); box-shadow: none;
+      width: 100%; max-width: 100vw; min-width: 0; min-height: 100dvh; display: block; overflow-x: hidden; overflow-y: auto;
+      border: 0; border-radius: 0; background: var(--bg); box-shadow: none; box-sizing: border-box;
     }
     .account-gate-context { display: none; }
     .account-gate-panel {
-      width: min(100%, 480px); min-height: 100dvh; margin: 0 auto;
-      justify-content: flex-start; padding: calc(22px + var(--sat)) 24px calc(24px + var(--sab));
+      width: 100%; max-width: 480px; min-width: 0; min-height: 100dvh; margin: 0 auto; box-sizing: border-box; overflow-x: hidden;
+      justify-content: flex-start; padding: max(calc(18px + var(--sat)), 38px) 16px calc(24px + var(--sab));
     }
     .account-gate-mobile-brand {
-      display: flex; align-items: center; gap: 9px; margin-bottom: clamp(44px, 10vh, 76px);
+      display: flex; align-items: center; gap: 9px; margin-bottom: clamp(28px, 6vh, 48px);
       color: var(--ink); font-family: var(--font-display); font-size: 1.0625rem; font-weight: 720;
     }
     .account-gate-mobile-brand .solum-logo-svg { width: 28px; height: 28px; }
     .account-gate-close { top: calc(18px + var(--sat)); right: 18px; }
-    .account-gate-heading { display: flex; flex-direction: column; margin-bottom: 20px; }
-    .account-gate-heading h2 { order: 1; margin: 0 0 9px; font-size: 2rem; line-height: 1.14; }
-    .account-gate-heading p { order: 2; margin: 0; max-width: 25em; font-size: .875rem; line-height: 1.62; }
-    .account-mode-switch { margin-bottom: 22px; }
-    .account-mode-switch button { min-height: 44px; font-size: .875rem; }
-    .account-gate-form { gap: 11px; }
+    .account-gate-heading { display: flex; flex-direction: column; margin-bottom: 16px; }
+    .account-gate-heading h2 { order: 1; margin: 0 0 6px; font-size: 1.85rem; line-height: 1.14; }
+    .account-gate-heading p { order: 2; margin: 0; max-width: 25em; font-size: .875rem; line-height: 1.5; }
+    .account-mode-switch { margin-bottom: 18px; }
+    .account-mode-switch button { min-height: 42px; font-size: .875rem; }
+    .account-gate-form { gap: 10px; width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
     #accountGatePhoneWrap,
     #accountGateEmailWrap,
+    #accountGateCaptchaField,
+    #accountGateEmailCodeField,
     #accountGatePassField,
-    #accountGateConfirmField { display: flex; flex-direction: column; gap: 6px; width: 100%; }
-    .account-gate-form label { margin-top: 3px; font-size: .8125rem; }
-    .account-gate-form input { min-height: 48px; font-size: 1rem; }
-    #accountGateSubmit, #accountGateHuaweiBtn { min-height: 48px; }
-    .account-gate-divider { margin: 12px 0; }
-    .account-gate-foot { max-width: 32em; margin-top: 11px; line-height: 1.62; text-wrap: pretty; }
+    #accountGateConfirmField { display: flex; flex-direction: column; gap: 5px; width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
+    .account-gate-form label { margin-top: 2px; font-size: .8125rem; }
+    .account-gate-form input:not([type="checkbox"]) { min-height: 44px; font-size: 0.9375rem; width: 100%; box-sizing: border-box; }
+    .account-code-header .sms-send-btn { min-height: 32px; height: 32px; font-size: 0.78125rem; padding: 0 10px; }
+    .sms-send-btn { min-height: 44px; font-size: 0.8125rem; padding: 0 10px; flex: 0 0 auto; white-space: nowrap; }
+    .captcha-input-wrap { display: flex; gap: 6px; align-items: center; width: 100%; min-width: 0; box-sizing: border-box; }
+    .captcha-input-wrap input { flex: 1 1 auto; min-width: 0; }
+    .captcha-preview { min-height: 44px; height: 44px; width: 96px; flex: 0 0 96px; box-sizing: border-box; }
+    .captcha-refresh-btn { min-height: 44px; height: 44px; width: 36px; flex: 0 0 36px; padding: 0; box-sizing: border-box; }
+    .sms-code-wrap { display: flex; gap: 6px; align-items: center; width: 100%; min-width: 0; box-sizing: border-box; }
+    .sms-code-wrap input { flex: 1 1 auto; min-width: 0; }
+    #accountGateSubmit, #accountGateHuaweiBtn { min-height: 46px; }
+    .account-gate-divider { margin: 10px 0; }
+    .account-gate-foot { max-width: 32em; margin-top: 10px; line-height: 1.55; text-wrap: pretty; }
   }
 
   @media (max-width: 360px) {
@@ -1880,12 +1932,16 @@
 
     <!-- 数据与备份 -->
     <section class="view" id="view-data"><div class="vwrap">
-      <div class="vhead"><div class="vt"><h2>数据与备份</h2><p class="desc" style="display:block;position:static;box-shadow:none;border:0;padding:0;margin-top:10px;">本地导出与恢复由你主动触发；云端备份始终加密。</p></div></div>
+      <div class="vhead"><div class="vt"><h2>数据与备份</h2><p class="desc" style="display:block;position:static;box-shadow:none;border:0;padding:0;margin-top:10px;">仅支持本地手动文件导入与导出；本地删除数据永久丢失，平台无法找回。</p></div></div>
+      <div class="banner" style="margin:12px 0 16px;">
+        <span class="ic"></span>
+        <div class="grow"><strong>重要提示：</strong>应用所有数据仅保存在本机。如需备份请手动导出；若在本地直接删除数据且无文件备份，数据将永久丢失，无法恢复。</div>
+      </div>
       <div class="data-tools">
-        <button class="data-tool-row" id="exportBtn" type="button"><span class="data-tool-icon" id="exportDataIcon"></span><span class="data-tool-copy"><strong>导出全部数据</strong><small>将本机数据导出为本地备份文件</small></span><span id="exportDataChev"></span></button>
-        <button class="data-tool-row" id="importBtn" type="button"><span class="data-tool-icon" id="importDataIcon"></span><span class="data-tool-copy"><strong>导入本地备份</strong><small>预览后合并恢复，不会直接覆盖现有数据</small></span><span id="importDataChev"></span></button>
+        <button class="data-tool-row" id="exportBtn" type="button"><span class="data-tool-icon" id="exportDataIcon"></span><span class="data-tool-copy"><strong>导出全部数据为本地文件</strong><small>将本机日程、记忆与足迹导出为本地备份 JSON 文件</small></span><span id="exportDataChev"></span></button>
+        <button class="data-tool-row" id="importBtn" type="button"><span class="data-tool-icon" id="importDataIcon"></span><span class="data-tool-copy"><strong>导入本地备份文件</strong><small>从设备中选择备份文件预览后合并恢复</small></span><span id="importDataChev"></span></button>
         <input type="file" id="importFile" accept="application/json,.json" hidden>
-        <button class="data-tool-row" id="openBackupCenterBtn" type="button"><span class="data-tool-icon" id="backupDataIcon"></span><span class="data-tool-copy"><strong>加密云备份</strong><small>手动封缄、查看版本并安全恢复</small></span><span id="backupDataChev"></span></button>
+        <button class="data-tool-row" id="openBackupCenterBtn" type="button" hidden><span class="data-tool-icon" id="backupDataIcon"></span><span class="data-tool-copy"><strong>加密云备份</strong><small>手动封缄、查看版本并安全恢复</small></span><span id="backupDataChev"></span></button>
       </div>
     </div></section>
 
@@ -2320,11 +2376,12 @@
             </div>
             <div class="btnrow">
               <button class="btn" id="recoveryCodeIssueBtn">生成恢复码</button>
+              <button class="btn sm" id="recoveryCodeExplainBtn" type="button">恢复码有啥用？</button>
               <button class="btn" id="accountChangePassBtn">修改密码</button>
               <button class="btn danger-fill sm" id="accountDeleteBtn" title="永久删除个人数据与账号">注销账号</button>
             </div>
             <div class="hint" style="margin:4px 0 0 16px;" id="recoveryCodeHint">
-              恢复码是备用安全钥匙：请抄写并妥善保管。</div>
+              恢复码是端到端离线加密钥匙：用于换设备解开历史本地加密数据；请离线抄写妥善保管。</div>
             <div id="recoveryCodeResult" hidden></div>
             <div id="accountChangePassForm" hidden>
               <div class="fieldrow" style="margin-top:10px;">
@@ -2580,6 +2637,25 @@
         <div id="accountGateEmailWrap">
           <label for="accountGateEmail" id="accountGateEmailLabel">邮箱账号</label>
           <input type="email" id="accountGateEmail" autocomplete="email" placeholder="name@example.com" spellcheck="false" />
+        </div>
+
+        <!-- 注册人机图形验证码（防接口脚本并发刷号） -->
+        <div id="accountGateCaptchaField" hidden>
+          <label for="accountGateCaptcha">图形验证码</label>
+          <div class="captcha-input-wrap">
+            <input type="text" id="accountGateCaptcha" maxlength="10" placeholder="输入计算结果" autocomplete="off" spellcheck="false" />
+            <div class="captcha-preview" id="accountGateCaptchaPreview" title="点击刷新验证码" role="button" tabindex="0" aria-label="图形验证码，点击刷新"></div>
+            <button type="button" class="btn icon captcha-refresh-btn" id="accountGateCaptchaRefreshBtn" title="刷新验证码" aria-label="刷新验证码"></button>
+          </div>
+        </div>
+
+        <!-- 注册邮箱验证码（验证邮箱真实归属） -->
+        <div id="accountGateEmailCodeField" hidden>
+          <div class="account-code-header">
+            <label for="accountGateEmailCode">邮箱验证码</label>
+            <button type="button" class="btn sms-send-btn" id="accountGateSendEmailCodeBtn">获取验证码</button>
+          </div>
+          <input type="text" id="accountGateEmailCode" maxlength="6" autocomplete="one-time-code" placeholder="输入 6 位邮箱验证码" spellcheck="false" />
         </div>
 
         <!-- 密码行 -->

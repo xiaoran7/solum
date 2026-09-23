@@ -429,6 +429,4 @@ impl Store {
         )?;
         self.get_widget_definition(widget_id)
     }
-
-
 }

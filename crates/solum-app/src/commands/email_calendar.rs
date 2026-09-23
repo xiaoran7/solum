@@ -15,7 +15,10 @@ pub(crate) struct SoulousSettings {
 }
 
 #[tauri::command]
-pub(crate) fn soulous_config_get(state: State<AppState>, now: Option<String>) -> CmdResult<SoulousSettings> {
+pub(crate) fn soulous_config_get(
+    state: State<AppState>,
+    now: Option<String>,
+) -> CmdResult<SoulousSettings> {
     require_full_account()?;
     let now = parse_now(now)?;
     let path = soulous_config_file().to_string_lossy().into_owned();
@@ -59,7 +62,9 @@ pub(crate) struct SoulousSaveArgs {
     push_schedule_events: bool,
 }
 
-pub(crate) fn resolve_soulous_args(args: SoulousSaveArgs) -> CmdResult<solum_core::soulous::SoulousConfig> {
+pub(crate) fn resolve_soulous_args(
+    args: SoulousSaveArgs,
+) -> CmdResult<solum_core::soulous::SoulousConfig> {
     let existing = std::fs::read_to_string(soulous_config_file())
         .ok()
         .and_then(|raw| solum_core::soulous::SoulousConfig::from_json(&raw).ok());
@@ -346,7 +351,9 @@ pub(crate) fn email_config_remove(account_id: String) -> CmdResult<EmailSettings
 }
 
 #[tauri::command]
-pub(crate) async fn email_folders(account_id: String) -> CmdResult<Vec<solum_core::email::EmailFolder>> {
+pub(crate) async fn email_folders(
+    account_id: String,
+) -> CmdResult<Vec<solum_core::email::EmailFolder>> {
     let account = email_account_from_config(&account_id)?;
     tauri::async_runtime::spawn_blocking(move || {
         solum_core::email::list_folders(&account).map_err(core_err)
@@ -434,8 +441,8 @@ pub(crate) async fn email_message(
     .map_err(|e| format!("邮件正文后台任务失败: {e}"))?
 }
 
-pub(crate) fn start_email_oauth_callback() -> CmdResult<(String, mpsc::Receiver<CmdResult<EmailOAuthCallback>>)>
-{
+pub(crate) fn start_email_oauth_callback(
+) -> CmdResult<(String, mpsc::Receiver<CmdResult<EmailOAuthCallback>>)> {
     let server = tiny_http::Server::http("127.0.0.1:0")
         .map_err(|e| format!("无法启动本机 OAuth 回调端口: {e}"))?;
     let address = server
@@ -509,7 +516,10 @@ pub(crate) struct EmailOAuthBegin {
 }
 
 #[tauri::command]
-pub(crate) fn email_oauth_begin(state: State<AppState>, account_id: String) -> CmdResult<EmailOAuthBegin> {
+pub(crate) fn email_oauth_begin(
+    state: State<AppState>,
+    account_id: String,
+) -> CmdResult<EmailOAuthBegin> {
     require_full_account()?;
     let account = email_account_from_config(&account_id)?;
     let (redirect_uri, receiver) = start_email_oauth_callback()?;
@@ -592,4 +602,3 @@ pub(crate) async fn email_oauth_poll(
         }
     }
 }
-

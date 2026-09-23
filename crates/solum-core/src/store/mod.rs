@@ -468,19 +468,16 @@ impl Store {
             .execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))
             .expect("remove test tripwire");
     }
-
-
 }
 
-
-mod migrations;
-mod events_notifications;
-mod journal_insights;
-mod widgets_persona;
-mod export_import;
 mod audit_config_capture;
+mod events_notifications;
+mod export_import;
+mod journal_insights;
 mod ledger;
+mod migrations;
 pub(crate) mod sync;
+mod widgets_persona;
 pub(crate) use sync::*;
 
 #[cfg(test)]

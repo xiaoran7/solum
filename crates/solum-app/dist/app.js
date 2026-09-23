@@ -43,6 +43,8 @@ const ACCOUNT_EXPIRY_PATTERN = /登录已过期|认证已过期|当前账号会�
 const ACCOUNT_EXPIRY_BYPASS = new Set([
   "account_login", "account_register", "account_logout", "account_status_get",
   "account_oauth_config_get", "account_oauth_login", "account_recover_login",
+  "account_email_login", "account_email_register", "account_email_send_code", "account_captcha_get",
+  "account_phone_login", "account_phone_register", "account_sms_send", "account_huawei_login",
 ]);
 function isAccountExpiryError(error) {
   return ACCOUNT_EXPIRY_PATTERN.test(String(error || ""));
@@ -267,8 +269,8 @@ function safeUserError(error, fallback) {
   const raw = String(error == null ? "" : error);
   try { console.warn("[solum-ui]", raw); } catch (_) { /* logging is best effort */ }
   if (/state not managed|app_info/i.test(raw)) return "应用状态正在初始化，请重新打开应用。";
-  if (/账号或密码|账号名已经存在|请填写账号和密码|注册密码|登录已过期|重新登录|服务器未开放注册|尝试太频繁/.test(raw)) {
-    return raw.replace(/^.*?(账号或密码不正确|该账号名已经存在|请填写账号和密码|注册密码至少需要 8 个字符。|登录已过期，请重新登录|账号服务器版本过旧：登录结果缺少不可变 user_id，请先升级 solum-cloud|服务器未开放注册或当前操作无权限|尝试太频繁，请稍后再试).*$/s, "$1");
+  if (/账号或密码|账号名已经存在|请填写账号和密码|注册密码|登录已过期|重新登录|服务器未开放注册|尝试太频繁|验证码错误|验证码已失效|图形验证码错误|已被注册/.test(raw)) {
+    return raw.replace(/^.*?(账号或密码不正确|该账号名已经存在|请填写账号和密码|注册密码至少需要 8 个字符。|登录已过期，请重新登录|账号服务器版本过旧：登录结果缺少不可变 user_id，请先升级 solum-cloud|服务器未开放注册或当前操作无权限|尝试太频繁，请稍后再试|图形验证码错误或已过期，请点击刷新重试|邮箱验证码错误或已失效|该邮箱已被注册，请直接登录).*$/s, "$1");
   }
   if (/同步|sync|无法解密|留存窗口/i.test(raw)) return "同步暂时失败，已保留本地数据；请稍后重试。";
   if (/网络|network|transport|tls|ssl|errno|os error|连接|超时|timeout|dns|url|https?:\/\//i.test(raw)) {
@@ -4240,10 +4242,10 @@ async function refreshCapture() {
       const activity = c.last_success
         ? `最近接收 ${fmtDTText(c.last_success)} · 已采用 ${c.accepted_count}`
         : `尚无已采用记录${c.pending_count ? ` · 待确认 ${c.pending_count}` : ""}`;
-      box.appendChild(el("div", { class: "row" }, [
+      box.appendChild(el("div", { class: "capture-connector-row" }, [
         tag(c.status, CAPTURE_AVAIL_KIND[c.availability] || "plain"),
-        el("div", { class: "grow" }, [
-          el("div", { text: c.label }),
+        el("div", { class: "meta-col" }, [
+          el("div", { class: "conn-title", text: c.label }),
           el("div", { class: "meta", text: c.description }),
           el("div", { class: "meta", text: `${runtime} · ${activity} · 敏感度：${c.sensitivity}` }),
           el("div", { class: "meta", text: `平台：Android ${PLATFORM_SUPPORT[c.platforms.android]} / iOS ${PLATFORM_SUPPORT[c.platforms.ios]} / HarmonyOS ${PLATFORM_SUPPORT[c.platforms.harmonyos]}` }),
@@ -4591,7 +4593,7 @@ const LLM_PRESETS = [
     models: [], timeout: 60, temp: "default",
     note: "支持任何兼容 OpenAI 格式的推理服务端点。" },
 ];
-let solumCenterUrl = "https://solum.tannerlab.cn";
+let solumCenterUrl = "https://tannerlab.cn";
 let solumActiveModel = "";
 let llmKeyTail = "";   // 已保存密钥的尾巴（空 = 还没存过 key，保存时必填）
 let llmFormSeeded = false; // 表单只在首次加载/保存后回填，refreshAll 不许覆盖正在编辑的内容
@@ -4687,25 +4689,26 @@ async function refreshCloud() {
     else { $("llmTempMode").value = "custom"; $("llmTempVal").value = s.temperature; }
     llmTempModeSync();
   }
+  // 云端接入已锁定为受保护状态，禁止手动随意修改
+  $("llmPreset").disabled = true;
+  $("llmBase").readOnly = true;
+  $("llmKey").readOnly = true;
+  $("llmModel").readOnly = true;
+  $("llmTempMode").disabled = true;
+  $("llmTempVal").readOnly = true;
+  $("llmMaxTok").readOnly = true;
+  $("llmTimeout").readOnly = true;
+  $("llmSaveBtn").disabled = true;
+  $("llmSaveBtn").title = "云端接入已由系统托管并锁定保护，不允许更改";
+  if ($("llmPresetNote")) {
+    $("llmPresetNote").hidden = false;
+    $("llmPresetNote").textContent = "【系统锁定】云端接入已由平台安全托管并锁定保护，不允许手动更改。";
+  }
 }
 
 $("llmSaveBtn").addEventListener("click", async () => {
-  const args = llmCollect();
-  const bad = llmValidate(args.cfg);
-  if (bad) return toast(bad, "danger");
-  $("llmSaveBtn").disabled = true;
-  try {
-    const summary = await invoke("llm_config_save", args);
-    $("llmKey").value = "";
-    toast("已保存并启用云端配置", "ok");
-    // 页脚状态就地点亮（不动模拟时钟，所以不走 initClock）。
-    $("llmDot").className = "sdot ok";
-    $("llmText").textContent = "云端在线";
-    $("llmRow").title = summary;
-    llmFormSeeded = false;
-    refreshCloud();
-  } catch (e) { toast(safeUserError(e, "云端配置未保存，请稍后重试。"), "danger"); }
-  finally { $("llmSaveBtn").disabled = false; }
+  toast("云端接入已由系统托管并锁定保护，不允许更改", "amber");
+  return;
 });
 
 $("llmTestBtn").addEventListener("click", async () => {
@@ -4877,6 +4880,8 @@ function setAccountGateMode(mode) {
   const smsField = $("accountGateSmsField");
   const passField = $("accountGatePassField");
   const confirmField = $("accountGateConfirmField");
+  const captchaField = $("accountGateCaptchaField");
+  const emailCodeField = $("accountGateEmailCodeField");
 
   // 手机号与短信验证码隐藏，默认优先使用邮箱账号
   if (subtypes) subtypes.style.display = "none";
@@ -4887,12 +4892,17 @@ function setAccountGateMode(mode) {
 
   if (registering) {
     if (confirmField) confirmField.hidden = false;
+    if (captchaField) captchaField.hidden = false;
+    if (emailCodeField) emailCodeField.hidden = false;
     if ($("accountGatePassLabel")) $("accountGatePassLabel").textContent = "设置密码（至少 8 位）";
     if ($("accountGateModeTitle")) $("accountGateModeTitle").textContent = "新用户注册";
     if ($("accountGateSubmit")) $("accountGateSubmit").textContent = "注册并进入";
     if ($("accountGatePass")) $("accountGatePass").autocomplete = "new-password";
+    refreshAccountCaptcha();
   } else {
     if (confirmField) confirmField.hidden = true;
+    if (captchaField) captchaField.hidden = true;
+    if (emailCodeField) emailCodeField.hidden = true;
     if ($("accountGatePassLabel")) $("accountGatePassLabel").textContent = "登录密码";
     if ($("accountGateModeTitle")) $("accountGateModeTitle").textContent = "账号登录";
     if ($("accountGateSubmit")) $("accountGateSubmit").textContent = "登录";
@@ -5246,8 +5256,12 @@ const VIEW_FEATURE_DESCRIPTIONS = {
     desc: "连接您的多台电脑与手机，数据无缝漫游。\n\n• 采用端到端高强度密钥加密\n• 只有您本人的设备拥有解密钥匙",
   },
   descBackup: {
-    title: "备份与恢复",
-    desc: "为您的所有数据创建安全快照副本。\n\n• 一键备份本地全部日程、记忆与资料\n• 支持随时随地完整导入恢复",
+    title: "数据与备份",
+    desc: "仅支持本地手动文件导入与导出。\n\n• 手动导出：将全部日程、记忆与资料打包为本地 JSON 文件\n• 手动导入：选择本地文件校验后安全合并恢复\n• 重要提示：所有数据均仅保存在本机；一旦手动删除或清除本地数据，平台无法为您找回，数据将永久丢失。",
+  },
+  descRecovery: {
+    title: "数据恢复码说明",
+    desc: "恢复码是您本地数据的端到端加密密钥凭证（20 字符），具有极高安全性：\n\n1. 什么是恢复码？\n它是根据安全密码学算法在您设备本地离线生成的唯一密钥信封。息壤遵循零知识架构，服务器绝不保存明文或恢复码。\n\n2. 它有什么用？\n当您更换手机、重新安装应用或忘记密码时，必须使用恢复码才能解开并恢复您的历史本地加密备份数据。\n\n3. 丢失的后果：\n若您忘记密码且丢失了恢复码，由于端到端加密的不可逆性，任何人都无法破解或找回您的加密数据，请务必离线抄写并妥善保存在安全位置。",
   },
   descEmail: {
     title: "邮箱关键事件",
@@ -5555,6 +5569,101 @@ async function sendSmsCode() {
   }
 }
 
+let currentCaptchaId = "";
+let emailCountdownTimer = null;
+
+async function refreshAccountCaptcha() {
+  const preview = $("accountGateCaptchaPreview");
+  const refreshBtn = $("accountGateCaptchaRefreshBtn");
+  if (!preview) return;
+  preview.textContent = "加载中…";
+  if (refreshBtn) refreshBtn.disabled = true;
+  try {
+    const res = await invoke("account_captcha_get", {
+      serverUrl: solumCenterUrl || null,
+    });
+    currentCaptchaId = res.captcha_id;
+    const img = document.createElement("img");
+    img.src = res.image;
+    img.alt = "验证码";
+    preview.textContent = "";
+    preview.appendChild(img);
+    if ($("accountGateCaptcha")) $("accountGateCaptcha").value = "";
+  } catch (e) {
+    preview.textContent = "点击重试";
+    currentCaptchaId = "";
+    toast(safeUserError(e, "获取图形验证码失败"), "warn");
+  } finally {
+    if (refreshBtn) refreshBtn.disabled = false;
+  }
+}
+
+function startEmailCountdown() {
+  let seconds = 60;
+  const btn = $("accountGateSendEmailCodeBtn");
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = `${seconds}s 后重发`;
+  if (emailCountdownTimer) clearInterval(emailCountdownTimer);
+  emailCountdownTimer = setInterval(() => {
+    seconds -= 1;
+    if (seconds <= 0) {
+      clearInterval(emailCountdownTimer);
+      emailCountdownTimer = null;
+      btn.disabled = false;
+      btn.textContent = "获取验证码";
+    } else {
+      btn.textContent = `${seconds}s 后重发`;
+    }
+  }, 1000);
+}
+
+async function sendEmailVerificationCode() {
+  const email = $("accountGateEmail")?.value?.trim() || "";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    toast("请输入有效的邮箱地址", "danger");
+    if ($("accountGateStatus")) $("accountGateStatus").textContent = "请输入有效的邮箱地址";
+    $("accountGateEmail")?.focus();
+    return;
+  }
+  const captcha = $("accountGateCaptcha")?.value?.trim() || "";
+  if (!captcha) {
+    toast("请先输入图形验证码", "warn");
+    if ($("accountGateStatus")) $("accountGateStatus").textContent = "请先输入图形验证码";
+    $("accountGateCaptcha")?.focus();
+    return;
+  }
+  if (!currentCaptchaId) {
+    refreshAccountCaptcha();
+    toast("请等待图形验证码加载完成", "warn");
+    return;
+  }
+
+  const btn = $("accountGateSendEmailCodeBtn");
+  if (btn) btn.disabled = true;
+  try {
+    toast("正在发送邮件验证码…", "info");
+    await invoke("account_email_send_code", {
+      args: {
+        server_url: solumCenterUrl || null,
+        email,
+        captcha_id: currentCaptchaId,
+        captcha_answer: captcha,
+      },
+    });
+    toast("验证码已发送至您的邮箱，请注意查收", "ok");
+    if ($("accountGateStatus")) $("accountGateStatus").textContent = "验证码已发送，10分钟内有效";
+    startEmailCountdown();
+    $("accountGateEmailCode")?.focus();
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    const msg = safeUserError(e, "发送邮件验证码失败，请稍后重试");
+    toast(msg, "danger");
+    if ($("accountGateStatus")) $("accountGateStatus").textContent = msg;
+    refreshAccountCaptcha();
+  }
+}
+
 async function submitAccountGate() {
   if (accountAuthSubmitting || $("accountGateSubmit").disabled) return;
 
@@ -5583,6 +5692,13 @@ async function submitAccountGate() {
   const registering = accountGateMode === "register";
 
   if (registering) {
+    const code = $("accountGateEmailCode")?.value?.trim() || "";
+    if (!code || code.length < 4) {
+      if ($("accountGateStatus")) $("accountGateStatus").textContent = "请输入 6 位邮箱验证码。";
+      $("accountGateEmailCode")?.focus();
+      return;
+    }
+
     const confirm = $("accountGateConfirm")?.value || "";
     if (Array.from(password).length < 8) {
       if ($("accountGateStatus")) $("accountGateStatus").textContent = "密码至少需要 8 个字符。";
@@ -5605,14 +5721,26 @@ async function submitAccountGate() {
           server_url: solumCenterUrl || null,
           email,
           password,
+          code,
           model: solumActiveModel || "gemini-3.8-flash-high",
         },
       });
-      if ($("accountGateStatus")) $("accountGateStatus").textContent = "注册成功，正在进入…";
+      toast("注册成功，正在进入…", "ok");
+      if ($("accountGateStatus")) $("accountGateStatus").textContent = "正在进入空间…";
+      accountLoggedIn = true;
+      if (typeof closeAccountGate === 'function') closeAccountGate();
+      accountFormSeeded = false;
+      try {
+        await refreshAccount();
+        await refreshCloud();
+        await refreshSyncConfig();
+        await refreshSyncStatus();
+      } catch (_) {}
     } catch (e) {
       if ($("accountGateStatus")) $("accountGateStatus").textContent = safeUserError(e, "注册失败，请检查网络后重试。");
       $("accountGateSubmit").disabled = false;
       $("accountGateSubmit").textContent = "注册并进入";
+      refreshAccountCaptcha();
     } finally {
       accountAuthSubmitting = false;
     }
@@ -5630,7 +5758,17 @@ async function submitAccountGate() {
           model: solumActiveModel || "gemini-3.8-flash-high",
         },
       });
-      if ($("accountGateStatus")) $("accountGateStatus").textContent = "登录成功，正在进入…";
+      toast("登录成功，正在进入…", "ok");
+      if ($("accountGateStatus")) $("accountGateStatus").textContent = "正在进入空间…";
+      accountLoggedIn = true;
+      if (typeof closeAccountGate === 'function') closeAccountGate();
+      accountFormSeeded = false;
+      try {
+        await refreshAccount();
+        await refreshCloud();
+        await refreshSyncConfig();
+        await refreshSyncStatus();
+      } catch (_) {}
     } catch (e) {
       if ($("accountGateStatus")) $("accountGateStatus").textContent = safeUserError(e, "邮箱或密码不正确。");
       $("accountGateSubmit").disabled = false;
@@ -5679,10 +5817,14 @@ if ($("profileSheetStatusIcon")) {
 
 
 $("accountGatePrivacyIcon")?.appendChild(icon("lock", 20));
+$("accountGateCaptchaRefreshBtn")?.appendChild(icon("refresh", 16));
 $("accountGateLoginTab")?.addEventListener("click", () => setAccountGateMode("login"));
 $("accountGateRegisterTab")?.addEventListener("click", () => setAccountGateMode("register"));
 $("accountSubtypeCodeBtn")?.addEventListener("click", () => setAccountLoginSubtype("code"));
 $("accountSubtypePassBtn")?.addEventListener("click", () => setAccountLoginSubtype("pass"));
+$("accountGateCaptchaPreview")?.addEventListener("click", refreshAccountCaptcha);
+$("accountGateCaptchaRefreshBtn")?.addEventListener("click", refreshAccountCaptcha);
+$("accountGateSendEmailCodeBtn")?.addEventListener("click", sendEmailVerificationCode);
 $("accountGateSendSmsBtn")?.addEventListener("click", sendSmsCode);
 $("accountGateSubmit")?.addEventListener("click", submitAccountGate);
 $("accountGateHuaweiBtn")?.addEventListener("click", startHuaweiLogin);
@@ -5702,6 +5844,26 @@ $("accountGatePhone")?.addEventListener("keydown", (event) => {
   }
 });
 $("accountGateEmail")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    if (accountGateMode === "register") {
+      $("accountGateCaptcha")?.focus();
+    } else {
+      $("accountGatePass")?.focus();
+    }
+  }
+});
+$("accountGateCaptcha")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    if (!$("accountGateEmailCode")?.value) {
+      sendEmailVerificationCode();
+    } else {
+      $("accountGatePass")?.focus();
+    }
+  }
+});
+$("accountGateEmailCode")?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
     $("accountGatePass")?.focus();
@@ -5804,14 +5966,15 @@ function openTermsOfService() {
       <p>版本生效日期：2026年9月</p>
       <p>欢迎使用由 Solum 团队提供的本地优先智能工作台服务。在您开始使用前，请仔细阅读本《用户服务协议》（以下简称“本协议”）。当您勾选同意并注册、登录或使用本软件时，即表示您已充分理解并同意接受本协议的全部条款。</p>
       <p><strong>一、服务原则与架构</strong><br>
-      1.1 本软件遵循“本地优先（Local-first）、端到端加密、最小必要原则”。您的个人记账、日程日记、未开启同步的会话等数据默认持久化保存在您的本地物理设备中。<br>
-      1.2 当您选择使用云端同步备份或 AI 智能助手时，数据会在本地经过高强度密钥加密后传输，服务器端仅作为密文存储，无法查看、还原您的明文敏感信息。</p>
+      1.1 本软件严格遵循“本地优先（Local-first）、零数据上传、最小必要原则”。您的个人记账、日程安排、日记足迹、灵感记忆等所有核心数据仅持久化保存在您的本地物理设备中。<br>
+      1.2 本应用不提供自动云端存储或多端云漫游服务，仅支持您在「数据与备份」中自主手动导出或导入本地备份文件。<br>
+      1.3 <strong>【特别重要提醒·永久丢失免责】</strong>因为所有数据均只保存在您的本地设备中，若您主动删除数据、卸载应用或清理系统缓存而未提前进行本地手动导出备份，<strong>该部分数据将永久彻底丢失，且本平台与技术服务提供方在技术上完全无法为您恢复，由此造成的任何损失需由您自行承担。</strong></p>
       <p><strong>二、账号注册与使用</strong><br>
       2.1 根据国家关于互联网用户账号信息管理的法律法规要求，您应当使用合法、有效的手机号码进行注册与实名认证，或使用通过官方认证的华为账号快捷登录。<br>
-      2.2 您应妥善保管自己的登录账号、密码以及数据端到端加密恢复码。因您个人原因导致的凭证泄露或恢复码遗失，相关加密数据可能无法恢复，本平台对此不承担责任。</p>
+      2.2 您应妥善保管自己的登录账号、密码以及数据端到端加密恢复码。恢复码是在本地生成的唯一密钥凭据，中心服务器不予存储。因您个人原因导致的凭证泄露、误删或恢复码遗失，加密数据将永久无法解开或恢复，本平台对此不承担责任。</p>
       <p><strong>三、账号注销与数据清除</strong><br>
       3.1 您享有随时注销账号的权利。您可以在「设置 → Solum 账号」中点击「注销账号」自主发起注销流程。<br>
-      3.2 账号注销完成后，我们在云端为您存储的所有加密备份文件、设备关联凭证与账号信息将立即被永久彻底物理删除，且不可恢复。</p>
+      3.2 账号注销完成后，我们在云端为您存储的设备关联凭证与账号信息将立即被永久彻底物理删除，且不可恢复。</p>
       <p><strong>四、用户行为规范</strong><br>
       您在使用本软件过程中不得利用本服务制作、复制、发布、传播违反国家法律法规、危害国家安全、侵犯他人合法权益的内容。</p>
     </div>`
@@ -5828,13 +5991,13 @@ function showPrivacyPolicyModal() {
       <p><strong>1. 我们如何收集和使用信息</strong><br>
       • <strong>手机号码</strong>：用于账号注册、登录身份核验以及短信验证码发送。<br>
       • <strong>华为账号授权</strong>：若您选择华为账号登录，我们仅获取您的华为账号 OpenID/UnionID 及基础公开昵称用于绑定账号。<br>
-      • <strong>设备信息与网络权限</strong>：仅用于维持多端设备加密同步状态与云端智能通信。<br>
-      • <strong>本地工作数据</strong>：您的日常日记、财务记账明细、个人通知等数据默认留在本机，未经您主动开启云端同步不会上传任何明文。</p>
+      • <strong>本地工作数据与免责</strong>：您的日常日记、财务记账明细、个人通知、灵感记忆等数据<strong>完全留在本机存储</strong>，应用不设云端自动同步，仅支持用户手动在本地导出与导入文件。<strong>【郑重提示】若您在本地删除了数据且未手动留存备份，数据将永久彻底丢失，服务器无任何明文或密文备份，平台完全无法恢复，请务必妥善做好重要数据的本地手动备份。</strong><br>
+      • <strong>云端推理接入</strong>：云端 AI 接入配置由系统预设托管且处于锁定保护状态，仅用于与安全网关通信以提供智能推理能力，不会沉淀或转存您的私人数据。</p>
       <p><strong>2. 权限使用说明</strong><br>
       • 通知权限：用于待办事项、日程与关键健康提醒在设备本地准时唤醒推送。<br>
-      • 网络权限：用于登录认证、拉取大模型智能回复以及加密备份的上传下载。</p>
+      • 网络权限：用于登录认证以及向安全 AI 网关拉取大模型智能回复。</p>
       <p><strong>3. 您的权利</strong><br>
-      您可以随时在应用内查看、导出您的所有数据，并可以随时在设置中一键注销您的账户与删除全部云端存储。</p>
+      您可以随时在应用内查看、通过本地文件手动导出您的所有数据，并可以随时在设置中一键注销您的账户。</p>
     </div>`
   );
 }
@@ -5865,7 +6028,7 @@ async function startHuaweiLogin() {
     return;
   }
 
-  const serverUrl = solumCenterUrl || "https://solum.tannerlab.cn";
+  const serverUrl = solumCenterUrl || "https://tannerlab.cn";
   let autoCheckTimer = null;
   let onVisibilityChange = null;
   const statusEl = $("accountPassportStatus") || $("accountGateStatus");
@@ -6095,6 +6258,28 @@ async function maybeShowPendingRecoveryCode() {
     toast("恢复码已确认保存", "ok");
   }, { okStyle: "primary" });
 }
+
+function showRecoveryCodeExplanation() {
+  openInfoModal(
+    "恢复码有啥用？（端到端数据钥匙）",
+    `<div style="line-height:1.8;font-size:0.9rem;color:var(--ink-2);max-height:60vh;overflow-y:auto;padding-right:6px;">
+      <h4 style="margin:0 0 10px;color:var(--ink);">什么是恢复码？（20 字符）</h4>
+      <p>息壤（Solum）采用严格的<strong>零知识端到端加密（E2EE）</strong>架构。恢复码是在您设备本地离线生成的唯一一把<strong>主解密私钥信封</strong>。</p>
+      <h4 style="margin:12px 0 6px;color:var(--ink);">它到底有什么用？</h4>
+      <p><strong>1. 更换新设备登录时解密数据：</strong><br>
+      当您换新手机或在新电脑上登录账号时，云端存储的仅为高强度加密的乱码密文。只有输入这串 20 字符恢复码，才能在本地解开您的记忆、日程与资料，完成数据无缝恢复。</p>
+      <p><strong>2. 忘记密码时紧急找回：</strong><br>
+      如果您遗忘了账号登录密码，恢复码是唯一的紧急通道，可直接凭恢复码重置密码并恢复本地空间。</p>
+      <h4 style="margin:12px 0 6px;color:var(--ink);color:var(--danger,#c53030);">【极其重要】如果不保存会有什么后果？</h4>
+      <p>息壤团队与中心服务器<strong>绝不保存、也无法查看您的恢复码</strong>。<br>
+      若您遗忘了密码，且<strong>没有备份恢复码</strong>，根据密码学原理，任何人都无法为您破解或恢复加密数据，您所记录的本地数据将<strong>永久无法找回</strong>！</p>
+      <p style="margin-top:10px;padding:8px 12px;background:var(--bg-card,#f7fafc);border-radius:6px;border:1px solid var(--line);">
+        💡 <strong>强烈建议：</strong>生成后立即抄写在实体纸笔上放入钱包，或妥善存入 1Password / Bitwarden / 手机备忘录等安全密码管理器中。
+      </p>
+    </div>`
+  );
+}
+$("recoveryCodeExplainBtn")?.addEventListener("click", showRecoveryCodeExplanation);
 
 function setRecoverMode(on) {
   $("accountLoginForm").hidden = on || accountLoggedIn;
@@ -6795,10 +6980,7 @@ const SETTINGS_GROUP = {
       ["journal",     "行为足迹",   "memory", "回顾互动、状态记录与生活轨迹"],
       ["wearable",    "健康趋势",   "gauge",  "查看本地健康传感器的阶段趋势"],
       ["review",      "复盘简报",   "doc",    "按时间范围生成阶段性回顾"],
-      ["data",        "数据与备份", "folder", "本地导出、合并恢复与加密云备份"],
-      ["sync",        "同步",       "refresh", "多设备账户与同步状态"],
-      ["backup",      "备份与恢复", "lock",   "手动加密封缄、版本历史与恢复接管"],
-      ["cloud",       "云端接入",   "cloud",  "LLM 端点配置与 Soulous 互通"],
+      ["data",        "数据与备份", "folder", "仅限本地手动文件导入与导出，丢失自负"],
       ["rules",       "重要度规则", "rules",  "按事件类型设置提前提醒与通知渠道"],
       ["guard",       "高危护栏",   "shield", "可用工具、审计日志与确认流程演示"],
     ],

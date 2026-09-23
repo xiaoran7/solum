@@ -28,7 +28,10 @@ pub(crate) struct RestorePublicationPreview {
     has_existing_data: bool,
 }
 
-pub(crate) fn validate_live_webview_summary(summary: &LiveWebViewSummary, profile_id: &str) -> CmdResult<()> {
+pub(crate) fn validate_live_webview_summary(
+    summary: &LiveWebViewSummary,
+    profile_id: &str,
+) -> CmdResult<()> {
     let total = summary
         .chat_sessions
         .checked_add(summary.chat_messages)
@@ -383,4 +386,3 @@ pub(crate) async fn llm_config_test(cfg: LlmSaveArgs) -> CmdResult<LlmTestResult
     .await
     .map_err(|e| format!("测试线程失败: {e}"))?
 }
-

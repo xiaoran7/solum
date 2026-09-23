@@ -809,6 +809,4 @@ impl Store {
             .optional()?;
         Ok(v.and_then(|s| s.parse().ok()).unwrap_or(0))
     }
-
-
 }

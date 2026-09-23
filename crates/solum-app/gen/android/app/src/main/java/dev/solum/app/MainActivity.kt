@@ -302,10 +302,21 @@ class MainActivity : TauriActivity() {
 
   /** Relaunch the Tauri process after an account/profile boundary change. */
   fun restartApp() {
-    val launchIntent = packageManager.getLaunchIntentForPackage(packageName) ?: return
-    val component = launchIntent.component ?: return
-    val restartIntent = Intent.makeRestartActivityTask(component)
-    startActivity(restartIntent)
-    Runtime.getRuntime().exit(0)
+    try {
+      val launchIntent = packageManager.getLaunchIntentForPackage(packageName) ?: return
+      val component = launchIntent.component ?: return
+      val restartIntent = Intent.makeRestartActivityTask(component).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+      }
+      startActivity(restartIntent)
+      android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+        try {
+          android.os.Process.killProcess(android.os.Process.myPid())
+        } catch (_: Exception) {}
+        System.exit(0)
+      }, 500)
+    } catch (e: Exception) {
+      android.util.Log.e("SolumApp", "Failed to restartApp: ${e.message}", e)
+    }
   }
 }

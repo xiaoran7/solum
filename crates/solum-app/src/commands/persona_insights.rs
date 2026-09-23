@@ -22,7 +22,10 @@ pub(crate) fn checkin_resp(question: String) -> CheckinResp {
 /// Manual check-in probe against the UI clock (the resident ticker does the
 /// same automatically on the system clock).
 #[tauri::command]
-pub(crate) fn checkin_now(state: State<AppState>, now: Option<String>) -> CmdResult<Option<CheckinResp>> {
+pub(crate) fn checkin_now(
+    state: State<AppState>,
+    now: Option<String>,
+) -> CmdResult<Option<CheckinResp>> {
     require_full_account()?;
     let now = parse_now(now)?;
     Ok(lock!(state)
@@ -111,7 +114,11 @@ pub(crate) fn routine_update(
 
 /// D4「一键已完成」：确认某条 routine 今天完成了（落行为日志，按日去重）。
 #[tauri::command]
-pub(crate) fn routine_done(state: State<AppState>, id: i64, now: Option<String>) -> CmdResult<String> {
+pub(crate) fn routine_done(
+    state: State<AppState>,
+    id: i64,
+    now: Option<String>,
+) -> CmdResult<String> {
     require_full_account()?;
     let now = parse_now(now)?;
     lock!(state).confirm_routine(id, now).map_err(core_err)
@@ -174,7 +181,10 @@ pub(crate) async fn review(
 
 /// Build today's read-only focus brief for an on-demand UI refresh.
 #[tauri::command]
-pub(crate) fn daily_brief(state: State<AppState>, now: Option<String>) -> CmdResult<solum_core::brief::Brief> {
+pub(crate) fn daily_brief(
+    state: State<AppState>,
+    now: Option<String>,
+) -> CmdResult<solum_core::brief::Brief> {
     require_full_account()?;
     let now = parse_now(now)?;
     lock!(state).daily_brief(now).map_err(core_err)
@@ -272,4 +282,3 @@ pub(crate) fn persona_rollback(state: State<AppState>, version: i64) -> CmdResul
     require_full_account()?;
     lock!(state).rollback_persona(version).map_err(core_err)
 }
-

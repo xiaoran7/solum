@@ -442,6 +442,4 @@ impl Store {
         )?;
         Ok(n as usize)
     }
-
-
 }

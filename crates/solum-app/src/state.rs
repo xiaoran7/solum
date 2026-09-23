@@ -18,7 +18,10 @@ macro_rules! lock {
             .orch
             .lock()
             .map_err(|_| "内部状态异常（锁中毒）".to_string())?;
-        if $state.account_transition.load(std::sync::atomic::Ordering::Acquire) {
+        if $state
+            .account_transition
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             return Err("Solum profile is switching; reopen the app to continue".to_string());
         }
         guard

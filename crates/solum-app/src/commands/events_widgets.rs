@@ -143,7 +143,9 @@ pub(crate) fn widget_discard_preview(state: State<AppState>, preview_id: String)
 }
 
 #[tauri::command]
-pub(crate) fn widget_defs(state: State<AppState>) -> CmdResult<Vec<solum_core::widget::WidgetDefinition>> {
+pub(crate) fn widget_defs(
+    state: State<AppState>,
+) -> CmdResult<Vec<solum_core::widget::WidgetDefinition>> {
     require_full_account()?;
     lock!(state).widget_definitions().map_err(core_err)
 }
@@ -259,7 +261,10 @@ pub(crate) fn due(state: State<AppState>, now: Option<String>) -> CmdResult<Vec<
 }
 
 #[tauri::command]
-pub(crate) fn fire_due(state: State<AppState>, now: Option<String>) -> CmdResult<Vec<Notification>> {
+pub(crate) fn fire_due(
+    state: State<AppState>,
+    now: Option<String>,
+) -> CmdResult<Vec<Notification>> {
     let now = parse_now(now)?;
     let mut o = lock!(state);
     o.materialize_routines(now).map_err(core_err)?;
@@ -297,7 +302,12 @@ pub(crate) fn event_reschedule(
 /// time (formatted). The Android alarm mirror converges on the next ticker
 /// pass like any other pending-set change.
 #[tauri::command]
-pub(crate) fn snooze(state: State<AppState>, id: i64, minutes: i64, now: Option<String>) -> CmdResult<String> {
+pub(crate) fn snooze(
+    state: State<AppState>,
+    id: i64,
+    minutes: i64,
+    now: Option<String>,
+) -> CmdResult<String> {
     let now = parse_now(now)?;
     let until = lock!(state).snooze(id, minutes, now).map_err(core_err)?;
     Ok(solum_core::model::fmt_ts(&until))
@@ -419,7 +429,9 @@ pub(crate) fn require_current_privacy_consent() -> CmdResult<()> {
     Ok(())
 }
 
-pub(crate) fn backup_master_key(account: &solum_core::account::AccountSession) -> CmdResult<[u8; 32]> {
+pub(crate) fn backup_master_key(
+    account: &solum_core::account::AccountSession,
+) -> CmdResult<[u8; 32]> {
     let config = solum_core::sync::SyncConfig::load()
         .ok_or_else(|| "尚未配置端到端主密钥，无法创建加密备份".to_string())?;
     let bound = config
@@ -435,7 +447,10 @@ pub(crate) fn backup_master_key(account: &solum_core::account::AccountSession) -
     config.e2ee_master_key().map_err(core_err)
 }
 
-pub(crate) fn require_backup_delete_is_not_in_restore(state: &AppState, args: &str) -> CmdResult<()> {
+pub(crate) fn require_backup_delete_is_not_in_restore(
+    state: &AppState,
+    args: &str,
+) -> CmdResult<()> {
     let request: solum_core::backup_download::BackupDeleteRequest =
         serde_json::from_str(args).map_err(|_| "备份删除参数无效".to_string())?;
     solum_core::backup_download::validate_backup_delete_request(&request)
@@ -469,4 +484,3 @@ pub(crate) fn require_backup_delete_is_not_in_restore(state: &AppState, args: &s
     }
     Ok(())
 }
-

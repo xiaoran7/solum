@@ -1,8 +1,8 @@
-use std::io::{BufRead, Write};
 use anyhow::{anyhow, Context, Result};
 use chrono::{Local, NaiveDate, NaiveDateTime, Timelike};
 use solum_core::model::MemoryLayer;
 use solum_core::Orchestrator;
+use std::io::{BufRead, Write};
 
 /// Preview first; EOF, blank input, and anything except an explicit `yes`
 /// cancel without minting a token. Re-read the clock after the user responds.
