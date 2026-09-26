@@ -1,5 +1,15 @@
 # Solum Changelog
 
+## 2026-09-26 — store/tests.rs 按关注点拆为 15 个分节
+
+- `crates/solum-core/src/store/tests.rs`（1465 行）按被测关注点切为 `store/tests/` 下 15 个文件，与 `store/` 的源码分节一一对应：`widget_sync`(433) / `quarantine`(159) / `open_adopt`(119) / `crud`(114) / `legacy_capture`(107) / `migrations`(169) / `ledger_pages`(87) / `errors`(86) / `audit_config`(84) / `sync_core`(80) / `events`(13) / `ledger`(31) / `blobs`(27) / `health`(25) / `fixtures`(16，共享 `scratch` 夹具)，`mod.rs` 保留原文档头与归位的 import。文件内部保持原顺序，只做移动。
+- 38 个 `#[test]` 全部保留，测试函数名逐一比对完全一致（拆分前后 diff 为空）。
+- 跨文件共享物：原单文件顶部的 `use super::*;` / `Decision` / `EventKind, RiskLevel` / `NaiveDate` 提到 `tests/mod.rs`，因为兄弟文件只能经 `use super::*;` 触达；8 个共享夹具（`scratch`/`dt`/`sample_event`/`course_draft`/`push_all`/`optional_field`/`park`/`event_payload`）随其首个使用场景留在对应分节，消费方显式 `use super::<分节>::夹具;`。
+- 等价性硬证据：15 个分节逐一按 token 流（标识符/字符串/字符/裸串 + 逐字符标点）与拆分前 `tests.rs` 比对，全部一致；只允许可见性放开、`use` 归位与 rustfmt 换行。`mod.rs` 那一段不参与 token 比对（条目都在分节里），改为断言 4 条 import 逐字存在且顺序不变。
+- 可见性注意：这 8 个夹具**拆分前就是 `pub(crate)`**，只是原先在同一模块内用不到那么宽；拆到兄弟模块后才降为 `pub(super)`。等价性核对脚本因此不能只"删掉 `pub(...)`"——那会连带抹掉拆分前就有的 `pub(crate)`，脚本现按 `名字:拆分前可见性` 显式声明并还原。
+- 脚本本身做了反向验证：往分节里塞一条多余语句、改一个测试函数名，核对脚本均报错退出；只删一行 `use` 则不报——那一行本就在允许的差异内，不该算失配。
+- 验证：Rust workspace 487 通过、0 失败（与拆分前基线一致）；`cargo fmt --all --check` 通过；`solum-core` clippy 零告警；`check-frontend.mjs` 与 47 模块加载守卫通过；**暂存区单独导出后 `cargo test -p solum-core --lib` 441 通过**，确认提交的树自身可编译（上一轮 `5c840d1` 曾漏暂存 mod.rs 而发出版本不可编译的树）。
+
 ## 2026-09-26 — orchestrator/tests.rs 按关注点拆为 15 个分节
 
 - `crates/solum-core/src/orchestrator/tests.rs`（2724 行）按被测关注点切为 `orchestrator/tests/` 下 15 个文件：`capture`(487)、`routines`(448)、`import`(286)、`notif_privacy`(286)、`guard_memory`(232)、`llm_first`(164)、`widgets`(156)、`llm`(119)、`reminders`(113)、`persona`(113)、`scene_wellness`(138)、`review_suggest`(87)、`genui`(52)、`health`(29)、`head`(14，共享 `dt`/`now` 夹具)。文件内部保持原顺序，只做移动。
