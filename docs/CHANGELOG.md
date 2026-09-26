@@ -1,5 +1,19 @@
 # Solum Changelog
 
+## 2026-09-26 — solum-app 的 commands/account.rs 拆为分节模块
+
+- `crates/solum-app/src/commands/account.rs`（1288 行，26 条 tauri 命令）按命令族切成 `account/` 下 6 个分节：`sms_email`(381，挡在请求与账户之间的几道门：短信验证码、图形验证码、邮箱验证码注册与登录、手机号注册与登录) / `logout`(263，退出、服务端删号、恢复码：状态、签发、跨重启的一次性交接、用恢复码登录) / `login`(260，对着自建 solum-cloud 登录与注册，以及 OAuth 授权码路径与外部浏览器跳转) / `session`(207，会话本身：设置页要的状态、尚未接管的会话的撤销调度、换一个 profile 的重启) / `huawei`(128，华为账号路径) / `settings`(83，需要活会话的两项设置：改密码、选模型)，`mod.rs`(33) 保留原 imports、章节横幅与 6 组 `pub(crate)` 转出。纯移动，无逻辑改动。
+- 这是 Phase 4 里**第一个 `solum-app` 的文件**，也逼出了工具链上一类全新的空缺：这里的每个条目都是 `pub(crate) async fn`，而整套脚本此前只认同步的顶层项。
+- 等价性硬证据：7 个分节逐一按 token 流与拆分前 `account.rs` 比对，全部一致；只允许 `use` 归位、字段可见性放开与 rustfmt 换行。`mod.rs` 改为断言原文件那 1 条 import 一条不缺。脚本经反向验证（删一条语句被拒；本文件无 `#[cfg(test)]` 套件，"改测试函数名"这一项直接跳过而不是报设置失败——控制组要证明的是"能咬人"，一项咬住就够）。
+- 工具四处真实缺陷，全部是这次新文件类型暴露的：
+  - **加宽表的正则不认 `async`/`unsafe`**。它们位于可见性与关键字之间，漏掉就对每个 `async fn` 都匹配不到，报"找不到该声明"——而函数就在文件里。加宽时构造新签名一律改用具名捕获组：位置捕获组的下标会随着模式的改动整体位移，一次改动就把修饰符写到了关键字该在的位置。
+  - **"条目都在"这一检查把集合当成了多重集**。`restart_account_app` 在原文件里声明**两次**——`#[cfg(target_os = "android")]` 一份、其余平台一份——这是两个平台各自的定义，不是重复。旧的"同名即报错"在这里报成接线 bug。改为**按原文件的声明次数核对**，多出才是重复，少了才是丢失。
+  - **模块头可以没有 `//!` 文档头**。本文件以 `use super::*;` 开头、随后是一行 `//` 横幅；原来"找不到文档头"直接抛错，把拆分卡死。文档头现在是可选的，没有就不恢复。
+  - **装配脚本里新写的"跳过文件头部"循环没有上界**。走到文件末尾后 `split("\n", 1)[0]` 恒为 `""`，而 `""` 匹配空行判断，`after` 无限增长——脚本挂住不报错，比报错更难查。已按长度收敛。
+- **re-export 不能省**：`commands/mod.rs` 里是 `pub(crate) use account::*;`，而 glob **不会递归进子模块**，所以 26 条命令全都必须从 `account/mod.rs` 转出，否则 `lib.rs` 的 `generate_handler!` 一条都找不到。这 9 个参数结构体（`AccountOAuthLoginArgs` 等）则**不能**转出：它们只是 tauri 宏的反序列化目标，crate 内无人按名引用，转出后 `pub(crate) use` 自身变成未使用，clippy 报 3 条新告警。基线只有 2 条告警，拆分后必须仍是 2 条——为此专门把工作区导出到干净 HEAD 复测过基线，而不是凭印象。
+- 可见性只放开一处：`AccountHuaweiLoginArgs`（声明在 `sms_email`，被 `huawei` 用）的 5 个私有字段。**结构体本身是 `pub(crate)`、字段却是私有的**——等价性脚本的撤销表因此需要 `名字:fields` 这一形式：只撤字段的加宽，不动结构体自己的可见性；沿用 `:crate` 会把 `pub(crate)` 一并还原到字段上，多出三个 token。
+- 验证：Rust workspace 487 通过、0 失败（与基线一致）；`cargo fmt --all --check` 通过；clippy 回到基线的 2 条告警（`profile.rs` 的 `tauri::Manager`、`commands/privacy_capture.rs` 的 `chrono::TimeZone`，均为本会话之外的既有改动）；`check-frontend.mjs` 与 47 模块加载守卫通过。
+
 ## 2026-09-26 — solum-core 的 soulous.rs 拆为分节模块
 
 - `crates/solum-core/src/soulous.rs`（1150 行）按职责切成 `soulous/` 下 6 个分节加 `tests`：`http`(288，HTTP 接缝：trait、ureq 实现、配置好的拉取/推送入口) / `parse`(191，把 Soulous 的 JSON 变成 fact：字段读取、时间与截止日期解析、每个端点一个解析器) / `domain`(203，Solous 眼中的 Soulous 领域：五个来源、fact、考试权重、派生状态与建议) / `tests`(235) / `push`(105，出站事件推送：离开设备的最小结构化投影与发送前的预览) / `review`(64，交给云端改写的本地 F14 复习材料) / `config`(86，存下来的 Soulous 连接：来源常量与 `SoulousConfig`)，`mod.rs` 保留原文档头、imports 与 5 组对外转出。纯移动，无逻辑改动。
