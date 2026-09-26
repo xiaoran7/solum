@@ -1,5 +1,12 @@
 # Solum Changelog
 
+## 2026-09-26 — solum-core 的 llm.rs 拆为分节模块
+
+- `crates/solum-core/src/llm.rs`（1446 行）切成 `llm/` 下 7 个模块：`tests`(558) / `prompts`(263，网关提示与聊天上下文) / `reasoner`(153) / `config`(99，连接设置) / `streaming`(93，SSE 与 think 过滤) / `parse`(80，响应解析) / `extract`(74，事件抽取)，`mod.rs`(150) 保留文档头、imports、工具协议常量与组件工具定义。纯移动，无逻辑改动。
+- 等价性硬证据：8 个分节逐一按 token 流与拆分前 `llm.rs` 比对，全部一致；只允许 4 处 `pub(super)` 可见性放开与 rustfmt 换行。
+- 可见性对齐原文件：`parse` 与 `streaming` 的项原本就是 `pub(crate)`，`mod.rs` 的 re-export 因此是 `pub(crate) use` 而非 `pub use`——写成 `pub` 会成为空转 glob，clippy 报 "no imported item is public enough"。`streaming.rs` 不引用父模块任何名字，其 `use super::*;` 是死导入，已删。
+- 验证：Rust workspace 487 通过、0 失败（与基线一致）；`cargo fmt --all --check` 通过；`solum-core` clippy 零告警；`check-frontend.mjs` 与 47 模块加载守卫通过。
+
 ## 2026-09-26 — solum-core 的 account.rs 拆为分节模块
 
 - `crates/solum-core/src/account.rs`（2145 行）按职责切成 `account/` 下 6 个模块：`session`(350，会话落盘 + 跨进程文件锁 + 响应解析) / `flows`(676，邮箱/手机/OAuth/华为/验证码等注册登录与刷新) / `tests`(697) / `reasoner`(161，走账号代理的 Reasoner) / `authenticate`(140) / `http`(97，HTTP 抽象与 ureq 实现)，`mod.rs`(42) 保留文档头与 imports。纯移动，无逻辑改动。
