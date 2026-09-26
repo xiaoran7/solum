@@ -1,6 +1,6 @@
 # Solum（息壤）
 
-Local-first Personal Agent：把输入、日程、提醒、记忆、行为日志和建议保存在本机 SQLite，云端只承担账号、端到端加密同步、福利告警和经鉴权的可选 AI。当前工作区版本 `0.2.16`，Android `versionCode 1026`；以根 `Cargo.toml` 和 `crates/solum-app/tauri.conf.json` 为准。
+Local-first Personal Agent：把输入、日程、提醒、记忆、行为日志和建议保存在本机 SQLite，云端只承担账号、端到端加密同步、福利告警和经鉴权的可选 AI。版本以根 `Cargo.toml` 和 `crates/solum-app/tauri.conf.json` 为准。
 
 本目录是 Android/桌面、共享 Rust core 与服务端的主仓。HarmonyOS 位于独立 Git 仓 `../harmony`，父目录 `Project/solum` 不是仓库；两仓必须分别检查、测试、提交和推送。
 

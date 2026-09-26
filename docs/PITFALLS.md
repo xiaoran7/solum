@@ -3,7 +3,7 @@
 ## 构建与仓库
 
 - 不搬运 `target/`：Cargo/Tauri 产物含绝对路径和旧权限元数据；迁移工作区后先干净重建。
-- Windows 不用 `>` 生成 SQLite/二进制或多行源码；避免产生 `nul`。临时文件放仓库外。
+- Windows 不用 `>` 生成 SQLite/二进制或多行源码；避免产生 `nul`。临时文件放项目内忽略的 `_scratch/`。
 - Android 交叉编译保持 rustls/纯 Rust 依赖，新增 crate 前检查 native C/OpenSSL 链。
 - Android 与 HarmonyOS 是独立 Git 仓，不能从父目录操作或跨仓一次提交。
 
@@ -37,8 +37,8 @@
 - 无本地 Postgres/Docker 时，可在 VPS 起 `--rm` Postgres 容器（仅绑 127.0.0.1）+ SSH 隧道跑集成测试，用后即删。
 - **服务端 LLM Upstream 容器网络与 CPA Guard 连通**：
   - 客户端不直连供应商或 CPA，而是经由 Solum Center（`solum-cloud` 容器）代理；
-  - 客户端更新默认模型（如从 `qwen3.5-2b` 迁移到 `gemini-3.8-flash-high`）时，**必须同步检查并更新 VPS 生产环境（`/home/a2749024255/solum-release-XXXX/`）的 `.env` 配置**（`SOLUM_DEFAULT_MODEL`、`SOLUM_ALLOWED_MODELS`、`SOLUM_LLM_BASE_URL`、`SOLUM_LLM_API_KEY`）并重启容器，否则客户端登录后请求 Center 会直接报 502 upstream unavailable 或模型不在目录；
-  - `solum-cloud` 容器访问宿主机上的 CPA Guard 时，若 Guard 仅监听 `127.0.0.1`，容器内（`172.17.0.x`）无法直连回环；宿主机 `cpa-stream-guard` 直连端点必须监听 `0.0.0.0:8317`，容器内 upstream 使用 `http://172.17.0.1:8317/v1`。
+  - 客户端更新默认模型（如从 `qwen3.5-2b` 迁移到 `gemini-3.8-flash-high`）时，**必须同步检查并更新 VPS 生产环境的 `.env` 配置**（`SOLUM_DEFAULT_MODEL`、`SOLUM_ALLOWED_MODELS`、`SOLUM_LLM_BASE_URL`、`SOLUM_LLM_API_KEY`）并重启容器，否则客户端登录后请求 Center 会直接报 502 upstream unavailable 或模型不在目录；
+  - 容器不能通过自身回环访问宿主服务；核对实际 Docker 网络、网关可达的监听地址和防火墙。不要把历史网桥 IP 或 `0.0.0.0` 当作所有部署的固定要求。
 
 ## 安全
 
