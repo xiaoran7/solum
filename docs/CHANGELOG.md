@@ -1,5 +1,17 @@
 # Solum Changelog
 
+## 2026-09-26 — solum-core 的 portable_generation.rs 拆为分节模块
+
+- `crates/solum-core/src/portable_generation.rs`（1494 行）按职责切成 `portable_generation/` 下 6 个模块：`handoff`(360，发布密封代次，以及跨发布存活的通知交接) / `verify`(251，回读已暂存内容，兼几个共用的 IO 助手) / `stage`(240，暂存 SQLite、WebView 文档、通知 spool 与原生策略) / `tests`(464) / `types`(59，密封句柄、bootstrap 与文档分块形状) / `reader`(77，按块读取密封代次的 bootstrap 与文档)，`mod.rs`(55) 保留原文档头、imports、全部常量与 5 组对外转出。纯移动，无逻辑改动。
+- 8 个 `#[test]` 全部保留；全文件函数名集合与拆分前完全一致。
+- 等价性硬证据：7 个分节逐一按 token 流（标识符/字符串/字符/裸串 + 逐字符标点）与拆分前 `portable_generation.rs` 比对，全部一致；只允许 22 处可见性放开、`use` 归位与 rustfmt 换行。`mod.rs` 不参与 token 比对（条目都在分节里），改为断言原文件 13 条 import 一条不缺且顺序不变。
+- **切分边界本身这次差点出事，值得记一笔**：`stage`/`verify` 的边界最初定在 782 行，而 782 其实是 `verify_documents` 的函数体**内部**——`fn validate_bootstrap` 的签名与文档注释留在了上一节。**分片按字节拼回原文件仍然完全一致**，所以"逐字节可重组"这条证据看不出任何问题；是后面的接线步骤报"找不到该声明"才暴露，而且只是碰巧。`split-into-module.mjs` 因此补了边界守卫，且**断言的是新分节的首行是不是顶层项**（`#[]`、文档注释，或列 0 的关键字），不是旧分节的末行——被切断的条目尾部往往正好是一个列 0 的 `}` 或 `;`，看上去和干净的结尾一模一样，后面再跟一个空行时"回退跳过空行"就会停在切口上。守卫经反向验证：缺口、重叠、起始落在条目内部三种都被拒并报出切口两侧行号，合法的紧贴 `}` 边界则放行。
+- 可见性 22 处：`WebViewBootstrap`/`PortableDocumentChunk`/`PortableGenerationReader`/`publish_portable_generation`/`resume_portable_handoff`/`stage_portable_generation` 拆分前就是 `pub`，转出后仍须 `pub`（re-export 不能比它转出的项更宽）；`SpoolRecord`/`ExpectedSpool`/`SealedPortableGeneration`/`BootstrapDocument` 同样拆分前是 `pub`（`backup_download.rs` 在用）；其余 12 个 IO 与校验助手为 `pub(super)`，消费方显式 `use super::<分节>::...`。9 个结构体字段（`SealedPortableGeneration` 3 个、`SpoolRecord` 4 个、`ExpectedSpool` 2 个）由 `widen-fields.mjs` 依编译器诊断放开。
+- **跨分节的 `use` 由编译器驱动，不要手抄**：`use super::*;` 已经把父模块的 re-export 带进来了，手工把这些名字再 import 一遍就是 E0252（`stage`/`handoff` 一开始各撞了 8 个和 5 个）。`fix-section-imports.mjs` 改为读 `cargo check` 的 E0425/E0422 反推每个名字归属哪一节，再补 `use super::<分节>::...`，循环到干净为止；父模块已可见的名字自动跳过。
+- 工具修正两处真实缺陷：`widen-fields.mjs` 的私有字段正则只认 E0616（`field \`f\` of struct \`S\` is private`），本工具链报的是 E0451 复数形式（`fields \`a\`, \`b\` and \`c\` of struct \`S\` are private`），而复数形式的字段列表带"and"，单个 `[^`]*` 跨不过去——脚本于是打印"没有 E0616 字段隐私错误"并退出，读起来像"没什么可放开的"；正则已按实测诊断修正并对两种形式各自留了样例断言。同文件的文件查找是平铺 `readdirSync`，分节落成 `*/mod.rs` 后一个都找不到，同样静默失败，现改为递归。
+- 验证：Rust workspace 487 通过、0 失败（与基线一致）；`cargo fmt --all --check` 通过；`solum-core` clippy 零告警；`check-frontend.mjs` 与 47 模块加载守卫通过；等价性脚本经反向验证（改语句、改测试函数名、丢语句三种变异均被拒，原树仍通过）；**暂存区单独导出后 `cargo test -p solum-core --lib` 441 通过**。
+- 未解决（既有，与本次改动无关）：`profile.rs` 的 `tauri::Manager` 与 `commands/privacy_capture.rs` 的 `chrono::TimeZone` 为未使用导入，workspace Clippy 报红，均在本会话之外的改动里。
+
 ## 2026-09-26 — solum-core 的 backup_upload.rs 拆为分节模块
 
 - `crates/solum-core/src/backup_upload.rs`（1597 行）按职责切成 `backup_upload/` 下 6 个模块：`session`(378，协调者：设备代次权限 + 已暂存会话的规划/上传/提交) / `http`(282，生产 HTTP 适配器及其私有线上结构) / `staging`(181，本地封存与暂存：密文落盘、对象 id 派生、共享校验器) / `types`(124，线上与内存形状：设备权限、对象计划、冻结会话、传输接口) / `error`(51，不外泄的错误枚举) / `tests`(546)，`mod.rs` 保留原文档头、imports 与常量。纯移动，无逻辑改动。
