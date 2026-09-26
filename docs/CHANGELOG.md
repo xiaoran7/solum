@@ -1,5 +1,17 @@
 # Solum Changelog
 
+## 2026-09-26 — solum-core 的 email.rs 拆为分节模块
+
+- `crates/solum-core/src/email.rs`（1144 行）按职责切成 `email/` 下 6 个模块：`config`(291，provider/TLS/auth 枚举与落盘的账户、配置形状) / `mail`(288，IMAP 会话：连接、列文件夹、列举与搜索、取信并解析成 UI 形状) / `oauth`(165，授权码换 token、XOAUTH2 认证器、取 access token) / `types`(130，UI 投影形状：账户摘要、文件夹、消息摘要与发送草稿) / `smtp`(85，发送与预览草稿) / `helpers`(78，主机与地址校验、脱敏、头解码、HTML 剥离)，`tests`(87)，`mod.rs` 保留原文档头、imports、全部常量与 5 组对外转出。纯移动，无逻辑改动。
+- 4 个 `#[test]` 全部保留；全文件函数名集合与拆分前完全一致。
+- 等价性硬证据：8 个分节逐一按 token 流与拆分前 `email.rs` 比对，全部一致；只允许可见性放开、`use` 归位与 rustfmt 换行。`mod.rs` 改为断言原文件 11 条 import 一条不缺且顺序不变。等价性脚本经反向验证（删一条语句、改一个测试函数名，均被拒；原树仍通过）。另加两项针对本次新增撤销规则的定向反向验证：改 `type` 别名的右值、给 `pub(super) fn` 加一个参数，都被拒。
+- **分节名不能与依赖 crate 同名**。最初把 IMAP 那一节也叫 `imap`，`mod imap;` 于是遮蔽了外部 `imap` crate，模块作用域里所有 `imap::Session`/`imap::Connection`/`imap::types::Fetches` 都指向分节而非 crate，`use super::*;` 引进来的 crate 路径集体失效，报错读起来像"某分节没声明 Session"。改名为 `mail`。
+- **工具真实缺陷一：`wire-sections.mjs` 的装配步骤不可重入**。第二次运行会重复写入文档头和 `mod` 声明块。重复的 `mod X;` 报 E0428 看着无害，但它让模块拿到两个 DefId，于是所有经由该模块到达的类型不再与自身匹配——编译器在完全正确的代码上报 E0308 “expected `email::config::EmailProvider`, found a different `email::config::EmailProvider`”。现在每样写入都按自身标记先擦除再写（文档头、`mod` 块、re-export 块各带标记），`mod` 声明按名字逐个擦除，空行折叠移到该步最后（头部是前缀重写、`mod` 块在其后插入，折叠跑得太早看不到它们留下的空行，每跑一次多一行）。`mod X;` 的校验从"匹配到即可"改为"**恰好出现一次**"，文档头同样按原文出现次数校验。连跑两次的输出已验证逐字节一致。
+- **工具真实缺陷二：等价性脚本的撤销规则三处漏**。(1) 撤销正则的关键字组缺 `type`，`pub(super) type ImapSession = ...` 别名完全不撤销，差异落在 token 0，读起来像丢了一整行。(2) 撤销要按**原样拼写**放回 `pub `，而不是语义等价的 `pub(crate) `——分词把限定形式的括号和标识符算作额外 token，恢复错了会报出一个"少一个 token"的假差异；`WIDENED` 条目因此要能区分裸 `pub` 与限定形式。这两点合起来让 `mail`/`smtp` 两节各报一处不存在的差异。新增 `pre-split-visibility.mjs` 从拆分前的原文件直接读出每个被加宽项的可见性，不再靠猜。(3) 拆分新增的 `use super::<section>::{...};` 只在 `tests` 段被忽略，换个文件立刻多出两处假差异；现在对每一节都忽略，且必须放在 `tests` 分支**之后**——那个分支会重新赋值 `got`/`want0`，放在前面看着对、实际什么都没做（这一点先写错过一次）。
+- 可见性 41 项：8 个对外项拆分前就是 `pub`，re-export 不能比被转出的项更宽，故仍为 `pub`；其余助手为 `pub(super)`。`EmailProvider::oauth_endpoints` 是 `impl` 内的**方法**，被 `oauth` 调用——E0624 只说是私有方法，调用方要的是**类型**在作用域里，这个组合编译器不会告诉你，所以方法也进了 spec 的加宽表。`OAuthEndpoints` 的 `scopes`/`token`/`authorize` 与 `XOAuth2` 的 `response` 4 个字段由 `widen-fields.mjs` 依编译器诊断放开。
+- 验证：Rust workspace 487 通过、0 失败（与基线一致）；`cargo fmt --all --check` 通过；`email` 相关 7 个测试通过（4 个属本模块）。
+- 未解决（既有，与本次改动无关）：`profile.rs` 的 `tauri::Manager` 与 `commands/privacy_capture.rs` 的 `chrono::TimeZone` 为未使用导入，workspace Clippy 报红，均在本会话之外的改动里。
+
 ## 2026-09-26 — solum-core 的 backup_download.rs 拆为分节模块
 
 - `crates/solum-core/src/backup_download.rs`（1269 行）按职责切成 `backup_download/` 下 5 个模块：`http`(300，生产 ureq 客户端实现三个云端 trait) / `api`(178，模块入口：列举、删除、下载并暂存) / `stage`(129，下载后的对象还原与校验) / `types`(97，目录/删除请求/暂存结果形状与三个云端 trait) / `error`(61，不外泄的错误枚举)，`tests`(471)，`mod.rs` 保留原文档头、imports、全部常量、`DownloadResult` 别名与 4 组对外转出。纯移动，无逻辑改动。
