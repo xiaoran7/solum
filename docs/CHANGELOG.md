@@ -1,5 +1,17 @@
 # Solum Changelog
 
+## 2026-09-26 — solum-core 的 export_v3.rs 拆为分节模块
+
+- `crates/solum-core/src/export_v3.rs`（1288 行）按职责切成 `export_v3/` 下 4 个分节加 `tests`：`build`(329，组装便携文档：库快照、导出本体、整档校验，以及私有的通知流水/审计/待处理构造器) / `validate`(371，逐分节校验器：对话、文档、待处理通知、设置、恢复意图、流水与审计行) / `types`(254，便携文档的全部形状) / `helpers`(118，构造器与校验器共用的原始工具：guid 还原、稳定 id、规范 JSON 与标量检查)，`tests`(215)，`mod.rs` 保留原文档头、imports、全部 16 个常量与 3 组对外转出。纯移动，无逻辑改动。
+- 4 个 `#[test]` 全部保留；全文件函数名集合与拆分前完全一致。
+- 等价性硬证据：6 个分节逐一按 token 流与拆分前 `export_v3.rs` 比对，全部一致；只允许可见性放开、`use` 归位与 rustfmt 换行。原文件 10 条 import 一条不缺且顺序不变。脚本经反向验证（删一条语句、改一个测试函数名，均被拒；原树仍通过）。
+- **原文件的物理顺序决定了这里的切法**：`validate_portable_document`（一个整档校验器）夹在 `build_portable_export` 与三个私有构造器之间，所以"全部构造器归 build、全部校验器归 validate"在单边界切分下做不到。取舍是把它与三个构造器放在一起，`build` 一节因此同时含"组装"与"整档校验"；`validate` 一节则是纯粹的逐分节校验器。
+- **私有常量要留在父模块**。16 个 `MAX_*` 常量原本与公开的 `PORTABLE_*` 同在文件头；切分时它们跟着 `types` 走了，于是 `validate` 引用它们时报 E0603（私有常量）。常量属于父模块的公共词汇表——兄弟分节正是通过 `use super::*;` 拿到它们的——所以 `mod` 一节的行区间扩到包含整段常量，其余分节从常量之后开始。
+- **re-export 不能比被转出的项更宽**。`validate_chat`/`validate_documents`/`validate_llm`/`validate_restore_intents` 拆分前是 `pub(crate)`，按 `pub use` 转出即 E0364。spec 的 re-export 条目现在可自带可见性（`"pub(crate) validate::{...}"`），且会校验条目形状——写错的条目在装配阶段就报错，而不是留到编译期。
+- 装配脚本补一处：re-export 块原本锚在"第一个 const/type/derive 之前"。当 `mod` 一节自己没有任何条目时（本次所有常量都在别处）就没有锚点，报"找不到锚点"；现在退化为锚在最后一条 import 之后——父模块的绑定都已就位的那个位置。
+- 可见性 30 项：`snapshot_portable_store`/`build_portable_export`/`validate_portable_document` 拆分前就是 `pub`，re-export 不能比它们更宽，故仍为 `pub`；4 个原本 `pub(crate)` 的校验器保持 `pub(crate)`；其余 23 个助手为 `pub(super)`。本文件无结构体字段需要放开。
+- 验证：Rust workspace 487 通过、0 失败（与基线一致）；`cargo fmt --all --check` 通过；`export_v3` 相关 4 个测试通过；`export_v3` clippy 零告警。
+
 ## 2026-09-26 — solum-core 的 email.rs 拆为分节模块
 
 - `crates/solum-core/src/email.rs`（1144 行）按职责切成 `email/` 下 6 个模块：`config`(291，provider/TLS/auth 枚举与落盘的账户、配置形状) / `mail`(288，IMAP 会话：连接、列文件夹、列举与搜索、取信并解析成 UI 形状) / `oauth`(165，授权码换 token、XOAUTH2 认证器、取 access token) / `types`(130，UI 投影形状：账户摘要、文件夹、消息摘要与发送草稿) / `smtp`(85，发送与预览草稿) / `helpers`(78，主机与地址校验、脱敏、头解码、HTML 剥离)，`tests`(87)，`mod.rs` 保留原文档头、imports、全部常量与 5 组对外转出。纯移动，无逻辑改动。
