@@ -1,5 +1,15 @@
 # Solum Changelog
 
+## 2026-09-26 — solum-core 的 backup_download.rs 拆为分节模块
+
+- `crates/solum-core/src/backup_download.rs`（1269 行）按职责切成 `backup_download/` 下 5 个模块：`http`(300，生产 ureq 客户端实现三个云端 trait) / `api`(178，模块入口：列举、删除、下载并暂存) / `stage`(129，下载后的对象还原与校验) / `types`(97，目录/删除请求/暂存结果形状与三个云端 trait) / `error`(61，不外泄的错误枚举)，`tests`(471)，`mod.rs` 保留原文档头、imports、全部常量、`DownloadResult` 别名与 4 组对外转出。纯移动，无逻辑改动。
+- 8 个 `#[test]` 全部保留；全文件函数名集合与拆分前完全一致。
+- 等价性硬证据：7 个分节逐一按 token 流与拆分前 `backup_download.rs` 比对，全部一致；只允许 14 处可见性放开、`use` 归位与 rustfmt 换行。`mod.rs` 不参与 token 比对，改为断言原文件 14 条 import 一条不缺且顺序不变。等价性脚本经反向验证（删一条语句、改一个测试函数名，均被拒；原树仍通过）。
+- 可见性：11 个对外项拆分前就是 `pub`，re-export 不能比被转出的项更宽，故仍为 `pub`；8 个校验与 IO 助手为 `pub(super)`；`HttpBackupCloudReader::request_without_transport_retry` 原本私有但测试套件在用，改为 `pub(super)`。
+- **测试套件的 `use super::*;` 不能由面包屑重复添加**：拆壳出来的 `tests/mod.rs` 原本就带着自己那一条（位置在 std/serde import 之后），再补一条就成了重复导入。`wire-sections.mjs` 现在先看正文里有没有，没有才补——保留原有那一条的位置，等价性核对才不会被"import 顺序被改"这种假差异淹没。
+- 工具上又一处真实缺陷：`wire-sections.mjs` 里 `new RegExp(\`^(\\s+)...\`)` 写成了 `^(\s+)`，模板字面量里单反斜杠被字面量自身吃掉，到 RegExp 只剩 `s+`（字面的"一个或多个 s"），于是报"找不到 `request_without_transport_retry` 的声明"——而它就在文件里第 36 行。**报错信息现在会同时打印命中的正则和提及该名字的行号**，否则这种"锚点写错"与"内容不在"看起来一模一样。
+- 验证：Rust workspace 487 通过、0 失败（与基线一致）；`cargo fmt --all --check` 通过；`solum-core` clippy 零告警；**暂存区单独导出后 `cargo test -p solum-core --lib` 441 通过**。
+
 ## 2026-09-26 — solum-core 的 portable_generation.rs 拆为分节模块
 
 - `crates/solum-core/src/portable_generation.rs`（1494 行）按职责切成 `portable_generation/` 下 6 个模块：`handoff`(360，发布密封代次，以及跨发布存活的通知交接) / `verify`(251，回读已暂存内容，兼几个共用的 IO 助手) / `stage`(240，暂存 SQLite、WebView 文档、通知 spool 与原生策略) / `tests`(464) / `types`(59，密封句柄、bootstrap 与文档分块形状) / `reader`(77，按块读取密封代次的 bootstrap 与文档)，`mod.rs`(55) 保留原文档头、imports、全部常量与 5 组对外转出。纯移动，无逻辑改动。
