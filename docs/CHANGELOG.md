@@ -1,5 +1,15 @@
 # Solum Changelog
 
+## 2026-09-26 — solum-core 的 soulous.rs 拆为分节模块
+
+- `crates/solum-core/src/soulous.rs`（1150 行）按职责切成 `soulous/` 下 6 个分节加 `tests`：`http`(288，HTTP 接缝：trait、ureq 实现、配置好的拉取/推送入口) / `parse`(191，把 Soulous 的 JSON 变成 fact：字段读取、时间与截止日期解析、每个端点一个解析器) / `domain`(203，Solous 眼中的 Soulous 领域：五个来源、fact、考试权重、派生状态与建议) / `tests`(235) / `push`(105，出站事件推送：离开设备的最小结构化投影与发送前的预览) / `review`(64，交给云端改写的本地 F14 复习材料) / `config`(86，存下来的 Soulous 连接：来源常量与 `SoulousConfig`)，`mod.rs` 保留原文档头、imports 与 5 组对外转出。纯移动，无逻辑改动。
+- 这个文件的**物理顺序本来就是按职责排好的**，六个块严丝合缝，首尾各差一行文档注释就断开——是四个已完成的大文件里切分最省力的一个。`PullOutcome` 原本紧挨在 `review_material` 后面、属于 HTTP 那一组，把边界上移一行把它划进 `http`。
+- 6 个 `#[test]` 全部保留；全文件函数名集合与拆分前完全一致。
+- 等价性硬证据：8 个分节逐一按 token 流与拆分前 `soulous.rs` 比对，全部一致；只允许可见性放开、`use` 归位与 rustfmt 换行。原文件 9 条 import 一条不缺且顺序不变。脚本经反向验证（删一条语句、改一个测试函数名，均被拒；原树仍通过）。
+- 可见性 41 项：14 个对外项拆分前就是 `pub`，re-export 不能比它们更宽，故仍为 `pub`；其余助手为 `pub(super)`。`SoulousKind::payload` 是 `impl` 内的**方法**，被 `review` 调用——E0624 只说是私有方法，调用方要的是**类型**在作用域里，这个组合编译器不会告诉你，所以方法进了 spec 的加宽表。`ExternalContextRequest` 5 个字段与 `ScheduleEventPayload` 5 个字段由 `widen-fields.mjs` 依编译器诊断放开。
+- 工具补一处：`external-names.mjs` 原来只匹配 `mod::Name`，漏掉全限定写法 `solum_core::soulous::Name` 与 `crate::soulous::Name`——本文件的外部引用**全是**全限定形式，脚本因此返回空列表，看起来像"这个模块没人用"。现在两种写法都匹配。写这类脚本时值得记住：先拿一个已知有外部引用的模块验一遍脚本本身，别把"空结果"当成事实。
+- 验证：Rust workspace 487 通过、0 失败（与基线一致）；`cargo fmt --all --check` 通过；`soulous` 相关 7 个测试通过；`soulous` clippy 零告警。
+
 ## 2026-09-26 — solum-core 的 export_v3.rs 拆为分节模块
 
 - `crates/solum-core/src/export_v3.rs`（1288 行）按职责切成 `export_v3/` 下 4 个分节加 `tests`：`build`(329，组装便携文档：库快照、导出本体、整档校验，以及私有的通知流水/审计/待处理构造器) / `validate`(371，逐分节校验器：对话、文档、待处理通知、设置、恢复意图、流水与审计行) / `types`(254，便携文档的全部形状) / `helpers`(118，构造器与校验器共用的原始工具：guid 还原、稳定 id、规范 JSON 与标量检查)，`tests`(215)，`mod.rs` 保留原文档头、imports、全部 16 个常量与 3 组对外转出。纯移动，无逻辑改动。
