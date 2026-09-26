@@ -20,7 +20,7 @@ Local-first Personal Agent：把输入、日程、提醒、记忆、行为日志
 - 云端智能能力统一经 Solum Center 鉴权代理；TannerLab 通行证支持 `solum://oauth/callback` Deep Link 自动回跳换票。
 - 危险操作必须经过 Guard：预览、人工确认、一次性令牌和 append-only 审计。
 - Core 的时间由调用方注入；云端失败不能破坏本机数据路径。
-- 前端保持 Vanilla JS + 静态 `crates/solum-app/dist/`（`index.html`、`i18n.js`、`js/NN-*.js`），不引入 npm/前端框架，脚本遵循无 `unsafe-inline` 的 CSP。应用代码按功能域切成 `dist/js/` 下的有序模块，数字前缀即加载顺序，`index.html` 里的 `<script src="js/...">` 列表是唯一清单：改顺序必须同时改文件名，`check-frontend.mjs` 会双向核对有无孤儿模块。
+- 前端保持 Vanilla JS + 静态 `crates/solum-app/dist/`（`index.html`、`styles.css`、`i18n.js`、`js/NN-*.js`），不引入 npm/前端框架，脚本遵循无 `unsafe-inline` 的 CSP。应用代码按功能域切成 `dist/js/` 下的有序模块，数字前缀即加载顺序，`index.html` 里的 `<script src="js/...">` 列表是唯一清单：改顺序必须同时改文件名，`check-frontend.mjs` 会双向核对有无孤儿模块，并实际按顺序执行一遍全部模块——每个文件都是独立经典脚本，较早的文件不能读到较晚文件才声明的名字。
 
 ## 验证
 

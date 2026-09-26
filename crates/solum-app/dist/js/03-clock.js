@@ -12,7 +12,10 @@ $("simToggle").addEventListener("change", () => {
   $("simClock").disabled = !$("simToggle").checked;
   refreshAll();
 });
-$("simClock").addEventListener("change", refreshAll);
+// Keep the arrow wrapper: `refreshAll` is declared in 44-navigation.js, and
+// every module here is its own classic script, so the name is not bound yet at
+// this point. Wrapping defers the lookup to event time.
+$("simClock").addEventListener("change", () => refreshAll());
 
 async function initClock() {
   try {

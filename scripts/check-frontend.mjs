@@ -1,8 +1,11 @@
 import fs from "node:fs";
 import vm from "node:vm";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const htmlPath = new URL("../crates/solum-app/dist/index.html", import.meta.url);
 const appJsDir = new URL("../crates/solum-app/dist/", import.meta.url);
+const stylesPath = new URL("../crates/solum-app/dist/styles.css", import.meta.url);
 const i18nJsPath = new URL("../crates/solum-app/dist/i18n.js", import.meta.url);
 const tauriConfPath = new URL("../crates/solum-app/tauri.conf.json", import.meta.url);
 const appSrcDir = new URL("../crates/solum-app/src/", import.meta.url);
@@ -13,6 +16,7 @@ const notificationPipelinePath = new URL(
   import.meta.url,
 );
 const html = fs.readFileSync(htmlPath, "utf8");
+const styles = fs.readFileSync(stylesPath, "utf8");
 const i18nJs = fs.readFileSync(i18nJsPath, "utf8");
 const tauriConf = fs.readFileSync(tauriConfPath, "utf8");
 
@@ -80,6 +84,17 @@ const inlineScripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<
 if (inlineScripts.length !== 0) {
   throw new Error("index.html must not contain inline <script>; put JS in dist/js/ (CSP script-src has no 'unsafe-inline')");
 }
+// Styles moved out to dist/styles.css so index.html holds only the document
+// skeleton. CSP allows 'unsafe-inline' for style-src, so a re-inlined block
+// would not be blocked in production — it would just silently make every CSS
+// assertion above validate an empty string again.
+if (/<style(?![^>]*\bsrc=)[^>]*>/i.test(html)) {
+  throw new Error("index.html must not contain inline <style>; put CSS in dist/styles.css");
+}
+if (!/<link\s+rel="stylesheet"\s+href="styles\.css"\s*\/?>/.test(html)) {
+  throw new Error('index.html must load styles via <link rel="stylesheet" href="styles.css">');
+}
+if (styles.length === 0) throw new Error("dist/styles.css is empty; the design tokens and layout live there");
 new vm.Script(i18nJs, { filename: "dist/i18n.js" });
 // Parse every module on its own too: concatenated as one blob a file with a
 // stray top-level `return` or unbalanced brace can still be masked by a
@@ -192,7 +207,7 @@ if (!js.includes("collapseUnusedChatSessions(chatSessions.sessions, chatSessions
 if (ids.includes("profileSheetEditAvatarBtn") || html.includes("profile-avatar-badge")) {
   throw new Error("the removed avatar emoji/edit badge must not return; profile editing belongs to the profile action");
 }
-if (!/\.drawer-head\s*\{[\s\S]*?max\(calc\(12px \+ var\(--sat\)\), 34px\)/.test(html)) {
+if (!/\.drawer-head\s*\{[\s\S]*?max\(calc\(12px \+ var\(--sat\)\), 34px\)/.test(styles)) {
   throw new Error("the mobile workbench drawer must keep its controls below the top safe area");
 }
 if (!js.includes('history.replaceState({ solumView: view }, "")')) {
@@ -224,13 +239,13 @@ if (/await\s+refreshAll\s*\(/.test(startupBody)) {
 if (!startupBody.includes('document.visibilityState === "hidden"')) {
   throw new Error("periodic refresh must pause while the WebView is hidden");
 }
-const accountBase = html.indexOf(".account-gate-shell {");
-const finalMobileOverride = html.lastIndexOf("@media (max-width: 899px)");
+const accountBase = styles.indexOf(".account-gate-shell {");
+const finalMobileOverride = styles.lastIndexOf("@media (max-width: 899px)");
 if (accountBase < 0 || finalMobileOverride < accountBase) {
   throw new Error("the final mobile account layout must override the desktop account grid");
 }
-const letterSpacingDeclarations = [...html.matchAll(/letter-spacing\s*:\s*([^;}{]+)/gi)];
-if (/\*\s*\{[^}]*letter-spacing\s*:/is.test(html)) {
+const letterSpacingDeclarations = [...styles.matchAll(/letter-spacing\s*:\s*([^;}{]+)/gi)];
+if (/\*\s*\{[^}]*letter-spacing\s*:/is.test(styles)) {
   throw new Error("letter spacing must be assigned by typography role, never forced globally");
 }
 const unsafeLetterSpacing = letterSpacingDeclarations.filter((match) => {
@@ -242,20 +257,20 @@ const unsafeLetterSpacing = letterSpacingDeclarations.filter((match) => {
 if (unsafeLetterSpacing.length > 0) {
   throw new Error("Solum letter spacing must use a bounded typography-role value (at most 0.06em)");
 }
-if (!/#chatEmpty h3[\s\S]*?letter-spacing:\s*-\.025em/.test(html)) {
+if (!/#chatEmpty h3[\s\S]*?letter-spacing:\s*-\.025em/.test(styles)) {
   throw new Error("the chat-home display heading must keep its deliberate compact tracking");
 }
-if (!/button, a, summary, label, \[role="button"\]\s*\{[^}]*-webkit-tap-highlight-color:\s*transparent/.test(html)) {
+if (!/button, a, summary, label, \[role="button"\]\s*\{[^}]*-webkit-tap-highlight-color:\s*transparent/.test(styles)) {
   throw new Error("touch controls must suppress Android WebView's rectangular tap highlight");
 }
-if (!/\.signal-button\s*\{[^}]*border-radius:\s*50%/.test(html)
-    || !/\.signal-button:active\s*\{[^}]*background:\s*var\(--accent-soft\)[^}]*transform:\s*scale\(0\.94\)/.test(html)) {
+if (!/\.signal-button\s*\{[^}]*border-radius:\s*50%/.test(styles)
+    || !/\.signal-button:active\s*\{[^}]*background:\s*var\(--accent-soft\)[^}]*transform:\s*scale\(0\.94\)/.test(styles)) {
   throw new Error("the mobile account trigger must use a circular custom pressed state");
 }
-if (/font-size\s*:\s*clamp\s*\(/i.test(html)) {
+if (/font-size\s*:\s*clamp\s*\(/i.test(styles)) {
   throw new Error("font size must not scale with viewport width");
 }
-if (/(?:radial|linear)-gradient\s*\(/i.test(html)) {
+if (/(?:radial|linear)-gradient\s*\(/i.test(styles)) {
   throw new Error("decorative gradients are forbidden in the Solum workbench");
 }
 if (!app.includes("The account proxy is the only cloud path")) {
@@ -353,7 +368,7 @@ if (!js.includes("function migrateMemoryListUiState()")
     || !js.includes('viewScrollPositions.set("ledger", 0)')) {
   throw new Error("upgrades from the old tabbed memory page must reset its stale route and scroll position once");
 }
-if (!/\.memory-row-summary\s*\{[^}]*-webkit-line-clamp:\s*2/s.test(html)) {
+if (!/\.memory-row-summary\s*\{[^}]*-webkit-line-clamp:\s*2/s.test(styles)) {
   throw new Error("long memory content must be clamped to two lines in the list");
 }
 const refreshLedgerStart = js.indexOf("async function refreshLedger()");
@@ -370,3 +385,15 @@ if (!/exportBtn/.test(dataView) || !/importBtn/.test(dataView) || !/openBackupCe
 }
 
 console.log(`frontend checks passed: ${inlineScripts.length} script, ${ids.length} unique ids`);
+
+// Finally, run the modules for real. Every content assertion above can pass
+// while the page still throws on load: a module may read a name that a later
+// module declares, which is a ReferenceError at load time and invisible to
+// `js.includes(...)`. check-frontend-load.mjs executes them in order against a
+// DOM stub, which is the only check that sees the failure.
+const loadCheck = spawnSync(process.execPath, [fileURLToPath(new URL("check-frontend-load.mjs", import.meta.url))], {
+  stdio: "inherit",
+});
+if (loadCheck.status !== 0) {
+  throw new Error("dist/js modules throw at load; see the output above");
+}

@@ -1,5 +1,13 @@
 # Solum Changelog
 
+## 2026-09-26 — 前端样式抽出 styles.css，并补上模块加载守卫
+
+- `index.html` 的 1560 行内联 `<style>` 抽为 `dist/styles.css` + `<link rel="stylesheet">`，样式内容逐行不变，index.html 2736 → 1224 行。
+- `check-frontend.mjs` 的 12 处 CSS 断言改读 `styles.css`，并新增守卫：index.html 不得再出现内联 `<style>`，必须以 `<link>` 引入 styles.css。
+- 修复一处拆分引入的加载期回归：`03-clock.js` 把 `refreshAll` 作为**值**传给 `addEventListener`，而它声明在 44 号模块。每个模块都是独立经典脚本，该名字此时尚未绑定，浏览器抛 ReferenceError。改回箭头包装，事件触发时才查找。
+- 新增 `scripts/check-frontend-load.mjs`：用 DOM 桩按 `index.html` 顺序真实执行全部 47 个模块并捕获加载期异常，由 `check-frontend.mjs` 自动调用（CI 两处 workflow 无需改动）。此前所有内容断言都发现不了这类问题——`js.includes(...)` 对一个加载即崩的页面照样通过。
+- 验证：`check-frontend.mjs` 通过、加载守卫通过（47/47）、Rust workspace 16 个测试二进制全绿；浏览器实测样式与抽取前逐像素一致、零控制台错误。
+
 ## 2026-09-26 — 前端 app.js 解耦为有序功能域模块
 
 - `dist/app.js`（7606 行）按既有分节横幅切成 `dist/js/` 下 47 个模块，最大 520 行；纯移动，无逻辑改动。拼接后的模块序列与原文件逐字节相等已验证。
