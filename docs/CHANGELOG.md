@@ -1,5 +1,14 @@
 # Solum Changelog
 
+## 2026-09-26 — solum-core 的 sync.rs 拆为分节模块
+
+- `crates/solum-core/src/sync.rs`（2250 行）按文件自带的 `// ---- 分节 ----` 横幅切成 `sync/` 下 6 个模块：`config`(218) / `account_recovery_envelope`(430) / `crypto`(31) / `transport`(311) / `driver`(234) / `tests`(955)，`mod.rs`(117) 保留文档头、imports 与 `SyncOp`/`SyncBatch`/`PulledBlob`/`SyncOutcome` 四个共享类型。纯移动，无逻辑改动。
+- 等价性硬证据：逐分节比对 token 流（标识符/字符串/字符/裸串 + 逐字符标点），6 个分节与拆分前 `sync.rs` 完全一致——无丢失、重复、重排或改动；只允许 11 处 `pub(super)`/`pub(crate)` 可见性放开与 rustfmt 对变长签名的换行。
+- 可见性按最小必要放开：`wrap_recovery_key`/`unwrap_recovery_key`/`read_local_account_key`/`PUSHED_KEY`/`PULLED_KEY`/`cursor`/`permanent_push_status` 为 `pub(super)`（仅 `tests.rs` 用到），`SyncConfigFile`/`PBKDF2_ROUNDS`/`to_hex` 保持 `pub(super)`（两个分节共用）。`crypto` 的 `encrypt`/`decrypt` 须经 `mod.rs` 以 `pub(super) use` 转出一层，故声明为 `pub(crate)`，并在 `mod.rs` 注明原因。
+- `#[cfg(test)] pub(crate) mod tests {` 外壳归 `mod.rs`，测试体去一层缩进落到 `tests.rs`；`pub(crate)` 是拆分前就有的——`orchestrator/tests.rs` 借用 `MemTransport`/`test_cfg` 做无网端到端同步测试。
+- 验证：Rust workspace 487 通过、0 失败（与拆分前基线一致）；`cargo fmt --all --check` 通过；`solum-core` clippy 零告警；`check-frontend.mjs` 与 47 模块加载守卫仍通过。
+- 未解决（既有，与本次改动无关）：`lib.rs` 的 `tauri::Manager` 与 `privacy_capture.rs` 的 `chrono::TimeZone` 为未使用导入，workspace Clippy 报红，二者均在本会话之外的改动里。
+
 ## 2026-09-26 — 前端样式抽出 styles.css，并补上模块加载守卫
 
 - `index.html` 的 1560 行内联 `<style>` 抽为 `dist/styles.css` + `<link rel="stylesheet">`，样式内容逐行不变，index.html 2736 → 1224 行。
