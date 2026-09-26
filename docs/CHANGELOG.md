@@ -1,5 +1,15 @@
 # Solum Changelog
 
+## 2026-09-26 — solum-core 的 backup_upload.rs 拆为分节模块
+
+- `crates/solum-core/src/backup_upload.rs`（1597 行）按职责切成 `backup_upload/` 下 6 个模块：`session`(378，协调者：设备代次权限 + 已暂存会话的规划/上传/提交) / `http`(282，生产 HTTP 适配器及其私有线上结构) / `staging`(181，本地封存与暂存：密文落盘、对象 id 派生、共享校验器) / `types`(124，线上与内存形状：设备权限、对象计划、冻结会话、传输接口) / `error`(51，不外泄的错误枚举) / `tests`(546)，`mod.rs` 保留原文档头、imports 与常量。纯移动，无逻辑改动。
+- 9 个 `#[test]` 全部保留，函数名逐一比对完全一致（拆分前后 diff 为空）。
+- 等价性硬证据：7 个分节逐一按 token 流与拆分前 `backup_upload.rs` 比对，全部一致；只允许可见性放开、`use` 归位与 rustfmt 换行。`mod.rs` 那一段不参与 token 比对（条目都在分节里），改为断言原文件 13 条 import 一条不缺（`Deserialize`/`Serialize`/`thiserror::Error` 三项**有意下放到唯一用它们的分节**，脚本需显式声明才放行）。脚本经反向验证：塞多余语句、改测试函数名，均报错退出。
+- 可见性：14 个跨分节引用的私有项放开为 `pub(super)`（`staging` 的 11 个校验/暂存助手 + `types` 的 3 个内部形状），消费方显式 `use super::<分节>::{...};`。**结构体字段要单独放开**——`BackupDeviceState`/`BackupUploadSession`/`StagedObject` 的字段被 `session.rs` 逐字段读取，只放开结构体本身会 E0616。
+- 工具上的一处教训：**不要静态预测哪些字段需要放开**。私有字段名会出现在别的分节的字符串、注释、无关结构体里，文本扫描不是过度放开就是漏放。改为读 `cargo check` 的 E0616 诊断、只放开编译器点名的结构体，一轮收敛。`widen-fields.mjs` 记录了这个做法。
+- 验证：Rust workspace 487 通过、0 失败（与基线一致）；`cargo fmt --all --check` 通过；`solum-core` clippy 零告警；`check-frontend.mjs` 与 47 模块加载守卫通过；暂存区单独导出后 `cargo test -p solum-core --lib` 441 通过。
+- 未解决（既有，与本次改动无关）：`profile.rs` 的 `tauri::Manager` 与 `commands/privacy_capture.rs` 的 `chrono::TimeZone` 为未使用导入，workspace Clippy 报红，均在本会话之外的改动里。
+
 ## 2026-09-26 — store/tests.rs 按关注点拆为 15 个分节
 
 - `crates/solum-core/src/store/tests.rs`（1465 行）按被测关注点切为 `store/tests/` 下 15 个文件，与 `store/` 的源码分节一一对应：`widget_sync`(433) / `quarantine`(159) / `open_adopt`(119) / `crud`(114) / `legacy_capture`(107) / `migrations`(169) / `ledger_pages`(87) / `errors`(86) / `audit_config`(84) / `sync_core`(80) / `events`(13) / `ledger`(31) / `blobs`(27) / `health`(25) / `fixtures`(16，共享 `scratch` 夹具)，`mod.rs` 保留原文档头与归位的 import。文件内部保持原顺序，只做移动。
