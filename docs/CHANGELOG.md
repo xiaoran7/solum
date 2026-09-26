@@ -1,5 +1,14 @@
 # Solum Changelog
 
+## 2026-09-26 — orchestrator/tests.rs 按关注点拆为 15 个分节
+
+- `crates/solum-core/src/orchestrator/tests.rs`（2724 行）按被测关注点切为 `orchestrator/tests/` 下 15 个文件：`capture`(487)、`routines`(448)、`import`(286)、`notif_privacy`(286)、`guard_memory`(232)、`llm_first`(164)、`widgets`(156)、`llm`(119)、`reminders`(113)、`persona`(113)、`scene_wellness`(138)、`review_suggest`(87)、`genui`(52)、`health`(29)、`head`(14，共享 `dt`/`now` 夹具)。文件内部保持原顺序，只做移动。
+- 82 个 `#[test]` 全部保留，测试函数名逐一比对完全一致（拆分前后 diff 为空）。
+- 跨文件共享物：原单文件顶部的 `use super::*;` / `BehaviorKind` / `NaiveDate` 提到 `tests/mod.rs`，因为兄弟文件只能经 `use super::*;` 触达；`dt`/`now` 留在 `head.rs` 并由各分节显式 `use super::head::{dt, now};`（无引用的分节只导入实际用到的那一个）；`FakeReasoner` 随组件测试留在 `widgets.rs`、`CountingReasoner`/`SpyReasoner` 留在 `llm.rs`，消费方显式导入。
+- 等价性硬证据：15 个分节逐一按 token 流与拆分前 `tests.rs` 比对，全部一致；只允许可见性放开、`use` 归位与 rustfmt 换行。
+- 可见性注意：元组结构体的字段要单独放开（`pub(super) struct S(pub(super) T)`），只放开结构体本身无法让兄弟模块构造。
+- 验证：Rust workspace 487 通过、0 失败；`cargo fmt --all --check` 通过；`solum-core` clippy 零告警；`check-frontend.mjs` 与 47 模块加载守卫通过。
+
 ## 2026-09-26 — solum-core 的 llm.rs 拆为分节模块
 
 - `crates/solum-core/src/llm.rs`（1446 行）切成 `llm/` 下 7 个模块：`tests`(558) / `prompts`(263，网关提示与聊天上下文) / `reasoner`(153) / `config`(99，连接设置) / `streaming`(93，SSE 与 think 过滤) / `parse`(80，响应解析) / `extract`(74，事件抽取)，`mod.rs`(150) 保留文档头、imports、工具协议常量与组件工具定义。纯移动，无逻辑改动。
