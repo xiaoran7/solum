@@ -1,6 +1,142 @@
 // crates/solum-app/src/tests.rs
 use super::*;
 
+// The frontend ships as ordered classic <script src="js/NN-*.js"> modules with
+// no bundler, so index.html's script order is the single source of truth: it is
+// both the runtime load order and the declaration order that the position-based
+// assertions in this file depend on. Rebuild that one logical program here the
+// same way the browser does, rather than pinning a single file that no longer
+// exists.
+const FRONTEND_INDEX: &str = include_str!("../dist/index.html");
+const FRONTEND_MODULES: &[&str] = &[
+    include_str!("../dist/js/00-foundation.js"),
+    include_str!("../dist/js/01-core-utils.js"),
+    include_str!("../dist/js/02-domain-vocabulary.js"),
+    include_str!("../dist/js/03-clock.js"),
+    include_str!("../dist/js/04-sync-config.js"),
+    include_str!("../dist/js/05-info-hint.js"),
+    include_str!("../dist/js/06-overlays-backkey.js"),
+    include_str!("../dist/js/07-confirm-modal.js"),
+    include_str!("../dist/js/08-chat.js"),
+    include_str!("../dist/js/09-chat-markdown.js"),
+    include_str!("../dist/js/10-genui-components.js"),
+    include_str!("../dist/js/11-backup-export.js"),
+    include_str!("../dist/js/12-backup-center.js"),
+    include_str!("../dist/js/13-documents.js"),
+    include_str!("../dist/js/14-widgets.js"),
+    include_str!("../dist/js/15-drawer.js"),
+    include_str!("../dist/js/16-agenda.js"),
+    include_str!("../dist/js/17-reminders.js"),
+    include_str!("../dist/js/18-suggestions.js"),
+    include_str!("../dist/js/19-journal.js"),
+    include_str!("../dist/js/20-wearable.js"),
+    include_str!("../dist/js/21-review.js"),
+    include_str!("../dist/js/22-ledger.js"),
+    include_str!("../dist/js/23-persona.js"),
+    include_str!("../dist/js/24-rules.js"),
+    include_str!("../dist/js/25-proactivity.js"),
+    include_str!("../dist/js/26-notification-pipeline.js"),
+    include_str!("../dist/js/27-privacy.js"),
+    include_str!("../dist/js/28-guard.js"),
+    include_str!("../dist/js/29-notification-listener-banner.js"),
+    include_str!("../dist/js/30-today-panel.js"),
+    include_str!("../dist/js/31-cloud-access.js"),
+    include_str!("../dist/js/32-android-reminder-reliability.js"),
+    include_str!("../dist/js/33-profile-avatar.js"),
+    include_str!("../dist/js/34-profile-storage.js"),
+    include_str!("../dist/js/35-feature-info.js"),
+    include_str!("../dist/js/36-theme-toggle.js"),
+    include_str!("../dist/js/37-account-session.js"),
+    include_str!("../dist/js/38-account-verification.js"),
+    include_str!("../dist/js/39-account-secondary.js"),
+    include_str!("../dist/js/40-recovery-code.js"),
+    include_str!("../dist/js/41-soulous.js"),
+    include_str!("../dist/js/42-email.js"),
+    include_str!("../dist/js/43-local-search.js"),
+    include_str!("../dist/js/44-navigation.js"),
+    include_str!("../dist/js/45-host-events.js"),
+    include_str!("../dist/js/46-startup.js"),
+];
+
+/// The module filenames, in load order. Kept adjacent to the include list so
+/// the two stay in step; check-frontend.mjs asserts the same contract from the
+/// HTML side, so a module added on one side but not the other fails the build.
+const FRONTEND_MODULE_FILES: &[&str] = &[
+    "00-foundation.js",
+    "01-core-utils.js",
+    "02-domain-vocabulary.js",
+    "03-clock.js",
+    "04-sync-config.js",
+    "05-info-hint.js",
+    "06-overlays-backkey.js",
+    "07-confirm-modal.js",
+    "08-chat.js",
+    "09-chat-markdown.js",
+    "10-genui-components.js",
+    "11-backup-export.js",
+    "12-backup-center.js",
+    "13-documents.js",
+    "14-widgets.js",
+    "15-drawer.js",
+    "16-agenda.js",
+    "17-reminders.js",
+    "18-suggestions.js",
+    "19-journal.js",
+    "20-wearable.js",
+    "21-review.js",
+    "22-ledger.js",
+    "23-persona.js",
+    "24-rules.js",
+    "25-proactivity.js",
+    "26-notification-pipeline.js",
+    "27-privacy.js",
+    "28-guard.js",
+    "29-notification-listener-banner.js",
+    "30-today-panel.js",
+    "31-cloud-access.js",
+    "32-android-reminder-reliability.js",
+    "33-profile-avatar.js",
+    "34-profile-storage.js",
+    "35-feature-info.js",
+    "36-theme-toggle.js",
+    "37-account-session.js",
+    "38-account-verification.js",
+    "39-account-secondary.js",
+    "40-recovery-code.js",
+    "41-soulous.js",
+    "42-email.js",
+    "43-local-search.js",
+    "44-navigation.js",
+    "45-host-events.js",
+    "46-startup.js",
+];
+
+/// The frontend as the browser sees it: one program, in load order.
+fn frontend_js() -> String {
+    FRONTEND_MODULES.join("\n")
+}
+
+/// Each module's `js/<file>` path, in the same order as FRONTEND_MODULES.
+fn frontend_module_files() -> Vec<String> {
+    FRONTEND_MODULE_FILES
+        .iter()
+        .map(|f| format!("js/{f}"))
+        .collect()
+}
+
+/// The `<script src>` list index.html declares, in order.
+fn frontend_script_order() -> Vec<String> {
+    let mut order = Vec::new();
+    let mut rest = FRONTEND_INDEX;
+    while let Some(start) = rest.find("<script src=\"") {
+        rest = &rest[start + "<script src=\"".len()..];
+        let end = rest.find('"').expect("unterminated script src");
+        order.push(rest[..end].to_string());
+        rest = &rest[end..];
+    }
+    order
+}
+
 fn args(base: &str, key: &str, model: &str) -> LlmSaveArgs {
     LlmSaveArgs {
         base_url: base.into(),
@@ -512,7 +648,7 @@ fn webview_hydration_receipt_requires_exact_profile_generation_and_ordered_set()
 
 #[test]
 fn frontend_hydrates_only_inactive_generation_and_does_not_publish_pointer() {
-    let js = include_str!("../dist/app.js");
+    let js = frontend_js();
     assert!(js.contains("hydratePortableGenerationWebView(generationId)"));
     assert!(js.contains("restore_webview_begin"));
     assert!(js.contains("restore_webview_document_chunk"));
@@ -564,7 +700,7 @@ fn publication_binding_rejects_token_sqlite_and_webview_changes() {
 
 #[test]
 fn frontend_publication_requires_fresh_exact_webview_snapshot() {
-    let js = include_str!("../dist/app.js");
+    let js = frontend_js();
     assert!(js.contains("snapshotLiveWebViewSummary()"));
     assert!(js.contains("saveCurrentChatDraft(true)"));
     assert!(js.contains("chat_json: chatJson"));
@@ -578,7 +714,7 @@ fn frontend_publication_requires_fresh_exact_webview_snapshot() {
 
 #[test]
 fn frontend_backup_seam_streams_bounded_chunks_and_commits_last() {
-    let js = include_str!("../dist/app.js");
+    let js = frontend_js();
     assert!(js.contains("const BACKUP_UPLOAD_IPC_CHUNK_BYTES = 512 * 1024"));
     assert!(js.contains("async function createAndUploadPortableBackup()"));
     assert!(js.contains("dataBase64: encodeCanonicalBase64(chunk)"));
@@ -593,8 +729,8 @@ fn frontend_backup_seam_streams_bounded_chunks_and_commits_last() {
 
 #[test]
 fn frontend_backup_center_is_manual_and_recovery_requires_preview_takeover() {
-    let html = include_str!("../dist/index.html");
-    let js = include_str!("../dist/app.js");
+    let html = FRONTEND_INDEX;
+    let js = frontend_js();
     assert!(html.contains("id=\"view-backup\""));
     assert!(html.contains("id=\"backupCreateBtn\""));
     assert!(js.contains("createAndUploadPortableBackup()"));
@@ -620,7 +756,7 @@ fn frontend_backup_center_is_manual_and_recovery_requires_preview_takeover() {
 
 #[test]
 fn android_reminder_delivery_has_a_startup_tripwire_and_debug_process_death_seam() {
-    let js = include_str!("../dist/app.js");
+    let js = frontend_js();
     let plugin =
         include_str!("../../solum-alarm/android/src/main/java/dev/solum/alarm/AlarmPlugin.kt");
     let activity = include_str!("../gen/android/app/src/main/java/dev/solum/app/MainActivity.kt");
@@ -637,8 +773,8 @@ fn android_reminder_delivery_has_a_startup_tripwire_and_debug_process_death_seam
 
 #[test]
 fn local_capture_stays_available_to_guests_and_dynamic_styles_survive_csp() {
-    let html = include_str!("../dist/index.html");
-    let js = include_str!("../dist/app.js");
+    let html = FRONTEND_INDEX;
+    let js = frontend_js();
     let config = include_str!("../tauri.conf.json");
     assert!(js.contains(
             "const GUEST_ALLOWED_VIEWS = new Set([\"chat\", \"agenda\", \"notifs\", \"ledger\", \"ledger-detail\", \"journal\", \"search\", \"settings\", \"privacy\", \"capture\", \"data\"])"
@@ -647,7 +783,37 @@ fn local_capture_stays_available_to_guests_and_dynamic_styles_survive_csp() {
     assert!(config.contains("style-src 'self' 'unsafe-inline'"));
     assert!(!config.contains("script-src 'self' 'unsafe-inline'"));
     assert!(!html.contains("<script>"));
-    assert!(html.contains("<script src=\"app.js\"></script>"));
+    // The application is no longer one file: index.html declares an ordered
+    // list of js/NN-*.js modules, and that list is the load order. Guard that
+    // every module is wired in exactly once and in ascending filename order, so
+    // a module cannot be split off and left unloaded — or loaded out of order.
+    let order = frontend_script_order();
+    let modules: Vec<&String> = order.iter().filter(|src| src.starts_with("js/")).collect();
+    assert_eq!(
+        modules.len(),
+        FRONTEND_MODULES.len(),
+        "index.html must load every js/ module exactly once"
+    );
+    let mut sorted = modules.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        modules.len(),
+        "a js/ module is loaded more than once"
+    );
+    assert_eq!(
+        modules, sorted,
+        "js/ modules must load in ascending filename order"
+    );
+    assert!(
+        order.contains(&"i18n.js".to_string()),
+        "i18n.js must load before the application"
+    );
+    assert_eq!(order.first().map(String::as_str), Some("i18n.js"));
+    for (index, src) in modules.iter().enumerate() {
+        assert_eq!(src.as_str(), frontend_module_files()[index]);
+    }
     assert!(js.contains("meta capture-preview"));
     assert!(js.contains("previewChars.slice(0, 240)"));
 }

@@ -1,8 +1,18 @@
 # Solum Changelog
 
+## 2026-09-26 — 前端 app.js 解耦为有序功能域模块
+
+- `dist/app.js`（7606 行）按既有分节横幅切成 `dist/js/` 下 47 个模块，最大 520 行；纯移动，无逻辑改动。拼接后的模块序列与原文件逐字节相等已验证。
+- `index.html` 底部的有序 `<script src="js/...">` 列表成为唯一清单，同时是运行时加载顺序与声明顺序。`check-frontend.mjs` 改为按该顺序拼接程序做断言，并双向核对孤儿模块、重复加载与文件名/加载顺序不一致。
+- 每个模块额外独立通过 `vm.Script` 解析，防止某一文件的语法错误被相邻文件掩盖。
+- `tests.rs` 的 6 处 `include_str!` 改为按同样顺序拼接；脚本清单契约（数量、唯一、升序、i18n.js 最先）改为断言而非硬编码单个标签。
+- 验证：`check-frontend.mjs` 通过（445 个唯一 id、0 内联脚本）、Rust workspace 487 通过、fmt 通过；浏览器实测 47 个模块全部加载、23 个视图存在、访客登录门正常渲染、无控制台错误与失败请求。
+- 未解决（既有，与本次改动无关）：`tauri-build` 旧产物残留 `android/target` 路径导致构建失败，清理 `target/debug/build/tauri-*` 后恢复；`lib.rs` 的 `tauri::Manager` 与 `privacy_capture.rs` 的 `chrono::TimeZone` 为未使用导入，Clippy 报红。
+
 ## 2026-09-26 — 文档核对与精简
 
 - 核对 Cargo/Tauri 版本，删除旧版本快照，修正临时目录与容器网络的过度固定描述。
+
 ## 2026-09-26 — 单项目 Agent 入口
 
 - 规则、长期偏好和相关排障经验迁入本项目，agent 不再依赖父目录共享文档。

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 
 const htmlPath = new URL("../crates/solum-app/dist/index.html", import.meta.url);
-const appJsPath = new URL("../crates/solum-app/dist/app.js", import.meta.url);
+const appJsDir = new URL("../crates/solum-app/dist/", import.meta.url);
 const i18nJsPath = new URL("../crates/solum-app/dist/i18n.js", import.meta.url);
 const tauriConfPath = new URL("../crates/solum-app/tauri.conf.json", import.meta.url);
 const appSrcDir = new URL("../crates/solum-app/src/", import.meta.url);
@@ -13,9 +13,48 @@ const notificationPipelinePath = new URL(
   import.meta.url,
 );
 const html = fs.readFileSync(htmlPath, "utf8");
-const appJs = fs.readFileSync(appJsPath, "utf8");
 const i18nJs = fs.readFileSync(i18nJsPath, "utf8");
 const tauriConf = fs.readFileSync(tauriConfPath, "utf8");
+
+// The application ships as ordered classic <script src="js/NN-*.js"> modules —
+// no bundler, and the CSP has no 'unsafe-inline'. index.html's script order is
+// therefore the single source of truth: it is both the runtime load order and
+// the declaration order every position-based assertion below depends on. So
+// rebuild the one logical program from that list instead of reading a file.
+const scriptSources = [...html.matchAll(/<script\s+src="([^"]+)"><\/script>/g)].map((m) => m[1]);
+const moduleSources = scriptSources.filter((src) => src.startsWith("js/"));
+if (moduleSources.length === 0) {
+  throw new Error("index.html must load the application as ordered <script src=\"js/*.js\"> modules");
+}
+const appJs = moduleSources
+  .map((src) => {
+    const file = new URL(src, appJsDir);
+    if (!fs.existsSync(file)) throw new Error(`index.html loads ${src} but it does not exist`);
+    return fs.readFileSync(file, "utf8");
+  })
+  .join("\n");
+const onDisk = fs
+  .readdirSync(new URL("js/", appJsDir))
+  .filter((name) => name.endsWith(".js"))
+  .map((name) => `js/${name}`);
+// A module that was split off but never wired into index.html would be dead
+// weight that still passes every content assertion, so guard both directions.
+for (const name of onDisk) {
+  const uses = scriptSources.filter((src) => src === name).length;
+  if (uses === 0) throw new Error(`${name} exists but index.html never loads it`);
+  if (uses > 1) throw new Error(`${name} is loaded ${uses} times; each module must load exactly once`);
+}
+// Numeric prefixes carry the load order; the filenames must agree with it so
+// that a stray reorder in the directory cannot silently disagree with the HTML.
+const ordered = onDisk.slice().sort();
+const byHtml = moduleSources.map((src) => `js/${src.slice(src.lastIndexOf("/") + 1)}`);
+if (ordered.join("\n") !== byHtml.join("\n")) {
+  throw new Error(
+    "dist/js filenames and the index.html load order disagree:\n" +
+      `  on disk: ${ordered.join(", ")}\n` +
+      `  in HTML: ${byHtml.join(", ")}`,
+  );
+}
 
 function readAllRs(dir) {
   let content = "";
@@ -33,18 +72,20 @@ const app = readAllRs(appSrcDir);
 const accountCore = fs.readFileSync(accountCorePath, "utf8");
 const notificationPipeline = fs.readFileSync(notificationPipelinePath, "utf8");
 
-// The application script lives in dist/app.js since the CSP dropped
-// 'unsafe-inline' (2026-08-26). index.html must not grow a new inline
-// <script> — that would be silently blocked in production and silently
-// skipped here if this check only looked at inline content.
+// The application lives in dist/js/*.js since the CSP dropped 'unsafe-inline'
+// (2026-08-26). index.html must not grow a new inline <script> — that would
+// be silently blocked in production and silently skipped here if this check
+// only looked at inline content.
 const inlineScripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)];
 if (inlineScripts.length !== 0) {
-  throw new Error("index.html must not contain inline <script>; put JS in dist/app.js (CSP script-src has no 'unsafe-inline')");
+  throw new Error("index.html must not contain inline <script>; put JS in dist/js/ (CSP script-src has no 'unsafe-inline')");
 }
 new vm.Script(i18nJs, { filename: "dist/i18n.js" });
-new vm.Script(appJs, { filename: "dist/app.js" });
-if (!/<script\s+src="app\.js"><\/script>/.test(html)) {
-  throw new Error('index.html must load the application via <script src="app.js"></script>');
+// Parse every module on its own too: concatenated as one blob a file with a
+// stray top-level `return` or unbalanced brace can still be masked by a
+// neighbour, and each module really is its own classic script at runtime.
+for (const src of moduleSources) {
+  new vm.Script(fs.readFileSync(new URL(src, appJsDir), "utf8"), { filename: `dist/${src}` });
 }
 // Every JS-content assertion below reads `js` (= app.js); HTML-only checks
 // keep reading `html`. A regression that moves code back into index.html now
