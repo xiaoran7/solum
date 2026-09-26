@@ -9,7 +9,7 @@ const stylesPath = new URL("../crates/solum-app/dist/styles.css", import.meta.ur
 const i18nJsPath = new URL("../crates/solum-app/dist/i18n.js", import.meta.url);
 const tauriConfPath = new URL("../crates/solum-app/tauri.conf.json", import.meta.url);
 const appSrcDir = new URL("../crates/solum-app/src/", import.meta.url);
-const accountCorePath = new URL("../crates/solum-core/src/account.rs", import.meta.url);
+const accountCoreDir = new URL("../crates/solum-core/src/account/", import.meta.url);
 const defaultAvatarPath = new URL("../crates/solum-app/dist/assets/avatars/default-sprout.png", import.meta.url);
 const notificationPipelinePath = new URL(
   "../crates/solum-notif-access/android/src/main/java/dev/solum/notifaccess/NotificationPipelineService.kt",
@@ -73,7 +73,9 @@ function readAllRs(dir) {
   return content;
 }
 const app = readAllRs(appSrcDir);
-const accountCore = fs.readFileSync(accountCorePath, "utf8");
+// The account core is a module directory now; the lock assertion below spans
+// its sections, so read them all.
+const accountCore = readAllRs(accountCoreDir);
 const notificationPipeline = fs.readFileSync(notificationPipelinePath, "utf8");
 
 // The application lives in dist/js/*.js since the CSP dropped 'unsafe-inline'

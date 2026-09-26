@@ -1,5 +1,14 @@
 # Solum Changelog
 
+## 2026-09-26 — solum-core 的 account.rs 拆为分节模块
+
+- `crates/solum-core/src/account.rs`（2145 行）按职责切成 `account/` 下 6 个模块：`session`(350，会话落盘 + 跨进程文件锁 + 响应解析) / `flows`(676，邮箱/手机/OAuth/华为/验证码等注册登录与刷新) / `tests`(697) / `reasoner`(161，走账号代理的 Reasoner) / `authenticate`(140) / `http`(97，HTTP 抽象与 ureq 实现)，`mod.rs`(42) 保留文档头与 imports。纯移动，无逻辑改动。
+- 等价性硬证据：7 个分节逐一按 token 流（标识符/字符串/字符/裸串 + 逐字符标点）与拆分前 `account.rs` 比对，全部一致；只允许 16 处 `pub(super)` 可见性放开与 rustfmt 换行。
+- 可见性按最小必要放开：跨分节共用或被 `tests.rs` 触及的项（`parse_auth_response`/`with_session_lock`/`TIMEOUT_SECS`/`REVOKE_TIMEOUT_SECS`/`map_http_error`/`with_timeout`/`post_with_refresh`/`refresh_and_save_with_client`/`refresh_with_client`/`cloud_account_state_with_client`/`same_account_identity`/`session_lock_path`/`lock_session_file`/`unlock_session_file`/`LEGACY_CENTER_URLS`/`AccountSession::save`）为 `pub(super)`。`AccountSession::normalize` 的 `pub(crate)` 是拆分前既有，未动。
+- 修正 `check-frontend.mjs` 对源码路径的硬依赖：原按单文件读 `solum-core/src/account.rs`，现改读整个模块目录。守卫本身不变——它断言 Rust 与 Kotlin 的 OFD/POSIX 记录锁互操作（`libc::F_OFD_SETLKW` 对 `handle.channel.lock()`），跨分节成立。
+- 验证：Rust workspace 487 通过、0 失败（与拆分前基线一致）；`cargo fmt --all --check` 通过；`solum-core` clippy 零告警；`check-frontend.mjs` 与 47 模块加载守卫通过。
+- 未解决（既有，与本次改动无关）：`lib.rs` 的 `tauri::Manager` 与 `privacy_capture.rs` 的 `chrono::TimeZone` 为未使用导入，workspace Clippy 报红。
+
 ## 2026-09-26 — solum-core 的 sync.rs 拆为分节模块
 
 - `crates/solum-core/src/sync.rs`（2250 行）按文件自带的 `// ---- 分节 ----` 横幅切成 `sync/` 下 6 个模块：`config`(218) / `account_recovery_envelope`(430) / `crypto`(31) / `transport`(311) / `driver`(234) / `tests`(955)，`mod.rs`(117) 保留文档头、imports 与 `SyncOp`/`SyncBatch`/`PulledBlob`/`SyncOutcome` 四个共享类型。纯移动，无逻辑改动。
