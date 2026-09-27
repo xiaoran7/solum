@@ -108,8 +108,29 @@ create table if not exists ai.entitlements (
   tenant_id uuid primary key references auth.users(id) on delete cascade,
   plan text not null default 'standard' check (char_length(plan) between 1 and 64),
   monthly_request_limit integer not null default 1000 check (monthly_request_limit > 0),
+  -- 额度按天、周双窗口放行，两条都要过。日窗挡突发，周窗兜住长期速率。
+  -- monthly_request_limit 保留一版做灰度兼容，下个大版本再删。
+  daily_request_limit integer not null default 1000 check (daily_request_limit > 0),
+  weekly_request_limit integer not null default 3000 check (weekly_request_limit > 0),
   custom_models_enabled boolean not null default true,
   updated_at timestamptz not null default now()
+);
+
+-- 日/周计数只记请求数：token 与成败仍归月表，客户端也只按日/周看配额。
+create table if not exists ai.usage_daily (
+  tenant_id uuid not null references auth.users(id) on delete cascade,
+  period_start date not null,
+  request_count integer not null default 0 check (request_count >= 0),
+  updated_at timestamptz not null default now(),
+  primary key (tenant_id, period_start)
+);
+
+create table if not exists ai.usage_weekly (
+  tenant_id uuid not null references auth.users(id) on delete cascade,
+  period_start date not null,
+  request_count integer not null default 0 check (request_count >= 0),
+  updated_at timestamptz not null default now(),
+  primary key (tenant_id, period_start)
 );
 
 create table if not exists ai.usage_monthly (
@@ -404,6 +425,10 @@ alter table vault.backup_objects enable row level security;
 alter table vault.backup_objects force row level security;
 alter table ai.entitlements enable row level security;
 alter table ai.entitlements force row level security;
+alter table ai.usage_daily enable row level security;
+alter table ai.usage_daily force row level security;
+alter table ai.usage_weekly enable row level security;
+alter table ai.usage_weekly force row level security;
 alter table ai.usage_monthly enable row level security;
 alter table ai.usage_monthly force row level security;
 alter table ai.usage_events enable row level security;
@@ -459,6 +484,16 @@ create policy ai_entitlements_tenant_policy on ai.entitlements
   for all to solum_api
   using (tenant_id = (select sync.current_tenant_id()))
   with check (tenant_id = (select sync.current_tenant_id()));
+drop policy if exists ai_usage_daily_tenant_policy on ai.usage_daily;
+create policy ai_usage_daily_tenant_policy on ai.usage_daily
+  for all to solum_api
+  using (tenant_id = (select sync.current_tenant_id()))
+  with check (tenant_id = (select sync.current_tenant_id()));
+drop policy if exists ai_usage_weekly_tenant_policy on ai.usage_weekly;
+create policy ai_usage_weekly_tenant_policy on ai.usage_weekly
+  for all to solum_api
+  using (tenant_id = (select sync.current_tenant_id()))
+  with check (tenant_id = (select sync.current_tenant_id()));
 drop policy if exists ai_usage_monthly_tenant_policy on ai.usage_monthly;
 create policy ai_usage_monthly_tenant_policy on ai.usage_monthly
   for all to solum_api
@@ -497,6 +532,8 @@ grant select, insert, update on vault.backup_state to solum_api;
 grant select, insert, update, delete on vault.backups to solum_api;
 grant select, insert, update on vault.backup_objects to solum_api;
 grant select, insert on ai.entitlements to solum_api;
+grant select, insert, update on ai.usage_daily to solum_api;
+grant select, insert, update on ai.usage_weekly to solum_api;
 grant select, insert, update on ai.usage_monthly to solum_api;
 grant select, insert, update on ai.usage_events to solum_api;
 grant usage, select on all sequences in schema sync to solum_api;

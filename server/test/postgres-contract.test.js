@@ -30,7 +30,8 @@ test('PostgreSQL schema forces RLS on every tenant-owned table', () => {
   const sql = fs.readFileSync(path.join(root, 'db', 'init', '01-schema.sql'), 'utf8');
   for (const table of ['sync.devices', 'sync.blobs', 'sync.preferences', 'sync.alerts',
     'vault.key_envelopes', 'vault.recovery_codes', 'vault.backup_state', 'vault.backups',
-    'vault.backup_objects', 'ai.entitlements', 'ai.usage_monthly', 'ai.usage_events']) {
+    'vault.backup_objects', 'ai.entitlements', 'ai.usage_daily', 'ai.usage_weekly',
+    'ai.usage_monthly', 'ai.usage_events']) {
     assert.match(sql, new RegExp(`alter table ${table.replace('.', '\\.')}` +
       ' enable row level security;', 'i'));
     assert.match(sql, new RegExp(`alter table ${table.replace('.', '\\.')}` +
@@ -158,6 +159,21 @@ test('backup limits retain protocol capacity floors', () => {
   assert.throws(() => buildConfig({ ...base, backupMaxObjects: 65 }));
   assert.throws(() => buildConfig({ ...base, backupMaxVersions: 1 }));
   assert.throws(() => buildConfig({ ...base, backupTenantMaxBytes: 1024 * 1024 * 1024 }));
+});
+
+test('AI request limits default to 1000 a day and 3000 a week and refuse an inverted pair', () => {
+  const base = { authSecret: 'x'.repeat(32), adminUsername: 'admin', adminPassword: '' };
+  const config = buildConfig(base);
+  assert.equal(config.standardDailyRequestLimit, 1000);
+  assert.equal(config.standardWeeklyRequestLimit, 3000);
+  assert.equal(buildConfig({ ...base, standardDailyRequestLimit: 10, standardWeeklyRequestLimit: 30 })
+    .standardWeeklyRequestLimit, 30);
+  assert.throws(() => buildConfig({ ...base, standardDailyRequestLimit: 0 }),
+    /SOLUM_STANDARD_DAILY_REQUEST_LIMIT must be between 1 and 10000000/);
+  assert.throws(() => buildConfig({ ...base, standardWeeklyRequestLimit: 1.5 }),
+    /SOLUM_STANDARD_WEEKLY_REQUEST_LIMIT must be between 1 and 10000000/);
+  assert.throws(() => buildConfig({ ...base, standardDailyRequestLimit: 4000 }),
+    /must not exceed SOLUM_STANDARD_WEEKLY_REQUEST_LIMIT/);
 });
 
 test('backup routes keep ciphertext opaque and commit before retention pruning', () => {
@@ -312,6 +328,60 @@ test('AI usage projection is server-authoritative and never reports negative rem
     { plan: 'standard', monthly_request_limit: 10, custom_models_enabled: true },
     { total_tokens: '9007199254740993' }
   ), /invalid AI usage counter/);
+});
+
+test('AI usage projection carries both daily and weekly windows with their own reset instants', () => {
+  // 2026-08-01 是周六 → 所在自然周（周一起算）从 2026-07-27 开始。
+  const usage = usageProjection(
+    { plan: 'standard', monthly_request_limit: 10000, daily_request_limit: 1000,
+      weekly_request_limit: 3000, custom_models_enabled: true },
+    { period_start: '2026-08-01', request_count: 145, success_count: 140, failure_count: 5 },
+    { period_start: '2026-08-01', request_count: 1200 },
+    { period_start: '2026-07-27', request_count: 145 }
+  );
+  assert.equal(usage.daily_request_limit, 1000);
+  assert.equal(usage.daily_requests_used, 1200);
+  assert.equal(usage.daily_requests_remaining, 0, 'used over limit must clamp at 0');
+  assert.equal(usage.daily_reset_at, '2026-08-02T00:00:00.000Z');
+  assert.equal(usage.weekly_request_limit, 3000);
+  assert.equal(usage.weekly_requests_used, 145);
+  assert.equal(usage.weekly_requests_remaining, 2855);
+  assert.equal(usage.weekly_reset_at, '2026-08-03T00:00:00.000Z', 'weekly reset lands on the next Monday');
+  // 月字段不受日/周窗口影响：老客户端只读它们。
+  assert.equal(usage.requests_used, 145);
+  assert.throws(() => usageProjection(
+    { plan: 'standard', daily_request_limit: 10, weekly_request_limit: 30 },
+    {}, { request_count: '-1' }
+  ), /invalid AI usage counter: daily_request_count/);
+});
+
+// 存量租户在旧库上没有 daily/weekly 列。ensureEntitlement 的 on conflict 分支
+// 只在列 < 1 时才写，否则被单独调过额度的租户会被默认值盖回去。
+test('AI entitlement backfills the daily and weekly limits without clobbering tuned values', () => {
+  const source = postgresSource();
+  assert.match(source, /on conflict\(tenant_id\) do update set/);
+  assert.match(source, /daily_request_limit=case when ent\.daily_request_limit<1/);
+  assert.match(source, /weekly_request_limit=case when ent\.weekly_request_limit<1/);
+  // 条件必须挂在 DO UPDATE 的 WHERE 上：每次 AI 调用都会走这里，无条件写会把
+  // entitlements 变成每次都更新的热点行。
+  assert.match(source,
+    /where ent\.daily_request_limit<1 or ent\.weekly_request_limit<1`/);
+  assert.ok(source.indexOf('config.standardDailyRequestLimit') <
+    source.indexOf('select plan,monthly_request_limit,daily_request_limit,weekly_request_limit'),
+    'the new limits must be written before they are read back');
+});
+
+// 额度是日、周两个窗口，两条都要过。周窗触顶时抛错 → withTenant rollback →
+// 月/日/周三次 +1 一并回滚，不会留下「被拒却计了数」的账。
+test('AI quota reservation requires both the daily and the weekly window to pass', () => {
+  const source = postgresSource();
+  assert.match(source, /usage\.request_count<entitlement\.daily_request_limit/);
+  assert.match(source, /usage\.request_count<entitlement\.weekly_request_limit/);
+  assert.match(source, /if \(dailyReserved\.rowCount !== 1\) throw new HttpError\(429, 'ai_quota_exhausted'\)/);
+  assert.match(source, /if \(weeklyReserved\.rowCount !== 1\) throw new HttpError\(429, 'ai_quota_exhausted'\)/);
+  // 窗口的 +1 必须在 insert into ai.usage_events 之前，否则事件表会记下没批准的请求。
+  assert.ok(source.indexOf('insert into ai.usage_events') >
+    source.indexOf('weeklyReserved.rowCount !== 1'));
 });
 
 test('AI quota reservation is a conditional atomic update before the usage event insert', () => {

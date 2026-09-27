@@ -19,19 +19,72 @@ async function recoverTenantStaleAiRequests(client, tenantId, timeoutSeconds) {
 }
 
 async function ensureEntitlement(client, tenantId, config) {
+  // 新列（daily/weekly）在旧库上是后加的，存量行靠这里的 on conflict 补齐。
+  // 条件挂在 DO UPDATE 的 WHERE 上：列已经是正常值时**一行都不写**，既不会把
+  // 被单独调过额度的租户盖回默认值，也不会让每次 AI 调用都去更新同一行
+  // （那是热点行，会一直被 autovacuum 追着跑）。漏掉补齐，日上限为 0 会把
+  // 所有人挡在门外，所以这条路径必须留着。
   await client.query(
-    `insert into ai.entitlements(tenant_id,plan,monthly_request_limit)
-     values($1,$2,$3) on conflict(tenant_id) do nothing`,
-    [tenantId, config.standardPlan, config.standardMonthlyRequestLimit]
+    `insert into ai.entitlements as ent(tenant_id,plan,monthly_request_limit,
+                                      daily_request_limit,weekly_request_limit)
+     values($1,$2,$3,$4,$5)
+     on conflict(tenant_id) do update set
+       daily_request_limit=case when ent.daily_request_limit<1
+                                then excluded.daily_request_limit
+                                else ent.daily_request_limit end,
+       weekly_request_limit=case when ent.weekly_request_limit<1
+                                 then excluded.weekly_request_limit
+                                 else ent.weekly_request_limit end,
+       updated_at=now()
+     where ent.daily_request_limit<1 or ent.weekly_request_limit<1`,
+    [tenantId, config.standardPlan, config.standardMonthlyRequestLimit,
+      config.standardDailyRequestLimit, config.standardWeeklyRequestLimit]
   );
   const selected = await client.query(
-    'select plan,monthly_request_limit,custom_models_enabled from ai.entitlements where tenant_id=$1',
+    'select plan,monthly_request_limit,daily_request_limit,weekly_request_limit,' +
+    'custom_models_enabled from ai.entitlements where tenant_id=$1',
     [tenantId]
   );
   return selected.rows[0];
 }
 
-function usageProjection(entitlement, row = {}) {
+// 日/周窗口的 period_start 分别是自然日（UTC）和自然周（Postgres 默认周一起算）。
+// 投影里的 *_reset_at 由这两个 period_start 推出来，所以要和这里写库的口径一致。
+function nextWindowResetAt(periodStart, unit) {
+  const text = typeof periodStart === 'string' ? periodStart : '';
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  const base = match
+    ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
+    : new Date();
+  if (unit === 'daily') {
+    return new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() + 1));
+  }
+  // 周一为一周之首：getUTCDay() 里 0 是周日，映射成 7 再减。
+  const weekday = base.getUTCDay() === 0 ? 7 : base.getUTCDay();
+  return new Date(Date.UTC(
+    base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() - weekday + 8));
+}
+
+function windowProjection(entitlement, row, unit) {
+  const safeCount = (value, name) => {
+    const count = Number(value || 0);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error(`invalid AI usage counter: ${name}`);
+    }
+    return count;
+  };
+  const limitKey = unit === 'daily' ? 'daily_request_limit' : 'weekly_request_limit';
+  const limit = safeCount(entitlement[limitKey], limitKey);
+  const used = safeCount(row.request_count, `${unit}_request_count`);
+  return {
+    [`${unit}_request_limit`]: limit,
+    [`${unit}_requests_used`]: used,
+    [`${unit}_requests_remaining`]: Math.max(0, limit - used),
+    [`${unit}_reset_at`]: nextWindowResetAt(row.period_start, unit).toISOString(),
+  };
+}
+
+function usageProjection(entitlement, row = {}, dailyRow = {}, weeklyRow = {}) {
   const safeCount = (value, name) => {
     const count = Number(value || 0);
     if (!Number.isSafeInteger(count) || count < 0) {
@@ -54,6 +107,10 @@ function usageProjection(entitlement, row = {}) {
     requests_used: used,
     requests_remaining: Math.max(0, limit - used),
     reset_at: resetAt.toISOString(),
+    // 日/周是真正的放行依据（两窗都过才放行），放在月字段之后；
+    // 老客户端只读前一组字段，不会因为多出这些键而崩。
+    ...windowProjection(entitlement, dailyRow, 'daily'),
+    ...windowProjection(entitlement, weeklyRow, 'weekly'),
     success_count: safeCount(row.success_count, 'success_count'),
     failure_count: safeCount(row.failure_count, 'failure_count'),
     fallback_count: safeCount(row.fallback_count, 'fallback_count'),
@@ -63,17 +120,27 @@ function usageProjection(entitlement, row = {}) {
   };
 }
 
+const MONTHLY_USAGE_SELECT =
+  `select to_char(period_start,'YYYY-MM-DD') as period_start,
+          request_count,success_count,failure_count,fallback_count,
+          prompt_tokens,completion_tokens,total_tokens
+   from ai.usage_monthly
+   where tenant_id=$1 and period_start=date_trunc('month',now())::date`;
+
+function windowUsageSelect(table, unit) {
+  const trunc = unit === 'daily' ? 'day' : 'week';
+  return `select to_char(period_start,'YYYY-MM-DD') as period_start,request_count
+          from ai.${table}
+          where tenant_id=$1 and period_start=date_trunc('${trunc}',now())::date`;
+}
+
 async function readAiUsage(pool, tenantId, config) {
   return withTenant(pool, tenantId, async (client) => {
     await recoverTenantStaleAiRequests(client, tenantId, config.aiPendingTimeoutSeconds);
     const entitlement = await ensureEntitlement(client, tenantId, config);
-    const selected = await client.query(
-      `select to_char(period_start,'YYYY-MM-DD') as period_start,
-              request_count,success_count,failure_count,fallback_count,
-              prompt_tokens,completion_tokens,total_tokens
-       from ai.usage_monthly
-       where tenant_id=$1 and period_start=date_trunc('month',now())::date`, [tenantId]
-    );
+    const selected = await client.query(MONTHLY_USAGE_SELECT, [tenantId]);
+    const daily = await client.query(windowUsageSelect('usage_daily', 'daily'), [tenantId]);
+    const weekly = await client.query(windowUsageSelect('usage_weekly', 'weekly'), [tenantId]);
     const recent = await client.query(
       `select request_id,requested_model,effective_model,status,fallback_occurred,fallback_reason,
               upstream_latency_ms,created_at,completed_at
@@ -82,7 +149,10 @@ async function readAiUsage(pool, tenantId, config) {
     const latest = recent.rows[0] ? { ...recent.rows[0],
       upstream_latency_ms: recent.rows[0].upstream_latency_ms === null ? null :
         safeDatabaseInteger(recent.rows[0].upstream_latency_ms, 'upstream_latency_ms') } : null;
-    return { ...usageProjection(entitlement, selected.rows[0]), latest_request: latest };
+    return {
+      ...usageProjection(entitlement, selected.rows[0], daily.rows[0], weekly.rows[0]),
+      latest_request: latest
+    };
   });
 }
 
@@ -113,6 +183,42 @@ async function reserveAiRequest(pool, tenantId, requestedModel, config) {
       [tenantId]
     );
     if (reserved.rowCount !== 1) throw new HttpError(429, 'ai_quota_exhausted');
+
+    // 日、周两个窗口都必须放行。顺序是先扣日窗再扣周窗：日窗先满就直接抛，
+    // 省掉一次周表写入；周窗后满时抛错，withTenant 的 catch 会 rollback 整个
+    // 事务，上面这些月/日/周的 +1 一并回滚——不会留下「被拒却计了数」的账。
+    await client.query(
+      `insert into ai.usage_daily(tenant_id,period_start)
+       values($1,date_trunc('day',now())::date) on conflict(tenant_id,period_start) do nothing`,
+      [tenantId]
+    );
+    const dailyReserved = await client.query(
+      `update ai.usage_daily usage set request_count=request_count+1,updated_at=now()
+       from ai.entitlements entitlement
+       where usage.tenant_id=$1 and usage.period_start=date_trunc('day',now())::date
+         and entitlement.tenant_id=usage.tenant_id
+         and usage.request_count<entitlement.daily_request_limit
+       returning to_char(usage.period_start,'YYYY-MM-DD') as period_start,usage.request_count`,
+      [tenantId]
+    );
+    if (dailyReserved.rowCount !== 1) throw new HttpError(429, 'ai_quota_exhausted');
+
+    await client.query(
+      `insert into ai.usage_weekly(tenant_id,period_start)
+       values($1,date_trunc('week',now())::date) on conflict(tenant_id,period_start) do nothing`,
+      [tenantId]
+    );
+    const weeklyReserved = await client.query(
+      `update ai.usage_weekly usage set request_count=request_count+1,updated_at=now()
+       from ai.entitlements entitlement
+       where usage.tenant_id=$1 and usage.period_start=date_trunc('week',now())::date
+         and entitlement.tenant_id=usage.tenant_id
+         and usage.request_count<entitlement.weekly_request_limit
+       returning to_char(usage.period_start,'YYYY-MM-DD') as period_start,usage.request_count`,
+      [tenantId]
+    );
+    if (weeklyReserved.rowCount !== 1) throw new HttpError(429, 'ai_quota_exhausted');
+
     const requestId = crypto.randomUUID();
     await client.query(
       `insert into ai.usage_events(request_id,tenant_id,period_start,requested_model,effective_model,
@@ -122,7 +228,8 @@ async function reserveAiRequest(pool, tenantId, requestedModel, config) {
     );
     return {
       requestId, requestedModel, effectiveModel, fallbackReason,
-      quota: usageProjection(entitlement, reserved.rows[0]),
+      quota: usageProjection(
+        entitlement, reserved.rows[0], dailyReserved.rows[0], weeklyReserved.rows[0]),
     };
   });
 }

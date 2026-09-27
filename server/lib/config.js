@@ -19,6 +19,8 @@ function buildConfig(overrides = {}) {
     allowedModels: process.env.SOLUM_ALLOWED_MODELS || 'gemini-3.8-flash-high',
     standardPlan: process.env.SOLUM_STANDARD_PLAN || 'standard',
     standardMonthlyRequestLimit: Number(process.env.SOLUM_STANDARD_MONTHLY_REQUEST_LIMIT || 1000),
+    standardDailyRequestLimit: Number(process.env.SOLUM_STANDARD_DAILY_REQUEST_LIMIT || 1000),
+    standardWeeklyRequestLimit: Number(process.env.SOLUM_STANDARD_WEEKLY_REQUEST_LIMIT || 3000),
     aiMaxResponseBytes: Number(process.env.SOLUM_AI_MAX_RESPONSE_BYTES || DEFAULT_AI_RESPONSE_BYTES),
     aiPendingTimeoutSeconds: Number(process.env.SOLUM_AI_PENDING_TIMEOUT_SECONDS || 600),
     allowedOrigins: process.env.SOLUM_ALLOWED_ORIGINS || '',
@@ -119,6 +121,20 @@ function buildConfig(overrides = {}) {
   if (!Number.isInteger(config.standardMonthlyRequestLimit) ||
     config.standardMonthlyRequestLimit < 1 || config.standardMonthlyRequestLimit > 10000000) {
     throw new Error('SOLUM_STANDARD_MONTHLY_REQUEST_LIMIT must be between 1 and 10000000');
+  }
+  if (!Number.isInteger(config.standardDailyRequestLimit) ||
+    config.standardDailyRequestLimit < 1 || config.standardDailyRequestLimit > 10000000) {
+    throw new Error('SOLUM_STANDARD_DAILY_REQUEST_LIMIT must be between 1 and 10000000');
+  }
+  if (!Number.isInteger(config.standardWeeklyRequestLimit) ||
+    config.standardWeeklyRequestLimit < 1 || config.standardWeeklyRequestLimit > 10000000) {
+    throw new Error('SOLUM_STANDARD_WEEKLY_REQUEST_LIMIT must be between 1 and 10000000');
+  }
+  // 日窗必须小于周窗，否则「每天 1000 / 每周 3000」这类配置会出现
+  // 日窗永远打不满、周窗先见底的倒挂，限额读起来会自相矛盾。
+  if (config.standardDailyRequestLimit > config.standardWeeklyRequestLimit) {
+    throw new Error(
+      'SOLUM_STANDARD_DAILY_REQUEST_LIMIT must not exceed SOLUM_STANDARD_WEEKLY_REQUEST_LIMIT');
   }
   if (!Number.isInteger(config.aiMaxResponseBytes) ||
     config.aiMaxResponseBytes < 1024 || config.aiMaxResponseBytes > 64 * 1024 * 1024) {

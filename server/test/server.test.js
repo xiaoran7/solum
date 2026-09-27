@@ -24,11 +24,13 @@ function createAiPool(state) {
       if (text.includes("update ai.usage_events set status='interrupted'")) {
         return { rows: [], rowCount: 0 };
       }
-      if (text.includes('insert into ai.entitlements') || text.includes('insert into ai.usage_monthly')) {
+      if (text.includes('insert into ai.entitlements') || text.includes('insert into ai.usage_monthly') ||
+        text.includes('insert into ai.usage_daily') || text.includes('insert into ai.usage_weekly')) {
         return { rows: [], rowCount: 0 };
       }
       if (text.startsWith('select plan,monthly_request_limit')) {
         return { rows: [{ plan: 'standard', monthly_request_limit: 10,
+          daily_request_limit: 1000, weekly_request_limit: 3000,
           custom_models_enabled: true }], rowCount: 1 };
       }
       if (text.includes('update ai.usage_monthly usage set request_count=request_count+1')) {
@@ -36,6 +38,18 @@ function createAiPool(state) {
         return { rows: [{ period_start: '2026-08-01', request_count: state.reserved,
           success_count: 0, failure_count: 0, fallback_count: 0,
           prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }], rowCount: 1 };
+      }
+      // 日/周窗口：桩上按 state.windowLimit 判定触顶，好让「触顶 → 429」这条
+      // 路径在无 Postgres 的环境里也能跑到。
+      for (const [table, unit] of [['daily', 'daily'], ['weekly', 'weekly']]) {
+        if (text.includes(`update ai.usage_${table} usage set request_count=request_count+1`)) {
+          if (state.windowExhausted === unit) return { rows: [], rowCount: 0 };
+          state.windows = state.windows || { daily: 0, weekly: 0 };
+          state.windows[table] += 1;
+          const counts = { daily: state.windows.daily, weekly: state.windows.weekly };
+          return { rows: [{ period_start: unit === 'daily' ? '2026-08-01' : '2026-07-27',
+            request_count: counts[table] }], rowCount: 1 };
+        }
       }
       if (text.includes('insert into ai.usage_events')) {
         state.event = { requestId: values[0], requested: values[2], effective: values[3] };
@@ -88,6 +102,7 @@ test('an empty stream before its first byte falls back once and spends one reque
       defaultModel: 'mimo-v2.5',
       modelCatalog: { defaultModel: 'mimo-v2.5', models: ['mimo-v2.5', 'mimo-v2.5-pro'] },
       standardPlan: 'standard', standardMonthlyRequestLimit: 10,
+      standardDailyRequestLimit: 1000, standardWeeklyRequestLimit: 3000,
       aiMaxResponseBytes: 1024 * 1024,
     }).catch((error) => {
       if (!res.headersSent) res.writeHead(error.status || 500);
@@ -135,6 +150,7 @@ test('a malformed successful upstream response is counted as a failure', async (
       defaultModel: 'mimo-v2.5',
       modelCatalog: { defaultModel: 'mimo-v2.5', models: ['mimo-v2.5'] },
       standardPlan: 'standard', standardMonthlyRequestLimit: 10,
+      standardDailyRequestLimit: 1000, standardWeeklyRequestLimit: 3000,
       aiMaxResponseBytes: 1024 * 1024,
     }).catch((error) => {
       if (!res.headersSent) res.writeHead(error.status || 500);
@@ -185,6 +201,7 @@ test('a malformed non-default response falls back before committing the response
       defaultModel: 'mimo-v2.5',
       modelCatalog: { defaultModel: 'mimo-v2.5', models: ['mimo-v2.5', 'mimo-v2.5-pro'] },
       standardPlan: 'standard', standardMonthlyRequestLimit: 10,
+      standardDailyRequestLimit: 1000, standardWeeklyRequestLimit: 3000,
       aiMaxResponseBytes: 1024 * 1024,
     }).catch((error) => {
       if (!res.headersSent) res.writeHead(error.status || 500);
@@ -227,6 +244,7 @@ test('a stream request rejects a 200 response that is not SSE', async (t) => {
       defaultModel: 'mimo-v2.5',
       modelCatalog: { defaultModel: 'mimo-v2.5', models: ['mimo-v2.5'] },
       standardPlan: 'standard', standardMonthlyRequestLimit: 10,
+      standardDailyRequestLimit: 1000, standardWeeklyRequestLimit: 3000,
       aiMaxResponseBytes: 1024 * 1024,
     }).catch((error) => {
       if (!res.headersSent) res.writeHead(error.status || 500);
@@ -246,6 +264,53 @@ test('a stream request rejects a 200 response that is not SSE', async (t) => {
   assert.equal(await response.text(), 'upstream_invalid_response');
   assert.equal(state.event.status, 'failed');
 });
+
+// 日、周是两道独立的闸，任一触顶都拒绝。日窗先满时不该留下周窗的计数。
+for (const exhausted of ['daily', 'weekly']) {
+  test(`the ${exhausted} window rejects with 429 and spends no upstream request`, async (t) => {
+    let upstreamCalls = 0;
+    const upstream = http.createServer(async (req, res) => {
+      upstreamCalls += 1;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }));
+    });
+    const upstreamPort = await listen(upstream);
+    t.after(async () => {
+      upstream.closeAllConnections();
+      await new Promise((resolve) => upstream.close(resolve));
+    });
+
+    const state = { reserved: 0, event: null, monthly: null, windowExhausted: exhausted };
+    const proxy = http.createServer((req, res) => {
+      proxyCompletion(req, res, createAiPool(state), '9d4df1be-9f7b-4a3a-b986-ec920d2df60e', {
+        mimoApiKey: 'server-only',
+        mimoBaseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        defaultModel: 'mimo-v2.5',
+        modelCatalog: { defaultModel: 'mimo-v2.5', models: ['mimo-v2.5'] },
+        standardPlan: 'standard', standardMonthlyRequestLimit: 10,
+        standardDailyRequestLimit: 1000, standardWeeklyRequestLimit: 3000,
+        aiMaxResponseBytes: 1024 * 1024,
+      }).catch((error) => {
+        if (!res.headersSent) res.writeHead(error.status || 500);
+        res.end(error.code || 'internal_error');
+      });
+    });
+    const proxyPort = await listen(proxy);
+    t.after(async () => {
+      proxy.closeAllConnections();
+      await new Promise((resolve) => proxy.close(resolve));
+    });
+
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/ai/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'hello' }] }),
+    });
+    assert.equal(response.status, 429);
+    assert.equal(await response.text(), 'ai_quota_exhausted');
+    assert.equal(upstreamCalls, 0, 'quota must be checked before the upstream call');
+    assert.equal(state.event, null, 'a rejected request must not record a usage event');
+  });
+}
 
 test('login, refresh rotation and fixed-upstream model proxy', async (t) => {
   let seenAuthorization = '';

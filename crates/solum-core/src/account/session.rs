@@ -63,6 +63,24 @@ pub struct CloudUsage {
     pub requests_used: u64,
     pub requests_remaining: u64,
     pub reset_at: String,
+    // 日/周是真正的放行依据（两窗都过才放行），月字段保留给灰度期。
+    // #[serde(default)]：老服务端不认识这些键，反序列化时补 0 而不是整条失败。
+    #[serde(default)]
+    pub daily_request_limit: u64,
+    #[serde(default)]
+    pub daily_requests_used: u64,
+    #[serde(default)]
+    pub daily_requests_remaining: u64,
+    #[serde(default)]
+    pub daily_reset_at: String,
+    #[serde(default)]
+    pub weekly_request_limit: u64,
+    #[serde(default)]
+    pub weekly_requests_used: u64,
+    #[serde(default)]
+    pub weekly_requests_remaining: u64,
+    #[serde(default)]
+    pub weekly_reset_at: String,
     pub success_count: u64,
     pub failure_count: u64,
     pub fallback_count: u64,
