@@ -22,6 +22,7 @@ const {
   verifyPasswordAsync,
 } = require('../src/http-security');
 const { loadLegacy } = require('../scripts/import-legacy-sqlite');
+const postgresSource = require('./postgres-source');
 
 const root = path.join(__dirname, '..');
 
@@ -160,7 +161,7 @@ test('backup limits retain protocol capacity floors', () => {
 });
 
 test('backup routes keep ciphertext opaque and commit before retention pruning', () => {
-  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const source = postgresSource();
   const start = source.indexOf("url.pathname === '/v1/backups/generation'");
   const end = source.indexOf("url.pathname === '/v1/push'", start);
   assert.ok(start > 0 && end > start);
@@ -277,7 +278,7 @@ test('alert metrics, URLs and database integers reject lossy or dangerous values
 });
 
 test('sync history is durable and tenant storage is explicitly bounded', () => {
-  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const source = postgresSource();
   const compose = fs.readFileSync(path.join(root, 'compose.yaml'), 'utf8');
   assert.doesNotMatch(source, /delete from sync\.blobs where/);
   assert.doesNotMatch(compose, /SOLUM_SYNC_RETENTION_DAYS/);
@@ -288,7 +289,7 @@ test('sync history is durable and tenant storage is explicitly bounded', () => {
 });
 
 test('refresh rotation locks one token family and revokes descendants on reuse', () => {
-  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const source = postgresSource();
   assert.match(source, /where rt\.session_id=\$1\$\{lock\}/);
   assert.match(source, /for update of rt/);
   assert.match(source, /previous_token_hash=\$2/);
@@ -314,7 +315,7 @@ test('AI usage projection is server-authoritative and never reports negative rem
 });
 
 test('AI quota reservation is a conditional atomic update before the usage event insert', () => {
-  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const source = postgresSource();
   assert.match(source, /usage\.request_count<entitlement\.monthly_request_limit/);
   assert.match(source, /if \(reserved\.rowCount !== 1\) throw new HttpError\(429, 'ai_quota_exhausted'\)/);
   assert.ok(source.indexOf('request_count=request_count+1') <
@@ -434,7 +435,7 @@ test('compose exposes only the API and keeps PostgreSQL on the private network',
 });
 
 test('center dashboard provides one-origin registration and account workspace', () => {
-  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const source = postgresSource();
   const dashboard = fs.readFileSync(path.join(root, 'src', 'dashboard.html'), 'utf8');
   assert.match(source, /url\.pathname === '\/'/);
   assert.match(source, /url\.pathname === '\/v1\/meta'/);
@@ -455,7 +456,7 @@ test('center dashboard provides one-origin registration and account workspace', 
 });
 
 test('recovery envelope is fixed-scope and create-only', () => {
-  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const source = postgresSource();
   assert.match(source, /PUT'.*\/v1\/keys\/recovery/);
   assert.match(source, /recipient_device_id='account-recovery-v1'/);
   assert.match(source, /on conflict\(tenant_id,recipient_device_id,key_version,algorithm\) do nothing/);
@@ -470,7 +471,7 @@ test('recovery envelope is fixed-scope and create-only', () => {
 });
 
 test('recovery code endpoints never accept the plaintext code', () => {
-  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const source = postgresSource();
   // Two-step online verification: challenge returns only the PBKDF2 salt.
   assert.match(source, /POST' && url\.pathname === '\/v1\/auth\/recover\/challenge'/);
   assert.match(source, /POST' && url\.pathname === '\/v1\/auth\/recover'/);
@@ -496,7 +497,7 @@ test('recovery code endpoints never accept the plaintext code', () => {
 });
 
 test('unauthenticated refresh and logout are IP-rate-limited', () => {
-  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const source = postgresSource();
   assert.match(source, /REFRESH_IP_MAX_FAILURES/);
   const refreshBody = source.slice(
     source.indexOf("'/v1/auth/refresh'"), source.indexOf("'/v1/auth/logout'"));
@@ -511,7 +512,7 @@ test('unauthenticated refresh and logout are IP-rate-limited', () => {
 });
 
 test('pull and backup verification stay bounded inside the database', () => {
-  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const source = postgresSource();
   const pullBody = source.slice(
     source.indexOf("url.pathname === '/v1/pull'"), source.indexOf("url.pathname === '/v1/stats'"));
   assert.ok(pullBody.includes('octet_length(ciphertext) as blob_bytes'),
@@ -533,7 +534,7 @@ test('pull and backup verification stay bounded inside the database', () => {
 });
 
 test('oauth exchange shares the unauthenticated per-IP abuse window', () => {
-  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const source = postgresSource();
   const oauthBody = source.slice(
     source.indexOf("url.pathname === '/v1/auth/oauth/exchange'"),
     source.indexOf("url.pathname === '/v1/auth/register'"));
@@ -547,7 +548,7 @@ test('oauth exchange shares the unauthenticated per-IP abuse window', () => {
 });
 
 test('alerts pagination rejects an explicit zero limit', () => {
-  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const source = postgresSource();
   const alertsBody = source.slice(
     source.indexOf("url.pathname === '/v1/alerts'"),
     source.indexOf("url.pathname === '/v1/keys/recovery'"));
@@ -557,7 +558,7 @@ test('alerts pagination rejects an explicit zero limit', () => {
 });
 
 test('usage events have a retention policy like every other table', () => {
-  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const source = postgresSource();
   assert.match(source, /SOLUM_USAGE_EVENT_RETENTION_DAYS \|\| 90/);
   assert.ok(source.includes('delete from ai.usage_events where tenant_id=$1 '),
     'retention cleanup must cover ai.usage_events');
@@ -722,7 +723,7 @@ test('legacy importer rejects null values and missing required alert columns', (
 });
 
 test('OAuth configuration and endpoint routes exist in postgres server', () => {
-  const source = fs.readFileSync(path.join(root, 'src', 'postgres-server.js'), 'utf8');
+  const source = postgresSource();
   assert.match(source, /oauthEnabled: process\.env\.SOLUM_OAUTH_ENABLED !== 'false'/);
   assert.match(source, /oauthIssuer: process\.env\.SOLUM_OAUTH_ISSUER \|\| 'https:\/\/auth\.tannerlab\.cn'/);
   assert.match(source, /oauthClientId: process\.env\.SOLUM_OAUTH_CLIENT_ID \|\| 'solum-center'/);

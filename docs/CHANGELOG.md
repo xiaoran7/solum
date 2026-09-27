@@ -1,5 +1,19 @@
 # Solum Changelog
 
+## 2026-09-27 — solum-cloud 的 postgres-server.js 拆为 lib/ 分节 + 装配入口
+
+- `server/src/postgres-server.js`（3160 行、140 KB）拆为 `server/lib/` 下 19 个分节，入口退化为 100 行的装配器。分节按职责：`http`(443，请求与响应原语、`HttpError`、字段校验、备份计划解析、访问令牌签发校验) / `routes-session`(364，会话与设备) / `routes-backups`(350，备份生成、取回、版本) / `routes-auth`(298，注册登录、短信、华为、OAuth) / `ai-proxy`(291，上游代理、流式转发、超时与断连) / `config`(247，`buildConfig` 与全部上限常量) / `routes-account`(185，账号资料与偏好) / `routes-identity`(176，令牌、密钥、租户档案) / `ai-usage`(166，配额投影与预占) / `tenant`(131，`withTenant`、锁、配额、blob 上限) / `routes-sync`(106) / `server`(82，`createPostgresServer` 的骨架) / `routes-keys`(83) / `routes-alerts`(61) / `routes-captcha`(55) / `preamble`(53，`use strict`、imports、26 个常量) / `startup`(25，`main()` 与 `require.main`) / `routes-root`(22) / `routes-ai`(22)。纯移动，无逻辑改动。
+- **入口用 `vm.runInThisContext` 把分节拼回同一个模块作用域，而不是把它们改成 CommonJS 模块**。它们切自同一个作用域，本来就互相按裸名引用（`handle()` 直接调 `bearer()`、`verifyAccessToken()` 和每个路由助手）；改成真模块就得手写 import 表，那是会与拆分漂移的新代码。代价是拿不到逐分节的栈帧，换来的是「分节按原顺序拼回原文件逐字节一致」这条等价性证据仍然成立——它正是 13 处**读原始源码文本**的断言所依赖的（`test/postgres-contract.test.js` 用 `indexOf` 切出路由区间再断言区间内容）。`__dirname`／`module`／`require` 显式传进包装函数：前者让 `dashboard.html`、`../package.json` 和每个 `./` 相对 require 仍按 `src/` 解析，后者让 `startup` 里的 `require.main === module` 依然比较本模块——**这正是 `npm start` 与 `node src/postgres-server.js` 会拉起服务的前提**。
+- **单遍求值是硬要求，不是风格选择**。`auth-security.test.js` mock 掉 `http-security` 的导出后**删缓存重新 require** 本模块，`postgres-integration.test.js` 在 require 之前替换 `pg.Pool`——两者都依赖那些 require 发生在本模块**首次**求值期间。惰性按需加载会静默破坏这两个测试。
+- 测试侧新增 `test/postgres-source.js`：按入口里声明的 `LIB_PARTS` 顺序拼接 `lib/*.js`。**顺序从入口读出而不是在这里另列一份**，这样分节的增删与重排表现为测试失败，而不是一份悄悄按错顺序读到的源码。13 处 `readFileSync(...postgres-server.js)` 全部改为 `postgresSource()`，断言逻辑与断言文本一字未动。
+- 等价性硬证据：`lib/` 19 个分节按声明顺序拼接，与拆分前的 `postgres-server.js` **逐字节完全一致**（140496 字节、3160 个 CRLF 行尾全部保留），测试侧的 `postgresSource()` 同样复现该文本。`server/` 全树是 CRLF（`core.autocrlf=true`），拆分器因此把行尾符一并带进每个分节——只做「归一化后一致」的比较会掩盖这一点，而逐字节这条契约是按**磁盘上的字节**衡量的。
+- 工具与负向验证：
+  - 拆分器新增**边界守卫**——断言每个新分节的第一条非空行是顶层项（`function`/`class`/`const`…、行注释、`use strict` 指令、`require`，或**缩进 4 空格的路由头**）。路由分发嵌在请求处理器里，缩进正好 4 格。逐字节一致**证明不了**切点正确：一个函数被切成两半，拼回去仍然逐字节相同。
+  - 控制组证明守卫真的会咬人：把边界挪到函数体内部（`return value.trim() || null;` 与 `const name = error && …`）必须被**边界守卫**拒绝而不是被拼接检查拒绝——两者都跑通会让人误以为测的是边界守卫，所以断言报错文本里确实含边界守卫那句。
+  - 装配器生成后**先解析再写盘**，并校验两张表的**形状**：早期版本把导出表写成裸标识符 `buildConfig,`，那能正常解析，却在 `require` 时抛 `buildConfig is not defined`——只做语法检查正好漏掉这一类。
+  - 反向验证过测试夹具真的读的是分节：把 `lib/routes-backups.js` 里的 `createHash('sha256').update(ciphertext).digest()` 改成 base64，`backup routes keep ciphertext opaque…` 立刻失败；改回即恢复。删掉任一分节则在 `require` 时 ENOENT 立即失败，不会得到一个残缺模块。
+- 部署：`server/Dockerfile` 增 `COPY lib ./lib`（`lib/` 位于 `server/` 根、与 `package.json` 同级；`COPY src ./src` 不会带上它，漏了这行镜像里会缺文件）。
+- 验证：`npm test` 64 项、59 通过、0 失败、5 跳过——与拆分前基线逐项一致（5 个跳过项是需 Postgres 的集成测试，本机无库）。入口导出 18 个名字，与拆分前 `module.exports` 逐名相同（入口运行时双向核对：少一个或多一个都直接抛错）。
 ## 2026-09-26 — solum-app 的 commands/account.rs 拆为分节模块
 
 - `crates/solum-app/src/commands/account.rs`（1288 行，26 条 tauri 命令）按命令族切成 `account/` 下 6 个分节：`sms_email`(381，挡在请求与账户之间的几道门：短信验证码、图形验证码、邮箱验证码注册与登录、手机号注册与登录) / `logout`(263，退出、服务端删号、恢复码：状态、签发、跨重启的一次性交接、用恢复码登录) / `login`(260，对着自建 solum-cloud 登录与注册，以及 OAuth 授权码路径与外部浏览器跳转) / `session`(207，会话本身：设置页要的状态、尚未接管的会话的撤销调度、换一个 profile 的重启) / `huawei`(128，华为账号路径) / `settings`(83，需要活会话的两项设置：改密码、选模型)，`mod.rs`(33) 保留原 imports、章节横幅与 6 组 `pub(crate)` 转出。纯移动，无逻辑改动。

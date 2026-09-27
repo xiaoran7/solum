@@ -4,6 +4,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 COPY src ./src
+COPY lib ./lib
 COPY scripts ./scripts
 
 RUN mkdir -p /data && chown node:node /data
