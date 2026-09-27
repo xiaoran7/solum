@@ -1,5 +1,14 @@
 # Solum Changelog
 
+## 2026-09-27 — solum-core 的 widget.rs 拆为分节模块
+
+- `crates/solum-core/src/widget.rs`（761 行）切成 `widget/` 下 12 个分节加 `mod`。纯移动，无逻辑改动。5 个条目（`ALLOWED_ICONS` 加四个共享原语）被放开到 `pub(super)`，全部经验证拆分前确为私有。
+  分法：`icons`(6) / `fieldtype`(26) / `viewtype`(37) / `statop`(30) / `shapes`(92) / `draft`(41) / `mapping`(17) / `schema`(64) / `outcome`(33) / `validate`(174) / `helpers`(115) / `tests`(102)。
+- **这个模块的立场就写在文件头，而它是每一节的理由**：挂件是**声明式数据**，只收一套封闭的小 schema 并对着校验，永远不收可执行代码、HTML、CSS 或任意视图描述。所以 `icons` 只有一张封闭的名字表（挂件可以报一个图标名，不能自带 SVG 标记），`statop` 里一个操作是这张表里的一个**名字而不是表达式**，`shapes` 里每个结构都 `deny_unknown_fields`（多出一个没声明的 key，就是一个没人校验过的挂件）。**这三节单独读不出这个立场，读文件头可以**——这正是拆分的收益。
+  `viewtype` 把「每种视图在一个挂件里能占几个」的上限放在枚举旁边而不是 `mod` 的常量区，因为上限是**这一种**的属性而不是挂件的。`validate`(174) 是文件里最大的函数，留在一整节不分：一棵判定树切开就是把分支分到不同文件。
+- **带属性的结构让边界语义比别处更要紧**。这个文件每个结构前面都有 `#[derive]` 和 `#[serde]`，所以边界必须取在**下一条目的文档注释或第一个属性之前那一行**；差一行的症状还是 `unclosed delimiter`，只是这次丢的是**属性**而不是 `}`，而诊断的行号落在**另一个分节**里。12 个边界全部是空行，逐个打印确认过。
+- 范围控制组（`negative-control-ranges.mjs`）在 widget 上 42 条全过、在 capture 上 27 条回归全过——同一套规则在两个文件上各验一遍，这次的 13 个分节里有 12 个带 `#[derive]`，是这条规则最吃紧的场合。
+- 验证：13/13 分节与拆分前逐 token 相同；`cargo test --workspace` 487 通过、0 失败；`cargo fmt --all --check` 通过；`solum-core` clippy 零告警；暂存树贴进干净 HEAD 的 worktree 后同样 487 通过、0 失败、fmt 干净、clippy 零告警。
 ## 2026-09-27 — solum-core 的 capture.rs 拆为分节模块
 
 - `crates/solum-core/src/capture.rs`（904 行）切成 `capture/` 下 7 个分节加 `mod`。纯移动，无逻辑改动。1 个条目（`platform_matrix`）被放开到 `pub(super)`，经验证拆分前确为私有。
