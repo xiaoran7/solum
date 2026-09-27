@@ -73,6 +73,32 @@ test('PostgreSQL schema forces RLS on every tenant-owned table', () => {
   assert.doesNotMatch(sql, /grant all/i);
 });
 
+test('ai.entitlements backfills the daily/weekly columns on pre-existing tables', () => {
+  // `create table if not exists ai.entitlements` 只对新建表生效。生产库上这张表
+  // 早于日/周额度就已存在，整句会被跳过，两列永远补不上——而
+  // lib/ai-usage.js 的 ensureEntitlement 每次 AI 请求都 select 这两列，
+  // 缺列是 42P01，直接让**所有**云端回复 500，不只是额度算错。
+  //
+  // 所以光断言 create table 里有这两列不够：还要断言补列的迁移语句在，
+  // 且它不会把运营已经调过的额度覆盖回默认值。
+  const sql = fs.readFileSync(path.join(root, 'db', 'init', '01-schema.sql'), 'utf8');
+  for (const column of ['daily_request_limit', 'weekly_request_limit']) {
+    assert.match(sql, new RegExp(`alter table ai\\.entitlements add column if not exists ${column} integer;`, 'i'),
+      `缺少 ${column} 的补列语句：已有的 ai.entitlements 表不会被 create table 补上`);
+  }
+  // 回填只能碰空值/越界行。否则一次迁移就把运营单独调过的额度按回 1000。
+  assert.match(sql,
+    /update ai\.entitlements set daily_request_limit = 1000\s+where daily_request_limit is null or daily_request_limit < 1;/i);
+  assert.match(sql,
+    /update ai\.entitlements set weekly_request_limit = 3000\s+where weekly_request_limit is null or weekly_request_limit < 1;/i);
+  // 补完必须落到 not null + check，否则 lib/ai-usage.js 里
+  // `where ... ent.daily_request_limit<1` 的灰度分支永远命中，额度反复被改写。
+  assert.match(sql, /alter table ai\.entitlements alter column daily_request_limit set not null;/i);
+  assert.match(sql, /alter table ai\.entitlements alter column weekly_request_limit set not null;/i);
+  assert.match(sql, /alter column daily_request_limit set default 1000;/i);
+  assert.match(sql, /alter column weekly_request_limit set default 3000;/i);
+});
+
 test('backup upload plans have a strict cross-platform canonical digest', () => {
   const config = buildConfig({
     authSecret: 'x'.repeat(32), adminUsername: 'admin', adminPassword: '',

@@ -116,6 +116,27 @@ create table if not exists ai.entitlements (
   updated_at timestamptz not null default now()
 );
 
+-- 上面那句只对**新建**的 ai.entitlements 生效。生产库上这张表早于日/周额度存在，
+-- create table if not exists 会整句跳过，两列永远补不上——而 lib/ai-usage.js
+-- 的 ensureEntitlement 每条 AI 请求都要 select 这两列，缺列会直接
+-- 42P01 让**所有**云端回复失败，不只是额度算错。
+--
+-- not null 的列不能靠 add column 的 default 补：Postgres 11 起对已有行
+-- 直接写默认值，很快，但不是原子；且 default 1000 会盖掉库里刻意调低的值。
+-- 所以显式回填：只碰值为空/越界的行，其余保持运营改过的数字。
+alter table ai.entitlements add column if not exists daily_request_limit integer;
+alter table ai.entitlements add column if not exists weekly_request_limit integer;
+update ai.entitlements set daily_request_limit = 1000 where daily_request_limit is null or daily_request_limit < 1;
+update ai.entitlements set weekly_request_limit = 3000 where weekly_request_limit is null or weekly_request_limit < 1;
+alter table ai.entitlements alter column daily_request_limit set default 1000;
+alter table ai.entitlements alter column weekly_request_limit set default 3000;
+alter table ai.entitlements alter column daily_request_limit set not null;
+alter table ai.entitlements alter column weekly_request_limit set not null;
+alter table ai.entitlements drop constraint if exists ai_entitlements_daily_request_limit_check;
+alter table ai.entitlements add constraint ai_entitlements_daily_request_limit_check check (daily_request_limit > 0);
+alter table ai.entitlements drop constraint if exists ai_entitlements_weekly_request_limit_check;
+alter table ai.entitlements add constraint ai_entitlements_weekly_request_limit_check check (weekly_request_limit > 0);
+
 -- 日/周计数只记请求数：token 与成败仍归月表，客户端也只按日/周看配额。
 create table if not exists ai.usage_daily (
   tenant_id uuid not null references auth.users(id) on delete cascade,
