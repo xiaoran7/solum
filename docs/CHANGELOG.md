@@ -1,5 +1,21 @@
 # Solum Changelog
 
+## 2026-09-27 — solum-cloud 0.8.2 上线：日/周额度真正生效，并补三处缺失授权
+
+- **本次发布把 `tannerlab.cn` 从 0.8.1 推到 0.8.2**，服务跑在 tokyo-new 的 `solum-cloud.service`（`/opt/solum-cloud`，Node 22.23.2 + PostgreSQL）。上线前三处缺口，任何一处都够让这次发版白发。
+- **存量 `ai.entitlements` 永远补不上日/周两列。** `create table if not exists` 只在建表时生效，而生产库上这张表早于日/周额度就存在，整句被跳过。`lib/ai-usage.js` 的 `ensureEntitlement` 每条 AI 请求都要 select 这两列，缺列是 42P01——不是额度算错，是**所有**云端回复 500。补的迁移分三步收口：add column 先不带 default 且可空（避免对存量行全表重写）、显式 update 只回填 `is null or < 1` 的行（直接给 default 会把运营单独调过的额度按回 1000）、最后 set default / set not null / 补 check。
+  - 真实验证（一次性库，PostgreSQL 18.4，用完已 drop）：以旧 schema 建库塞两个租户（月额度 100000 与 777），跑新 schema 成功，两行都补成 1000/3000，**777 那行的月额度原样保留**；把某行日额度手工调成 250 后重跑迁移仍是 250；复跑不报错（幂等）；迁移后逐字跑 `ensureEntitlement` 的 upsert 与其后那条 select，新租户与存量租户都正常。生产侧 7 个租户全部补成 1000/3000。
+- **`compose.yaml` 漏传日/周上限。** `lib/config.js` 早就读 `SOLUM_STANDARD_DAILY_REQUEST_LIMIT` / `SOLUM_STANDARD_WEEKLY_REQUEST_LIMIT`，但 compose 只把月上限传进容器，于是宿主 `.env` 调额度**完全不生效**，容器里永远是写死的 1000/3000。补上两行透传，缺省值与代码一致，所以不改行为、只是让 `.env` 重新能调。
+- **三处授权缺失，全部是 `42501 permission denied`，全部安静。** `safeErrorLog` 故意只留 name/code，日志里既没有表名也没有语句，看起来像偶发；journal 又只覆盖本次重启，看不出持续了多久。root cause 是同一类：授权只覆盖了「裸语句」需要的动词，没覆盖代码实际走的那条路径。
+  - `ai.usage_events` 少 grant `delete`：`cleanExpiredData` 对**每个**租户都在第一句就抛，被 catch 记成一行 `retention cleanup failed`。过期用量事件一直攒着，接口从不报错——这条路径此前一次都没成功过。
+  - `ai.entitlements` 少 grant `update`：`ensureEntitlement` 走 `on conflict(tenant_id) do update`，裸 insert 只要 INSERT 权限，走 upsert 还得有 UPDATE。新账号第一次读额度就 42501，`/v1/ai/usage` 直接 500。
+  - `vault.key_envelopes` 少 grant `update`：改密时那条 `on conflict … do update set envelope=…` 会在换密钥那一步 42501，把改密流程打断在半路。
+- **新用例不去维护一张「这些表该有哪些权限」的表**——那种表漏一行就又是一次 42501，且没人知道漏了。改成从源码里把要跑的语句抠出来：`cleanExpiredData` 删的三张表要求 grant 里有 delete；每一条 `on conflict (…) do update` 的目标表要求有 update，`do nothing` 不要求。这个区分不是洁癖：`auth.users` 的 grant 故意是 `select, insert` 加一列列开的 `update (password_hash, …)`，误判成 upsert 会逼着人放宽凭据表的授权。最初的正则只认 `on conflict(` 就把 `auth.users` 算进去了，正是它挡住了过度修正。反向验证三处都验过：逐一把 grant 改回缺 update 的写法，用例分别以「\<表\> 上有 `on conflict do update`，grant 里必须有 update」失败，改回即恢复。
+- **上线后实测**（`https://tannerlab.cn`）：`/v1/health` 与 `/v1/meta` 报 0.8.2；注册新账号后 `/v1/ai/usage` 返回 `daily_request_limit: 1000` / `weekly_request_limit: 3000` 及真实重置时间（此前这些键整个不存在）；发一次 `/v1/ai/chat/completions` 返回 200 与 `pong`，随即 `/v1/ai/usage` 读到 `daily 1 / 1000`、`weekly 1 / 3000`，`latest_request.status = succeeded`。探针账号已删除。重启后 `retention cleanup failed` 与 `request failed` 均为 0。
+- 备份：上线前 `pg_dump -Fc` 存于生产机 `/opt/solum-cloud/backups/solum-pre-58a1abe.dump`（383816 字节）。回滚用的旧代码保留在 `/opt/solum-cloud-prev-0.8.1`。
+- 验证：`npm test` 72 项 / 67 通过 / 0 失败 / 5 跳过（5 个跳过项是需 PostgreSQL 的集成测试，本机无库；本次的迁移与授权验证改在生产机上用一次性库完成，已 drop）；`cargo test --workspace` 498 通过 / 0 失败。
+- **未闭环**：`postgres-integration.test.js` 那 5 个用例在本机仍然跳过，CI 里靠一次性 postgres 服务跑。本次三类授权问题（delete / upsert 的 update）本可以用它在本地先暴露，值不值得为它加个本机 postgres 由后续决定。
+
 ## 2026-09-27 — solum-core 的 store/sync.rs 拆为分节模块
 
 - `crates/solum-core/src/store/sync.rs`（1008 行）切成 `store/sync/` 下 10 个分节加 `mod`。纯移动，无逻辑改动，无可见性放开（这个文件的分节都在 `store` 内部，彼此的 `use super::*;` 就够）。**没有测试分节**——它本来就没有。
