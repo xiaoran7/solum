@@ -1,5 +1,17 @@
 # Solum Changelog
 
+## 2026-09-27 — solum-core 的 attachment.rs 拆为分节模块
+
+- `crates/solum-core/src/attachment.rs`（993 行）切成 `attachment/` 下 4 个分节加 `tests`：`format`(132，容器格式本身——每个魔数、长度与体积上限都是具名常量；只写在执行它的那段代码里的上限，是没人能对照检查的上限，所以对外的 ceiling 是 `pub`，协调方执行的和编解码器执行的是同一批数字) / `seal`(152，明文进容器出，`validate_attachment_set` 是写任何东西**之前**对整组的预检：条数、总字节、整组必须同属一个 user / device generation / backup) / `open`(145，反方向，且刻意更严——任何明文字节在交给调用方之前都已过认证并核对清单摘要) / `helpers`(156，两个方向共用的那些：密钥派生、AAD、长度前缀分帧、决定容器该有几块的边界算术；与 `seal`/`open` 分开，谁都不持有对方的规则) / `tests`(390)。纯移动，无逻辑改动。9 个名字经 `crate::attachment::X` 被 10 个文件到达。
+- **这次拆分里有一处不是移动，是必须做的真实编辑**：分节下移一层，`include_str!` 的相对路径就断了。新增 `fix-include-paths.mjs` 专门做这件事，并配 10 条控制组——因为流水线里每加一个「真的改东西」的步骤，控制组就是它唯一的诚实性保证。
+- 三处缺陷全是「静默地给出错误答案」，其中一处编译器和测试都不一定当场抓到：
+  1. **「下移了几层」不是正确算法**。原路径 `../tests/fixtures/x.hex` 写在 `src/attachment.rs` 里，指向 `crates/solum-core/tests/`——**在 `src/` 之外**；分节只比 `src/` 深 2 层，于是得出 2，写出一个不存在的路径。改成**先解析再重新表达**：在拆分前文件所在目录里解析成绝对目标，再从新位置重新表达同一个目标。深度与 `../` 个数根本不是一回事。
+  2. **重写必须替换原有的 `../` 串，不能前缀上去**，否则每跑一次多一层，第一遍修好第二遍就坏。工具因此必须**幂等**：从 `--pristine` 的原始副本取字面量，而不是从磁盘上当前的文本取。
+  3. **按 `readdirSync` 顺序消费一个全局列表会错位**，于是某个路径被拿**另一个**原始字面量去重算——结果能解析、能编译、指向另一个文件。需要 `--order` 显式给出分节顺序。
+  4. 第四处更隐蔽：**找不到被 rustfmt 折行的字面量**。参数前可能隔着换行和缩进，只跳空格与制表符就会漏掉每一个已格式化的路径，于是工具打印「无需重写」——一句看起来像成功的报告。
+- 验证器的回退要减「**增加量**」而非「结果总数」：原路径本来就带 `../`（`../tests/x.hex` → `../../../tests/x.hex`，增量是 2），减全量会让两侧差恰好一个原始计数，看起来像「丢了一个路径」。这里刻意只做**盲减**而不重新解析——验证器手里只有拆分前的文本和分节自己的文本，没有各自的写入目录，算不出目标；而一个靠猜的重新解析会**放行**一个指向错误文件的路径，那正是这个检查存在的意义。
+- 28 个条目可见性放开（`format` 的 13 个常量/类型、`helpers` 的 13 个函数、测试用到的 `seal_attachment_inner` 与 `open_attachment_with_limits`），全部经验证拆分前确为私有。另有 12 个结构体**字段**由编译器驱动的 `widen-fields.mjs` 放开——字段的可见性不写在 spec 里，因为静态预测不可靠：一个私有字段的名字会出现在别的分节的字符串、文档注释和无关结构体里，文本扫描不是过度放开就是漏掉，而编译器是权威。
+- 验证：workspace 487 通过、0 失败（与基线逐项一致）；`cargo fmt --all --check` 通过；`solum-core` clippy 零告警；12 个 attachment 相关测试全过，含 `fixed_cross_platform_fixture_is_byte_stable_and_readable`——正是它读的那个 fixture 路径需要修的那一个。暂存树单独验过：`git diff --cached` 打成补丁贴进干净 HEAD 的 worktree 后 `cargo check` 通过。
 ## 2026-09-27 — solum-core 的 notification_intelligence.rs 拆为分节模块
 
 - `crates/solum-core/src/notification_intelligence.rs`（944 行）切成 `notification_intelligence/` 下 4 个分节加 `tests`：`config`(238，什么算值得留的通知、以及留住它们的那几条规则，`normalized()` 是那扇 fail-closed 的门) / `capture`(104，一条被捕获的通知及其存储形态；`MAX_FIELD_CHARS` 是隐私边界，在**写进去之前**就截断) / `proposals`(260，先判定再征求确认的那一半：过滤与动作提议、装机起始规则、`decide_intake`——这里不做任何动作，最多是写一行要用户确认的记录) / `triage`(207，可选的 LLM 批次通道) / `tests`(128)，`mod.rs`(13) 保留原文档头与 imports。纯移动，无逻辑改动。22 个名字经 `crate::notification_intelligence::X` 被 17 个文件到达，mod.rs 显式转出全部对外项。
