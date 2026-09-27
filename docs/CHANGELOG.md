@@ -1,5 +1,18 @@
 # Solum Changelog
 
+## 2026-09-27 — solum-core 的 genui.rs 与 export.rs 拆为分节模块
+
+- `crates/solum-core/src/genui.rs`（993 行）按已有的分节横幅切成 `genui/` 下 4 个分节加 `tests`：`templates`(371，事件/例程/打卡/简报/护栏/人格的离线规则构造器，F16 的无需模型路径) / `validation`(184，逐组件逐动作对照目录上限) / `types`(167，线协议：版本、动作白名单、组件目录、`UiEnvelope`) / `parse`(26，F16 降级缝，解析失败返回 `None` 而非报错) / `tests`(242)，`mod.rs`(53) 保留原文档头、imports 与 4 组对外转出。纯移动，无逻辑改动。
+- `crates/solum-core/src/export.rs`（749 行）切成 `export/` 下 3 个分节加 `tests`：`coverage`(209，格式常量与覆盖清单，逐条对照 `sqlite_schema` 而不是信任它) / `import`(90，写入侧，刻意分两步：`plan_import` 只说会动什么、`import_document` 才动手) / `build`(35，读取侧) / `tests`(398)，`mod.rs`(37) 保留原文档头、imports 与 3 组对外转出。纯移动，无逻辑改动。
+- 两次都靠**已有的分节横幅**切，不需要自造边界。`genui` 的三块横幅（validation / defensive parsing / offline template builders）与 `export` 的「常量+覆盖清单 → 构建 → 导入 → 测试」天然对齐；反过来说，没有横幅的文件（如 `store/sync.rs`，整个文件是一个 `impl Store`，其中单个 `apply_one` 就有 447 行、是一个巨大的 `match op.tbl`）**不适合纯移动式拆分**——按方法切会把 `match` 分支切两半，那已经不是移动而是改写。
+- **边界守卫改成同时看两侧**，判据是括号深度的变化而不是末行长相。这一版守卫接受了 `genui` 的三条横幅，却在 `export` 上仍漏了一种：上一分节以**悬空文档注释**结尾（注释属于下一条目）时放行，于是 `build` 段第一版切在 `build_export` 的文档注释之后一行，编译报 `expected item after doc comment`。已记为已知盲区，未修。
+- **守卫的放松要求重跑已提交的拆分**。新增 `recheck-all-splits.mjs`：从各分节树反推区间（锚点落在条目的整个前导——文档注释加跨行属性，测试段锚在 `#[cfg(test)]` 本身）后全部重跑。`email`/`export_v3`/`soulous`/`account`/`genui` 全部通过；`account` 起初报 4 处边界，是反推锚点落在 `fn` 行而非条目前导所致，**树本身正常**（25 个 `#[tauri::command]` 一个不少）。
+- 反推区间时暴露的正则缺陷：`pub(?:\([^)]*\)\s+)?` 整个组可选，于是裸 `pub` 匹配时**不带走尾随空格**，接着 `fn` 无从接上，`pub fn send(...)` 返回 `null`——所有 `pub fn` 分节都定位不到自己。两支都要各自带空格。
+- 词法器的 `'a` 判据原先把字节字面量当生命周期，`(b'a'..=b'f')` 的括号永不闭合、深度多出 2，把一个干净收在 `}` 上的分节判成「留下未闭合条目」。判据改为同时看前一个字符并要求生命周期名字在引号前已结束，用六条样例验过：`&'a str` / `'{'` / `b'a'` / `(b'a'..=b'f')` / 字符串里的 `{` / 注释里的 `{`。
+- **「所有条目都还在」的检查此前用列 0 匹配声明**。测试套件在 `#[cfg(test)] mod tests {}` 里整体缩进一层，于是 13 个测试助手一个都没被计入，随后「重复声明」检查把**任何带测试的拆分**判成失败——它此前只在无测试的文件上跑干净过。改为允许前导空白。
+- **加宽表条目 `["Name"]` 的默认可见性是 `undefined`**，直接插值进声明变成 `undefinedconst MAX_BUTTONS`，该条目随即从计数里消失，报成「改写丢了条目」。默认改为 `pub(super)`。
+- `coverage` 一节在 spec 里声明 `"glob": false`：它只在两条文档链接里提到 `import_document`，不需要兄弟分节的任何名字，而无条件加的 `use super::*;` 就是一条拆分前并不存在的未使用导入告警。加宽脚本此前对每个分节都加 glob，这类「加了没人用」只能等 clippy 报出来再回头改 spec。
+- 验证：两次拆分后 workspace 均 487 通过、0 失败（与基线逐项一致）；`cargo fmt --all --check` 通过；`solum-core` clippy 零告警；`genui` 13 个测试全过。两次都用**暂存树**单独验过：`git diff --cached` 打成补丁贴进干净 HEAD 的 worktree 后 `cargo check` 通过，确认拆分自包含于提交、不依赖未跟踪文件。
 ## 2026-09-27 — solum-cloud 的 postgres-server.js 拆为 lib/ 分节 + 装配入口
 
 - `server/src/postgres-server.js`（3160 行、140 KB）拆为 `server/lib/` 下 19 个分节，入口退化为 100 行的装配器。分节按职责：`http`(443，请求与响应原语、`HttpError`、字段校验、备份计划解析、访问令牌签发校验) / `routes-session`(364，会话与设备) / `routes-backups`(350，备份生成、取回、版本) / `routes-auth`(298，注册登录、短信、华为、OAuth) / `ai-proxy`(291，上游代理、流式转发、超时与断连) / `config`(247，`buildConfig` 与全部上限常量) / `routes-account`(185，账号资料与偏好) / `routes-identity`(176，令牌、密钥、租户档案) / `ai-usage`(166，配额投影与预占) / `tenant`(131，`withTenant`、锁、配额、blob 上限) / `routes-sync`(106) / `server`(82，`createPostgresServer` 的骨架) / `routes-keys`(83) / `routes-alerts`(61) / `routes-captcha`(55) / `preamble`(53，`use strict`、imports、26 个常量) / `startup`(25，`main()` 与 `require.main`) / `routes-root`(22) / `routes-ai`(22)。纯移动，无逻辑改动。
