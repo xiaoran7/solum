@@ -1,5 +1,10 @@
 // crates/solum-app/src/profile.rs
 use std::path::{Path, PathBuf};
+// `app.path()` needs the `Manager` trait in scope, and every such call is
+// inside a `#[cfg(mobile)]` arm. The desktop build has no user, so the import
+// has to carry the same gate or `clippy -D warnings` fails on an import that is
+// genuinely needed for the release target.
+#[cfg(mobile)]
 use tauri::Manager;
 
 pub(crate) struct ResolvedProfilePaths {

@@ -1,4 +1,9 @@
 use super::*;
+// `TimeZone` reaches `Utc::timestamp_millis_opt`, which only the Android calendar
+// branch calls. The desktop build has no other user, so the import has to carry
+// the same gate or `clippy -D warnings` fails on an import that is genuinely
+// needed for the release target.
+#[cfg(target_os = "android")]
 use chrono::TimeZone;
 #[cfg(mobile)]
 use tauri_plugin_notification::NotificationExt;
