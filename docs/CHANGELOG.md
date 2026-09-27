@@ -1,5 +1,15 @@
 # Solum Changelog
 
+## 2026-09-27 — solum-core 的 notification_intelligence.rs 拆为分节模块
+
+- `crates/solum-core/src/notification_intelligence.rs`（944 行）切成 `notification_intelligence/` 下 4 个分节加 `tests`：`config`(238，什么算值得留的通知、以及留住它们的那几条规则，`normalized()` 是那扇 fail-closed 的门) / `capture`(104，一条被捕获的通知及其存储形态；`MAX_FIELD_CHARS` 是隐私边界，在**写进去之前**就截断) / `proposals`(260，先判定再征求确认的那一半：过滤与动作提议、装机起始规则、`decide_intake`——这里不做任何动作，最多是写一行要用户确认的记录) / `triage`(207，可选的 LLM 批次通道) / `tests`(128)，`mod.rs`(13) 保留原文档头与 imports。纯移动，无逻辑改动。22 个名字经 `crate::notification_intelligence::X` 被 17 个文件到达，mod.rs 显式转出全部对外项。
+- 第一版切口把 `LlmTriageDecision` 的文档注释留在了上一节，编译报 `expected item after doc comment`——正是先前记为「已知盲区」的那一种。切口从 615 上移到 612，注释与它的枚举一起走。
+- 22 个对外名字不再靠记忆，改由 `external-names.mjs` 从树上扫出来（含跨行 `use mod::{...}` 块与 `mod::Name::Variant` 路径式引用），并按文件分组打印。第一次跑就抓到我漏掉的 `IntakeDecision`——它在 `proposals`（`decide_intake` 的返回类型）而不是我以为的 `triage`。
+- 边界守卫的词法器**改为跨行有状态**：此前逐行扫描，而 Rust 的字符串字面量可以合法跨行。`batch_triage_prompt` 的提示词是一个用行尾反斜杠续行的普通 `"..."` 字面量，逐行词法器在第 1 行开、第 2 行关，于是把第 2 行里字面量自己的 `{{` 当成代码、又数了 2 个幽灵深度，把一个干净收在 `}` 上的分节判成「留下未闭合条目」。现在普通/原始字符串与块注释都延续到下一行。23 条样例单测覆盖（含 4 条**必须仍然报「未闭合」的正例**，否则守卫会变成永远放行）。
+- 同一处守卫还有个新缺陷：字符串开头的判据漏了 `r`。`r##"..."##` 的 `r##"` 于是被当作三个普通字符加一个裸 `"`，开了一个**普通**字符串，它内部的 `"##` 看起来正好像一个从未进入过的原始字符串的终结符。判据改成 `"` / `r` / `b` 三种开头都要试。
+- 改完把**已提交的五次拆分全部重跑一遍**，全部仍通过——守卫的每次放松都可能让之前的坏切口蒙混过关。
+- 控制组暴露了一件方法论上的事：`notification_intelligence.rs` 里**没有**能让反向检查（上一分节是否留下未闭合条目）单独发力的行——每个列 0 的条目起点都在深度 0，而深度非 0 的行（`parse_batch_triage` 里那对 `#[derive]` / `struct Response`）是缩进的，正向检查先咬住。反向检查要验就得**另造夹具**。只对着真实文件能写出来的控制组，是那个悄悄不再测它本来要测的检查的控制组。控制组本身也栽在这上面两次：先是造了破坏连续性的 mutant（被恒开的平铺检查拦下，什么也证明不了），又误以为「正向检查应当放行」而把反向检查的正常拦截报成失败。
+- 验证：workspace 487 通过、0 失败（与基线逐项一致）；`cargo fmt --all --check` 通过；`solum-core` clippy 零告警；4 个模块测试全过。暂存树单独验过：`git diff --cached` 打成补丁贴进干净 HEAD 的 worktree 后 `cargo check` 通过，确认拆分自包含于提交。
 ## 2026-09-27 — solum-core 的 genui.rs 与 export.rs 拆为分节模块
 
 - `crates/solum-core/src/genui.rs`（993 行）按已有的分节横幅切成 `genui/` 下 4 个分节加 `tests`：`templates`(371，事件/例程/打卡/简报/护栏/人格的离线规则构造器，F16 的无需模型路径) / `validation`(184，逐组件逐动作对照目录上限) / `types`(167，线协议：版本、动作白名单、组件目录、`UiEnvelope`) / `parse`(26，F16 降级缝，解析失败返回 `None` 而非报错) / `tests`(242)，`mod.rs`(53) 保留原文档头、imports 与 4 组对外转出。纯移动，无逻辑改动。
