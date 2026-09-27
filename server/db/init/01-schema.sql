@@ -556,7 +556,7 @@ grant select, insert on ai.entitlements to solum_api;
 grant select, insert, update on ai.usage_daily to solum_api;
 grant select, insert, update on ai.usage_weekly to solum_api;
 grant select, insert, update on ai.usage_monthly to solum_api;
-grant select, insert, update on ai.usage_events to solum_api;
+grant select, insert, update, delete on ai.usage_events to solum_api;
 grant usage, select on all sequences in schema sync to solum_api;
 grant execute on function sync.current_tenant_id() to solum_api;
 

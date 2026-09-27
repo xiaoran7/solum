@@ -661,6 +661,27 @@ test('usage events have a retention policy like every other table', () => {
   assert.ok(source.includes("and created_at<now()-($2::text||' days')::interval"),
     'cleanup must be age-based');
   assert.match(source, /usageEventRetentionDays < 30/);
+
+  // 上一条断言只钉住「代码里写了这句 delete」。它对能不能执行只字不提，
+  // 于是 42501 整整一个季度没被发现：grant 少了 delete，cleanExpiredData
+  // 对**每个**租户都在第一句 usage_events 上抛权限错，而 catch 把它记成
+  // 一行 `retention cleanup failed` 就完事——数据在，告警也在，只是没人看。
+  //
+  // 补的断言把「要跑的语句」和「跑它的角色」绑在一起。少一个权限就失败，
+  // 因为生产上这条路径目前一次都没成功过。
+  const sql = fs.readFileSync(path.join(root, 'db', 'init', '01-schema.sql'), 'utf8');
+  const cleanupGrants = { 'sync.alerts': /delete/, 'vault.backups': /delete/ };
+  const grantLine = (table) => {
+    const match = sql.match(new RegExp(`grant ([a-z, ]+) on ${table.replace('.', '\\.')} to solum_api;`, 'i'));
+    assert.ok(match, `${table} 缺少 solum_api 的 grant`);
+    return match[1].toLowerCase();
+  };
+  assert.match(grantLine('ai.usage_events'), /\bdelete\b/,
+    'cleanExpiredData 要 delete ai.usage_events，grant 里必须有 delete');
+  for (const [table, verb] of Object.entries(cleanupGrants)) {
+    assert.match(grantLine(table), new RegExp(`\\b${verb.source}\\b`),
+      `cleanExpiredData 要 ${verb.source} ${table}，grant 里必须有它`);
+  }
 });
 
 test('legacy importer preserves tenant ownership and cursor sequences atomically', () => {
