@@ -82,7 +82,7 @@ mod tests {
     fn exam_fires_three_days_ahead() {
         let table = RuleTable::default_table();
         let ev = exam_event();
-        let notifs = plan_notifications(&ev, &table.rule(ev.kind), dt(2026, 7, 6, 10, 0), 1);
+        let notifs = plan_notifications(&ev, &table.rule_ref(&ev.kind), dt(2026, 7, 6, 10, 0), 1);
         assert_eq!(notifs.len(), 1);
         // 3 days before 7-20 09:00 = 7-17 09:00.
         assert_eq!(notifs[0].fire_at, dt(2026, 7, 17, 9, 0));
@@ -93,7 +93,7 @@ mod tests {
     fn due_filters_and_sorts() {
         let table = RuleTable::default_table();
         let ev = exam_event();
-        let notifs = plan_notifications(&ev, &table.rule(ev.kind), dt(2026, 7, 6, 10, 0), 1);
+        let notifs = plan_notifications(&ev, &table.rule_ref(&ev.kind), dt(2026, 7, 6, 10, 0), 1);
         // Before fire time: nothing due.
         assert!(due(&notifs, dt(2026, 7, 17, 8, 59)).is_empty());
         // At/after fire time: due.
@@ -104,7 +104,7 @@ mod tests {
     fn next_fire_reports_upcoming() {
         let table = RuleTable::default_table();
         let ev = exam_event();
-        let notifs = plan_notifications(&ev, &table.rule(ev.kind), dt(2026, 7, 6, 10, 0), 1);
+        let notifs = plan_notifications(&ev, &table.rule_ref(&ev.kind), dt(2026, 7, 6, 10, 0), 1);
         assert_eq!(
             next_fire(&notifs, dt(2026, 7, 6, 10, 0)),
             Some(dt(2026, 7, 17, 9, 0))
@@ -120,7 +120,7 @@ mod tests {
             .push(crate::classify::LeadTime::parse("1h").unwrap());
         table.set(rule);
         let ev = exam_event();
-        let notifs = plan_notifications(&ev, &table.rule(ev.kind), dt(2026, 7, 6, 10, 0), 1);
+        let notifs = plan_notifications(&ev, &table.rule_ref(&ev.kind), dt(2026, 7, 6, 10, 0), 1);
         assert_eq!(notifs.len(), 2);
         // One at 3d ahead, one at 1h ahead (7-20 08:00).
         assert!(notifs.iter().any(|n| n.fire_at == dt(2026, 7, 17, 9, 0)));

@@ -58,6 +58,13 @@ pub(super) fn parse_event_value(
         return None;
     }
     let kind: EventKind = v["kind"].as_str()?.parse().ok()?;
+    // The model only ever gets told about the six built-ins, so a `custom:`
+    // kind here is a hallucination, not a category the user made. Accepting it
+    // would let a stray "party" invent a new category on disk. Categories are
+    // only ever created deliberately, from the rule table.
+    if kind.is_custom() {
+        return None;
+    }
     let start_s = v["start"].as_str()?;
     // Accept with or without seconds.
     let start_ts = parse_ts(start_s)

@@ -83,7 +83,7 @@ impl Orchestrator {
         let delta = new_start - ev.start;
         ev.start = new_start;
         ev.end = ev.end.map(|e| e + delta);
-        let rule = self.rule_table.rule(ev.kind);
+        let rule = self.rule_table.rule(ev.kind.clone());
         // Move the event, drop the old reminders and lay down the new ones as
         // one unit. Failing partway used to be able to leave the event moved
         // with its old reminders deleted and no new ones written — a rescheduled

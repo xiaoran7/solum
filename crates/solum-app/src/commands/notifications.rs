@@ -5,6 +5,10 @@ use super::*;
 #[derive(Serialize)]
 pub(crate) struct RuleDto {
     kind: String,
+    /// The name to show. For built-ins this is the fixed Chinese label; for
+    /// user categories it is the name they typed. Defaults to `kind` so an
+    /// older frontend that doesn't read the field still renders something.
+    label: String,
     leads: Vec<String>,
     channels: Vec<String>,
 }
@@ -14,12 +18,20 @@ pub(crate) fn rules(state: State<AppState>) -> CmdResult<Vec<RuleDto>> {
     require_full_account()?;
     let o = lock!(state);
     let table = o.rule_table();
-    Ok(solum_core::model::EventKind::all()
+    // all_rule_kinds, not EventKind::all(): the list must also carry the
+    // categories the user created, in the same built-ins-then-slug order the
+    // Harmony settings page uses.
+    Ok(table
+        .all_rule_kinds()
         .iter()
-        .map(|&kind| {
-            let r = table.rule(kind);
+        .map(|kind| {
+            let r = table.rule_ref(kind);
             RuleDto {
                 kind: kind.as_str().to_string(),
+                label: table
+                    .custom_label(kind.as_str())
+                    .unwrap_or_else(|| kind.label())
+                    .to_string(),
                 leads: r.lead_times.iter().map(|l| l.label.clone()).collect(),
                 channels: r.channels.iter().map(|c| c.as_str().to_string()).collect(),
             }

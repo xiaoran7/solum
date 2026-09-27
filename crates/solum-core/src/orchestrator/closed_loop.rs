@@ -513,7 +513,7 @@ impl Orchestrator {
         let (ev, stored) = self.store.with_transaction(|s| {
             let ev_id = s.insert_event_with_scope(&ev, Some(raw_input_id), local_only, None)?;
             ev.id = Some(ev_id);
-            let rule = self.rule_table.rule(ev.kind);
+            let rule = self.rule_table.rule(ev.kind.clone());
             let planned = plan_notifications(&ev, &rule, ev.created_at, ev_id);
             let mut stored = Vec::with_capacity(planned.len());
             for mut n in planned {

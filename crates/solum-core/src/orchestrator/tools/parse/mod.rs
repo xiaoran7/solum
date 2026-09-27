@@ -115,7 +115,7 @@ pub(crate) fn summarize_event(ev: &Event, notifs: &[Notification], now: NaiveDat
     };
     let mut msg = format!(
         "已记录【{}】{}，时间：{}{}{}",
-        kind_label(ev.kind),
+        kind_label(&ev.kind),
         ev.title,
         crate::model::fmt_ts_human(&ev.start),
         loc,
@@ -237,6 +237,6 @@ pub(crate) const TARGET_FILLERS: &[&str] = &[
     "的",
 ];
 
-pub(crate) fn kind_label(kind: crate::model::EventKind) -> &'static str {
+pub(crate) fn kind_label(kind: &crate::model::EventKind) -> &str {
     kind.label()
 }

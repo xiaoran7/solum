@@ -18,6 +18,7 @@ use std::sync::OnceLock;
 use chrono::NaiveDateTime;
 use regex::Regex;
 
+use crate::classify::CustomKind;
 use crate::error::Result;
 use crate::model::{Event, EventKind};
 use crate::time_parse::parse_datetime;

@@ -152,7 +152,7 @@ impl Digest {
             let parts: Vec<String> = self
                 .events_by_kind
                 .iter()
-                .map(|(k, n)| format!("{}{}", kind_label(*k), n))
+                .map(|(k, n)| format!("{}{}", kind_label(k), n))
                 .collect();
             format!("（{}）", parts.join("、"))
         };
@@ -220,15 +220,8 @@ impl Digest {
     }
 }
 
-fn kind_label(kind: EventKind) -> &'static str {
-    match kind {
-        EventKind::Exam => "考试",
-        EventKind::Meeting => "会议",
-        EventKind::Class => "课程",
-        EventKind::Deadline => "截止",
-        EventKind::Reminder => "提醒",
-        EventKind::Other => "事件",
-    }
+fn kind_label(kind: &EventKind) -> &str {
+    kind.label()
 }
 
 #[cfg(test)]

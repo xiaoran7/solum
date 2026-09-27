@@ -23,6 +23,15 @@ impl RuleBasedExtractor {
 
     /// Detect the event kind from keywords. Order matters: more specific first.
     pub fn detect_kind(text: &str) -> EventKind {
+        Self::detect_kind_with(text, &[])
+    }
+
+    /// Kind detection, with the user's own categories considered *after* the
+    /// six built-ins. A custom keyword must never steal a classification the
+    /// built-ins are sure about ("考试" is an exam even if someone made a
+    /// category called "复习"), so the ordering is part of the contract and
+    /// must match the Harmony `detectKind`.
+    pub fn detect_kind_with(text: &str, custom_kinds: &[CustomKind]) -> EventKind {
         let lower = text.to_lowercase();
         let has = |ws: &[&str]| ws.iter().any(|w| lower.contains(*w));
         if has(&["考试", "期末", "期中", "exam", "test", "quiz"]) {
@@ -47,6 +56,15 @@ impl RuleBasedExtractor {
         } else if has(&["提醒", "remind", "记得", "别忘", "don't forget"]) {
             EventKind::Reminder
         } else {
+            for custom in custom_kinds {
+                if custom
+                    .keywords
+                    .iter()
+                    .any(|k| !k.is_empty() && lower.contains(&k.to_lowercase()))
+                {
+                    return custom.kind();
+                }
+            }
             EventKind::Other
         }
     }
@@ -100,7 +118,7 @@ impl RuleBasedExtractor {
     /// what's left describes the action itself.
     fn clean_title(
         text: &str,
-        kind: EventKind,
+        kind: &EventKind,
         location: Option<&str>,
         people: &[String],
     ) -> String {
@@ -157,7 +175,7 @@ impl RuleBasedExtractor {
             .trim()
             .to_string();
         if s.is_empty() {
-            default_title(kind)
+            default_title(kind.clone())
         } else {
             s
         }
@@ -172,6 +190,9 @@ fn default_title(kind: EventKind) -> String {
         EventKind::Deadline => "截止",
         EventKind::Reminder => "提醒",
         EventKind::Other => "事件",
+        // A user category's name lives in the rule table, not here; the slug
+        // is the best label available without it.
+        EventKind::Custom(slug) => return slug.clone(),
     }
     .to_string()
 }
@@ -188,7 +209,7 @@ impl Extractor for RuleBasedExtractor {
         let kind = Self::detect_kind(text);
         let location = Self::extract_location(text);
         let people = Self::extract_people(text);
-        let title = Self::clean_title(text, kind, location.as_deref(), &people);
+        let title = Self::clean_title(text, &kind, location.as_deref(), &people);
         let mut ev = Event::new(title, kind, parsed.start, text, now);
         ev.location = location;
         ev.people = people;

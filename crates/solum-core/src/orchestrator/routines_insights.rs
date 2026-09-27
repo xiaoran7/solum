@@ -528,7 +528,7 @@ impl Orchestrator {
         rule: crate::classify::ImportanceRule,
         now: NaiveDateTime,
     ) -> Result<usize> {
-        let kind = rule.kind;
+        let kind = rule.kind.clone();
         self.rule_table.set(rule);
         self.store.save_rule_table(&self.rule_table)?;
 
@@ -536,7 +536,7 @@ impl Orchestrator {
         // Per-event replanning is one unit each: deleting the old pending
         // reminders must never survive without the new plan when an insert
         // fails partway (that used to leave a silently unreminded event).
-        let new_rule = self.rule_table.rule(kind);
+        let new_rule = self.rule_table.rule_ref(&kind);
         let mut replanned = 0;
         for event in events.into_iter().filter(|event| event.kind == kind) {
             let event_id = event.id.expect("stored events always carry an id");

@@ -221,13 +221,16 @@ pub fn dispatch(
         },
         Cmd::Rules => {
             let table = o.rule_table();
-            for kind in solum_core::model::EventKind::all() {
-                let r = table.rule(kind);
+            for kind in table.all_rule_kinds() {
+                let r = table.rule_ref(&kind);
                 let leads: Vec<String> = r.lead_times.iter().map(|l| l.label.clone()).collect();
                 let chans: Vec<&str> = r.channels.iter().map(|c| c.as_str()).collect();
+                let label = table
+                    .custom_label(kind.as_str())
+                    .unwrap_or_else(|| kind.label());
                 println!(
-                    "{:<9} 提前: {:<10} 渠道: {}",
-                    kind.as_str(),
+                    "{:<12} 提前: {:<10} 渠道: {}",
+                    label,
                     leads.join(","),
                     chans.join("+")
                 );
