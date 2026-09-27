@@ -44,7 +44,10 @@ test('PostgreSQL schema forces RLS on every tenant-owned table', () => {
   assert.match(sql, /grant select, insert on auth\.users to solum_api;/i);
   assert.match(sql, /grant select, insert on sync\.blobs to solum_api;/i);
   assert.match(sql, /grant select, insert, delete on sync\.alerts to solum_api;/i);
-  assert.match(sql, /grant select, insert on vault\.key_envelopes to solum_api;/i);
+  // key_envelopes 需要 update：改密时那条 upsert 是 `on conflict do update`。
+  // 下面「every statement the server runs is executable by the role it runs as」
+  // 会从源码里把这类 upsert 全部找出来核对，这条只是就地留个记录。
+  assert.match(sql, /grant select, insert, update on vault\.key_envelopes to solum_api;/i);
   assert.match(sql, /grant select, insert, update on vault\.recovery_codes to solum_api;/i);
   // The password change endpoint may only touch credential columns.
   assert.match(sql,
@@ -661,26 +664,52 @@ test('usage events have a retention policy like every other table', () => {
   assert.ok(source.includes("and created_at<now()-($2::text||' days')::interval"),
     'cleanup must be age-based');
   assert.match(source, /usageEventRetentionDays < 30/);
+});
 
-  // 上一条断言只钉住「代码里写了这句 delete」。它对能不能执行只字不提，
-  // 于是 42501 整整一个季度没被发现：grant 少了 delete，cleanExpiredData
-  // 对**每个**租户都在第一句 usage_events 上抛权限错，而 catch 把它记成
-  // 一行 `retention cleanup failed` 就完事——数据在，告警也在，只是没人看。
-  //
-  // 补的断言把「要跑的语句」和「跑它的角色」绑在一起。少一个权限就失败，
-  // 因为生产上这条路径目前一次都没成功过。
+// 这一组用例问的是一个此前没人问过的问题：**代码里要跑的语句，跑它的角色
+// 到底能不能执行**。
+//
+// 只断言「代码里写了这句 delete」是不够的。生产上连续两次栽在这上面，而两次
+// 都安静得很——safeErrorLog 故意只留 name/code，日志里既没有表名也没有语句：
+//
+//   - ai.usage_events 少 grant delete，cleanExpiredData 对每个租户都抛
+//     42501，被 catch 记成一行 `retention cleanup failed`；过期用量事件就一直
+//     攒着，接口从不报错。
+//   - ai.entitlements 少 grant update，ensureEntitlement 的
+//     `on conflict do update` 需要它——裸 insert 只要 INSERT 权限，走 upsert
+//     还得有 UPDATE。新账号第一次读额度就 42501。
+//
+// 所以下面不列一张「该有哪些权限」的表给人维护，而是**从源码里把要跑的语句
+// 抠出来**：每条 delete/upsert 反推出它需要的动词，再去 01-schema.sql 的
+// grant 行里核对。新加一条清理或换一个 upsert 目标表，都自动被覆盖。
+function grantVerbsFor(sql, table) {
+  const match = sql.match(new RegExp(`grant ([a-z, ]+) on ${table.replace('.', '\\.')} to solum_api;`, 'i'));
+  assert.ok(match, `${table} 缺少 solum_api 的 grant`);
+  return match[1].toLowerCase().split(',').map((verb) => verb.trim());
+}
+
+test('every statement the server runs is executable by the role it runs as', () => {
   const sql = fs.readFileSync(path.join(root, 'db', 'init', '01-schema.sql'), 'utf8');
-  const cleanupGrants = { 'sync.alerts': /delete/, 'vault.backups': /delete/ };
-  const grantLine = (table) => {
-    const match = sql.match(new RegExp(`grant ([a-z, ]+) on ${table.replace('.', '\\.')} to solum_api;`, 'i'));
-    assert.ok(match, `${table} 缺少 solum_api 的 grant`);
-    return match[1].toLowerCase();
-  };
-  assert.match(grantLine('ai.usage_events'), /\bdelete\b/,
-    'cleanExpiredData 要 delete ai.usage_events，grant 里必须有 delete');
-  for (const [table, verb] of Object.entries(cleanupGrants)) {
-    assert.match(grantLine(table), new RegExp(`\\b${verb.source}\\b`),
-      `cleanExpiredData 要 ${verb.source} ${table}，grant 里必须有它`);
+  const source = postgresSource();
+
+  // cleanExpiredData 逐租户删的三张表。tenant.ids 那行是 select，不需要动词。
+  for (const table of ['sync.alerts', 'vault.backups', 'ai.usage_events']) {
+    assert.ok(source.includes(`delete from ${table} where tenant_id=$1`),
+      `cleanExpiredData 应当清理 ${table}；这里变了请同步更新本用例`);
+    assert.ok(grantVerbsFor(sql, table).includes('delete'),
+      `cleanExpiredData 要 delete ${table}，grant 里必须有 delete`);
+  }
+
+  // 每一条 `on conflict (…) do update` 都需要 UPDATE 授权；`do nothing` 不需要
+  // （它只走 INSERT 路径）。目标表和子句都从语句本身读，不另列一份——少列一份
+  // 就等于少覆盖一张表。这条区分不是洁癖：auth.users 的 grant 故意只有
+  // `select, insert` 加一列列开的 update，把它误判成 upsert 会逼着人放宽授权。
+  const upserts = [...source.matchAll(
+    /insert into (\w+\.\w+)[\s\S]{0,400}?on conflict\s*\([^)]*\)\s*do update/gi)];
+  assert.ok(upserts.length >= 2, 'upsert 数量异常，本用例可能已经失效');
+  for (const [, table] of upserts) {
+    assert.ok(grantVerbsFor(sql, table).includes('update'),
+      `${table} 上有 \`on conflict do update\`，grant 里必须有 update`);
   }
 });
 

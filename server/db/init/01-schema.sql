@@ -547,12 +547,17 @@ grant select, insert, update, delete on auth.refresh_tokens to solum_api;
 grant select, insert, update on sync.devices to solum_api;
 grant select, insert on sync.blobs to solum_api;
 grant select, insert, delete on sync.alerts to solum_api;
-grant select, insert on vault.key_envelopes to solum_api;
+-- 同 ai.entitlements：改密时那条 key_envelopes 走 `on conflict do update`，
+-- 没有 update 授权会在换密钥那一步 42501，把整个改密流程打断在半路。
+grant select, insert, update on vault.key_envelopes to solum_api;
 grant select, insert, update on vault.recovery_codes to solum_api;
 grant select, insert, update on vault.backup_state to solum_api;
 grant select, insert, update, delete on vault.backups to solum_api;
 grant select, insert, update on vault.backup_objects to solum_api;
-grant select, insert on ai.entitlements to solum_api;
+-- update 是 ensureEntitlement 那条 `on conflict(tenant_id) do update` 必需的：
+-- 裸 insert 只需要 INSERT 权限，走 upsert 就还得有 UPDATE。少了它，
+-- 新账号第一次读额度就会 42501 permission denied for table entitlements。
+grant select, insert, update on ai.entitlements to solum_api;
 grant select, insert, update on ai.usage_daily to solum_api;
 grant select, insert, update on ai.usage_weekly to solum_api;
 grant select, insert, update on ai.usage_monthly to solum_api;
