@@ -133,7 +133,7 @@ jobs:
       - name: Merge the debug manifest
         run: |
           chmod +x ./gradlew
-          ./gradlew --no-daemon :app:processDebugMainManifest
+          ./gradlew --no-daemon :app:processUniversalDebugMainManifest
       - name: Assert the three reminder-chain receivers are in the merged manifest
         run: |
           AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
