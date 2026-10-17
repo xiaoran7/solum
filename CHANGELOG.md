@@ -11,6 +11,7 @@ All notable changes to Solum are documented in this file.
   - Granted executable mode (`100755`) and added `chmod +x` to `crates/solum-app/gen/android/gradlew`.
   - Updated `scripts/gen-android-ci-settings.mjs` to also generate `app/tauri.build.gradle.kts` required by gradle build.
   - Specified `:app:processUniversalDebugMainManifest` for the ABI-flavored debug manifest merge task.
+  - Updated `android-manifest` check to inspect plain-text XML merged manifest with `grep` instead of invoking `aapt2` on plain XML file.
   - Added `01-schema.sql` provisioning in `web-and-cloud` job to materialize tables and role grants in test database.
   - Enabled `--test-reporter=tap` via `NODE_OPTIONS` and synchronized `postgres-integration.test.js` role table grants with `01-schema.sql`.
 - **formatting**: Applied `cargo fmt` to `crates/solum-core/src/classify.rs` and `model.rs` to satisfy rust quality gate.

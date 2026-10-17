@@ -136,12 +136,11 @@ jobs:
           ./gradlew --no-daemon :app:processUniversalDebugMainManifest
       - name: Assert the three reminder-chain receivers are in the merged manifest
         run: |
-          AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
           MANIFEST=$(find app/build/intermediates -name "AndroidManifest.xml" -path "*merged*" | head -1)
           test -n "$MANIFEST" || { echo "::error::merged manifest not found"; exit 1; }
           echo "checking $MANIFEST"
           for component in dev.solum.alarm.AlarmReceiver dev.solum.alarm.BootReceiver dev.solum.app.SolumNotificationListener; do
-            "$AAPT" dump xmltree --file AndroidManifest.xml "$MANIFEST" | grep -q "$component" || {
+            grep -q "$component" "$MANIFEST" || {
               echo "::error::merged manifest is missing $component"
               exit 1
             }
