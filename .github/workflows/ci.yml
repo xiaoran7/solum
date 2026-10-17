@@ -58,13 +58,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Provision least-privilege roles exactly as production init does
+      - name: Provision least-privilege roles and schema exactly as production init does
         run: |
           chmod +x server/db/init/00-roles.sh
           SOLUM_DB_APP_PASSWORD=ci-app-password \
           POSTGRES_USER=postgres POSTGRES_DB=solum_test \
           PGHOST=127.0.0.1 PGPASSWORD=ci-owner-password \
           server/db/init/00-roles.sh
+          PGHOST=127.0.0.1 PGPASSWORD=ci-owner-password \
+          psql --set=ON_ERROR_STOP=1 \
+            --username=postgres \
+            --dbname=solum_test \
+            --file=server/db/init/01-schema.sql
       - name: Frontend static checks
         run: |
           node --check scripts/verify-android-release.mjs
@@ -79,6 +84,8 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Solum Cloud tests
         working-directory: server
+        env:
+          NODE_OPTIONS: --test-reporter=tap
         run: |
           npm test 2>&1 | tee /tmp/solum-cloud-tests.log
           # If the integration group ever silently skips again, its tests are
@@ -124,7 +131,9 @@ jobs:
         working-directory: .
         run: node scripts/gen-android-ci-settings.mjs
       - name: Merge the debug manifest
-        run: ./gradlew --no-daemon :app:processDebugMainManifest
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :app:processDebugMainManifest
       - name: Assert the three reminder-chain receivers are in the merged manifest
         run: |
           AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
