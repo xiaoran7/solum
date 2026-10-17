@@ -14,7 +14,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, Result};
-use crate::model::{custom_kind_key, custom_kind_slug_value, Channel, EventKind, CUSTOM_KIND_PREFIX};
+use crate::model::{
+    custom_kind_key, custom_kind_slug_value, Channel, EventKind, CUSTOM_KIND_PREFIX,
+};
 
 /// Longest accepted custom-category slug, matching the Harmony client.
 const MAX_CUSTOM_KIND_SLUG: usize = 40;
@@ -285,7 +287,11 @@ impl RuleTable {
                 break;
             }
         }
-        let custom = CustomKind { slug: bare, label, keywords: deduped };
+        let custom = CustomKind {
+            slug: bare,
+            label,
+            keywords: deduped,
+        };
         // A category with no rule of its own would never show up in the
         // settings list and would never schedule a reminder, so give it the
         // same starting point a new built-in gets: 30 minutes ahead, push only.
@@ -313,7 +319,8 @@ impl RuleTable {
             Some(bare) if self.custom_kinds.iter().any(|c| c.slug == bare) => bare,
             _ => return false,
         };
-        let key = format!("{CUSTOM_KIND_PREFIX}{bare}");        self.custom_kinds.retain(|c| c.slug != bare);
+        let key = format!("{CUSTOM_KIND_PREFIX}{bare}");
+        self.custom_kinds.retain(|c| c.slug != bare);
         self.rules.retain(|k, _| k.as_str() != key);
         true
     }
@@ -440,9 +447,18 @@ mod tests {
         assert_eq!(custom_kind_slug_value("Kafka").as_deref(), Some("Kafka"));
         assert_eq!(custom_kind_slug_value("面试").as_deref(), Some("面试"));
         assert_eq!(custom_kind_slug_value("a-b_c1").as_deref(), Some("a-b_c1"));
-        assert_eq!(custom_kind_slug_value("custom:kafka").as_deref(), Some("kafka"));
-        assert_eq!(custom_kind_key("custom:kafka").as_deref(), Some("custom:kafka"));
-        assert!(custom_kind_key("kafka").is_none(), "the prefix is required here");
+        assert_eq!(
+            custom_kind_slug_value("custom:kafka").as_deref(),
+            Some("kafka")
+        );
+        assert_eq!(
+            custom_kind_key("custom:kafka").as_deref(),
+            Some("custom:kafka")
+        );
+        assert!(
+            custom_kind_key("kafka").is_none(),
+            "the prefix is required here"
+        );
         assert!(custom_kind_key("custom:has space").is_none());
         assert!(custom_kind_slug_value("").is_none());
         assert!(custom_kind_slug_value("has space").is_none());
@@ -457,7 +473,10 @@ mod tests {
         // The derived serde form for a newtype variant would be
         // {"custom":"kafka"}; the Harmony client writes and reads the flat
         // "custom:kafka". If either side regresses, sync silently drops it.
-        assert_eq!(serde_json::to_string(&custom_kafka()).unwrap(), "\"custom:kafka\"");
+        assert_eq!(
+            serde_json::to_string(&custom_kafka()).unwrap(),
+            "\"custom:kafka\""
+        );
         assert_eq!(
             serde_json::from_str::<EventKind>("\"custom:kafka\"").unwrap(),
             custom_kafka()
@@ -483,7 +502,11 @@ mod tests {
         assert_eq!(t.custom_label("kafka"), Some("Kafka"));
         assert_eq!(t.custom_label("custom:kafka"), Some("Kafka"));
         assert_eq!(t.custom_kinds().len(), 1);
-        assert_eq!(t.custom_kinds()[0].slug, "kafka", "the stored slug is bare; the prefix belongs to the kind");
+        assert_eq!(
+            t.custom_kinds()[0].slug,
+            "kafka",
+            "the stored slug is bare; the prefix belongs to the kind"
+        );
         assert_eq!(t.all_rule_kinds().len(), 7, "6 built-ins plus the new one");
         assert_eq!(*t.all_rule_kinds().last().unwrap(), kind);
     }
@@ -508,7 +531,10 @@ mod tests {
         let keywords = &t.custom_kinds()[0].keywords;
         assert_eq!(keywords.len(), MAX_CUSTOM_KEYWORDS);
         assert_eq!(keywords[0], "k0", "trimmed on the way in");
-        assert!(!keywords.contains(&" k1 ".to_string()), "trimmed, not stored raw");
+        assert!(
+            !keywords.contains(&" k1 ".to_string()),
+            "trimmed, not stored raw"
+        );
     }
 
     #[test]
@@ -522,10 +548,19 @@ mod tests {
         });
         assert!(t.has_rule(&custom_kafka()));
         assert!(t.remove_custom_kind("kafka"));
-        assert!(!t.has_rule(&custom_kafka()), "the attached rule must go too");
+        assert!(
+            !t.has_rule(&custom_kafka()),
+            "the attached rule must go too"
+        );
         assert!(t.custom_kinds().is_empty());
-        assert!(!t.remove_custom_kind("kafka"), "removing twice reports nothing removed");
-        assert!(!t.remove_custom_kind("exam"), "built-ins have no custom entry");
+        assert!(
+            !t.remove_custom_kind("kafka"),
+            "removing twice reports nothing removed"
+        );
+        assert!(
+            !t.remove_custom_kind("exam"),
+            "built-ins have no custom entry"
+        );
     }
 
     #[test]
@@ -574,8 +609,7 @@ mod tests {
             lead_times: vec![LeadTime::new("1h", 60)],
             channels: vec![Channel::Push],
         });
-        let doc: serde_json::Value =
-            serde_json::from_str(&t.to_json().unwrap()).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&t.to_json().unwrap()).unwrap();
 
         // `rules` is a map keyed by the wire string, values carry their own
         // `kind` — the Harmony RuleJson shape.
@@ -617,10 +651,15 @@ mod tests {
         assert!(kinds.contains(&EventKind::Reminder));
         // Re-serializing yields the same document (the Rust-only
         // notification_priority_rules is added back as an empty array).
-        let back: serde_json::Value =
-            serde_json::from_str(&t.to_json().unwrap()).unwrap();
-        assert_eq!(back["rules"], serde_json::from_str::<serde_json::Value>(harmony).unwrap()["rules"]);
-        assert_eq!(back["custom_kinds"], serde_json::from_str::<serde_json::Value>(harmony).unwrap()["custom_kinds"]);
+        let back: serde_json::Value = serde_json::from_str(&t.to_json().unwrap()).unwrap();
+        assert_eq!(
+            back["rules"],
+            serde_json::from_str::<serde_json::Value>(harmony).unwrap()["rules"]
+        );
+        assert_eq!(
+            back["custom_kinds"],
+            serde_json::from_str::<serde_json::Value>(harmony).unwrap()["custom_kinds"]
+        );
     }
 
     #[test]
@@ -644,7 +683,10 @@ mod tests {
         assert_eq!(kinds[0], EventKind::Exam);
         assert_eq!(kinds[5], EventKind::Other);
         assert_eq!(kinds[6], EventKind::Custom("custom:alpha".into()));
-        assert_eq!(*kinds.last().unwrap(), EventKind::Custom("custom:zebra".into()));
+        assert_eq!(
+            *kinds.last().unwrap(),
+            EventKind::Custom("custom:zebra".into())
+        );
         assert_eq!(kinds.len(), 8, "6 built-ins plus the two categories");
         // A new category starts where a new built-in would.
         assert_eq!(t.rule_ref(&kinds[6]).lead_times[0].label, "30m");

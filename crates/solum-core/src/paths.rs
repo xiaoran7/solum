@@ -95,7 +95,24 @@ fn platform_base() -> Option<PathBuf> {
     {
         var("HOME").map(|h| h.join("Library").join("Application Support"))
     }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "android")]
+    {
+        // On Android, check explicit SOLUM_APP_DATA_DIR / SOLUM_DATA_DIR,
+        // or default to standard Android app private internal storage base.
+        var("SOLUM_APP_DATA_DIR")
+            .or_else(|| var("SOLUM_DATA_DIR"))
+            .or_else(|| {
+                // If package name is available, construct the private files directory
+                let pkg = var("SOLUM_PACKAGE_NAME").unwrap_or_else(|| PathBuf::from(APP_ID));
+                let base = PathBuf::from("/data/user/0").join(&pkg).join("files");
+                if base.exists() {
+                    Some(base)
+                } else {
+                    Some(PathBuf::from("/data/data").join(&pkg).join("files"))
+                }
+            })
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "android")))]
     {
         var("XDG_DATA_HOME").or_else(|| var("HOME").map(|h| h.join(".local").join("share")))
     }

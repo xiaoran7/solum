@@ -26,7 +26,9 @@ class CaptchaService {
   }
 
   hashAnswer(answer) {
-    return crypto.createHash('sha256').update(String(answer).trim().toLowerCase()).digest('hex');
+    // 过滤所有空白字符并转小写，防止用户输入带空格或验证码渲染带空格导致的误判
+    const normalized = String(answer || '').replace(/\s+/g, '').toLowerCase();
+    return crypto.createHash('sha256').update(normalized).digest('hex');
   }
 
   /**

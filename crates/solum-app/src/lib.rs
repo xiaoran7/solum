@@ -78,8 +78,9 @@ pub fn run() {
             // local profile to open. Point mobile at app-data before resolving
             // the database; doing this afterwards would always open `guest`.
             #[cfg(mobile)]
-            if std::env::var("SOLUM_ACCOUNT_CONFIG").is_err() {
-                if let Ok(dir) = app.path().app_data_dir() {
+            if let Ok(dir) = app.path().app_data_dir() {
+                std::env::set_var("SOLUM_APP_DATA_DIR", &dir);
+                if std::env::var("SOLUM_ACCOUNT_CONFIG").is_err() {
                     std::env::set_var("SOLUM_ACCOUNT_CONFIG", dir.join("solum-account.json"));
                 }
             }

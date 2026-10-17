@@ -306,15 +306,10 @@ class MainActivity : TauriActivity() {
       val launchIntent = packageManager.getLaunchIntentForPackage(packageName) ?: return
       val component = launchIntent.component ?: return
       val restartIntent = Intent.makeRestartActivityTask(component).apply {
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
       }
       startActivity(restartIntent)
-      android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-        try {
-          android.os.Process.killProcess(android.os.Process.myPid())
-        } catch (_: Exception) {}
-        System.exit(0)
-      }, 500)
+      finish()
     } catch (e: Exception) {
       android.util.Log.e("SolumApp", "Failed to restartApp: ${e.message}", e)
     }

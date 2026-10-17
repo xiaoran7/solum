@@ -155,9 +155,7 @@ impl FromStr for EventKind {
                 // 鸿蒙端 customKindSlug 一致，两端必须同步改。
                 match custom_kind_key(other) {
                     Some(key) => EventKind::Custom(key),
-                    None => {
-                        return Err(CoreError::Invalid(format!("unknown event kind: {other}")))
-                    }
+                    None => return Err(CoreError::Invalid(format!("unknown event kind: {other}"))),
                 }
             }
         })

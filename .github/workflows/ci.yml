@@ -74,6 +74,9 @@ jobs:
           test "$SOLUM_TEST_DATABASE_IS_DISPOSABLE" = "true"
           test -n "$SOLUM_TEST_DATABASE_URL"
           test -n "$SOLUM_TEST_OWNER_DATABASE_URL"
+      - name: Install server dependencies
+        working-directory: server
+        run: npm ci --ignore-scripts
       - name: Solum Cloud tests
         working-directory: server
         run: |
@@ -113,10 +116,12 @@ jobs:
       # machine-local paths), so regenerate it from Cargo.lock + the registry
       # before gradle can include the plugin projects.
       - name: Materialize cargo registry sources for the settings generator
+        working-directory: .
         run: |
           cargo --version || rustup toolchain install stable --profile minimal
           cargo metadata --format-version 1 > /dev/null
       - name: Regenerate tauri.settings.gradle
+        working-directory: .
         run: node scripts/gen-android-ci-settings.mjs
       - name: Merge the debug manifest
         run: ./gradlew --no-daemon :app:processDebugMainManifest

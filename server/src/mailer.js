@@ -367,17 +367,19 @@ class EmailVerificationService {
     const code = crypto.randomInt(100_000, 1_000_000).toString();
     this.lastDevCode = code;
 
-    // 对齐 BloomXP 环境变量命名与默认配置，同时向下兼容 SMTP_*
-    const host = smtpConfig.host || process.env.SOLUM_MAIL_HOST || process.env.SOLUM_SMTP_HOST || process.env.SMTP_HOST;
-    const user = smtpConfig.user || process.env.SOLUM_MAIL_USERNAME || process.env.SOLUM_SMTP_USER || process.env.SMTP_USER;
-    const pass = smtpConfig.pass || process.env.SOLUM_MAIL_PASSWORD || process.env.SOLUM_SMTP_PASS || process.env.SMTP_PASS;
-    const port = smtpConfig.port || Number(process.env.SOLUM_MAIL_PORT || process.env.SOLUM_SMTP_PORT || process.env.SMTP_PORT || (host === 'smtp.qq.com' ? 465 : 587));
-    const from = resolveMailFrom(smtpConfig.from || process.env.SOLUM_MAIL_FROM || process.env.SOLUM_SMTP_FROM || process.env.SMTP_FROM, user);
-    const fromName = smtpConfig.fromName || process.env.SOLUM_MAIL_FROM_NAME || 'Solum';
-    const subjectPrefix = smtpConfig.subjectPrefix || process.env.SOLUM_MAIL_SUBJECT_PREFIX || '[Solum] ';
-    const secure = smtpConfig.secure !== undefined ? smtpConfig.secure : (port === 465);
+    // 对齐 BloomXP 环境变量命名与默认配置，同时向下兼容 SMTP_* 与 smtpHost/smtpPort
+    const host = smtpConfig.host || smtpConfig.smtpHost || process.env.SOLUM_MAIL_HOST || process.env.SOLUM_SMTP_HOST || process.env.SMTP_HOST;
+    const user = smtpConfig.user || smtpConfig.smtpUser || process.env.SOLUM_MAIL_USERNAME || process.env.SOLUM_SMTP_USER || process.env.SMTP_USER;
+    const pass = smtpConfig.pass || smtpConfig.smtpPass || process.env.SOLUM_MAIL_PASSWORD || process.env.SOLUM_SMTP_PASS || process.env.SMTP_PASS;
+    const port = smtpConfig.port !== undefined && smtpConfig.port !== 18083 && smtpConfig.port !== 8787
+      ? smtpConfig.port
+      : (smtpConfig.smtpPort || Number(process.env.SOLUM_MAIL_PORT || process.env.SOLUM_SMTP_PORT || process.env.SMTP_PORT || (host === 'smtp.qq.com' ? 465 : 587)));
+    const from = resolveMailFrom(smtpConfig.from || smtpConfig.smtpFrom || process.env.SOLUM_MAIL_FROM || process.env.SOLUM_SMTP_FROM || process.env.SMTP_FROM, user);
+    const fromName = smtpConfig.fromName || smtpConfig.smtpFromName || process.env.SOLUM_MAIL_FROM_NAME || 'Solum';
+    const subjectPrefix = smtpConfig.subjectPrefix || smtpConfig.smtpSubjectPrefix || process.env.SOLUM_MAIL_SUBJECT_PREFIX || '[Solum] ';
+    const secure = smtpConfig.secure !== undefined ? smtpConfig.secure : (smtpConfig.smtpSecure !== undefined ? smtpConfig.smtpSecure : (port === 465));
 
-    const enabled = smtpConfig.enabled !== false && process.env.SOLUM_EMAIL_CODE_ENABLED !== 'false';
+    const enabled = smtpConfig.enabled !== false && smtpConfig.smtpEnabled !== false && process.env.SOLUM_EMAIL_CODE_ENABLED !== 'false';
 
     if (enabled && host && user && pass) {
       const p = PURPOSES[purpose] || PURPOSES.REGISTER;
