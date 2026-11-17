@@ -10,7 +10,7 @@ Local-first Personal Agent：把输入、日程、提醒、记忆、行为日志
 
 **今天 · 从对话添加提醒**
 
-![Solum 将对话中的时间和事项保存为到点提醒](docs/screenshots/desktop-reminders.png)
+![Solum 将对话中的时间和事项保存为到点提醒](docs/screenshots/desktop-reminder-conversation.png)
 
 **记忆 · 删除前的人工确认**
 
