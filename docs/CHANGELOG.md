@@ -1,5 +1,9 @@
 # Solum Changelog
 
+## [Unreleased]
+
+- README 新增 Windows 桌面版实拍，展示从对话创建到点提醒，以及删除记忆前的人工确认。
+
 ## 2026-09-27 — solum-cloud 0.8.2 上线：日/周额度真正生效，并补三处缺失授权
 
 - **本次发布把 `tannerlab.cn` 从 0.8.1 推到 0.8.2**，服务跑在 tokyo-new 的 `solum-cloud.service`（`/opt/solum-cloud`，Node 22.23.2 + PostgreSQL）。上线前三处缺口，任何一处都够让这次发版白发。

@@ -4,6 +4,18 @@ Local-first Personal Agent：把输入、日程、提醒、记忆、行为日志
 
 本目录是 Android/桌面、共享 Rust core 与服务端的主仓。HarmonyOS 位于独立 Git 仓 `../harmony`，父目录 `Project/solum` 不是仓库；两仓必须分别检查、测试、提交和推送。
 
+## 使用截图
+
+以下为 Windows 桌面版实拍，展示添加到点提醒和删除记忆前的人工确认。
+
+**今天 · 从对话添加提醒**
+
+![Solum 将对话中的时间和事项保存为到点提醒](docs/screenshots/desktop-reminders.png)
+
+**记忆 · 删除前的人工确认**
+
+![Solum 在删除记忆前展示操作影响并要求确认](docs/screenshots/desktop-memory-confirmation.png)
+
 ## Workspace
 
 - `solum-core`：SQLite schema、ingest、提醒、记忆、Guard、同步/备份协议和领域规则。
